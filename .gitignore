@@ -1,0 +1,19 @@
+.env
+*.token.json
+google_credentials.json
+google_token.json
+google_calendar_token.json
+gmail_token.json
+beatriz.log
+__pycache__/
+.pytest_cache/
+# Ambientes virtuais
+.venv*/
+venv/
+
+# Dados pessoais e gerados em tempo de execução
+banco_memoria/
+obsidian/
+historico_conversas.jsonl
+beatriz_analise.json
+auditoria_memoria.jsonl

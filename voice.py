@@ -5,7 +5,9 @@ import queue
 import threading
 import re
 import logging
+import subprocess
 import tempfile
+import time
 
 import pygame
 import edge_tts
@@ -30,6 +32,23 @@ _LOCK_AUDIO = threading.Lock()
 VOZ_BEATRIZ = "pt-BR-ThalitaNeural"
 VELOCIDADE_VOZ = "+15%"
 
+# Se a voz online falhar (ex.: o serviço da Microsoft recusar com 403), usa a voz
+# offline do Windows por um tempo antes de tentar a online de novo.
+PAUSA_VOZ_ONLINE_SEGUNDOS = 600
+_VOZ_ONLINE_FALHOU_EM = 0.0
+
+_SCRIPT_VOZ_WINDOWS = (
+    "Add-Type -AssemblyName System.Speech;"
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+    "$v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'pt-BR' } | Select-Object -First 1;"
+    "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) };"
+    "$s.Rate = 1;"
+    "$s.SetOutputToWaveFile($env:BEATRIZ_ARQUIVO_FALA);"
+    "$s.Speak($env:BEATRIZ_TEXTO_FALA);"
+    "$s.Dispose()"
+)
+
+
 async def gerar_audio(texto, arquivo):
     if not texto:
         return
@@ -37,14 +56,58 @@ async def gerar_audio(texto, arquivo):
     await communicate.save(arquivo)
 
 
+def _gerar_audio_windows(texto: str, arquivo: str):
+    """Voz offline do Windows (SAPI, ex.: Microsoft Maria). O texto vai por variável de ambiente."""
+    ambiente = dict(os.environ, BEATRIZ_TEXTO_FALA=texto, BEATRIZ_ARQUIVO_FALA=arquivo)
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _SCRIPT_VOZ_WINDOWS],
+        env=ambiente,
+        check=True,
+        capture_output=True,
+        timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _gerar_arquivo_fala(texto: str) -> str:
+    """Gera o áudio com a voz online (Thalita) e recorre à voz do Windows se ela falhar."""
+    global _VOZ_ONLINE_FALHOU_EM
+    if time.time() - _VOZ_ONLINE_FALHOU_EM > PAUSA_VOZ_ONLINE_SEGUNDOS:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as arquivo_temporario:
+            arquivo = arquivo_temporario.name
+        try:
+            asyncio.run(gerar_audio(texto, arquivo))
+            if os.path.getsize(arquivo) > 0:
+                return arquivo
+            raise RuntimeError("áudio vazio")
+        except Exception as exc:
+            _VOZ_ONLINE_FALHOU_EM = time.time()
+            logger.warning("Voz online indisponível (%s); usando a voz do Windows.", str(exc)[:120])
+            _remover_arquivo(arquivo)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as arquivo_temporario:
+        arquivo = arquivo_temporario.name
+    try:
+        _gerar_audio_windows(texto, arquivo)
+    except Exception:
+        _remover_arquivo(arquivo)
+        raise
+    return arquivo
+
+
+def _remover_arquivo(caminho):
+    try:
+        if caminho and os.path.exists(caminho):
+            os.remove(caminho)
+    except OSError as exc:
+        logger.debug("Não foi possível remover o áudio temporário: %s", exc)
+
+
 def _reproduzir_bloco(bloco: str):
     """Reproduz um único bloco de fala em áudio, sem bloquear a continuação da resposta."""
     arquivo_audio = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as arquivo_temporario:
-            arquivo_audio = arquivo_temporario.name
-
-        asyncio.run(gerar_audio(bloco, arquivo_audio))
+        arquivo_audio = _gerar_arquivo_fala(bloco)
         pygame.mixer.music.load(arquivo_audio)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
@@ -53,16 +116,12 @@ def _reproduzir_bloco(bloco: str):
     except Exception as exc:
         logger.error("Erro na fala: %s", exc)
     finally:
-        if arquivo_audio:
-            try:
-                if os.path.exists(arquivo_audio):
-                    os.remove(arquivo_audio)
-            except OSError as exc:
-                logger.debug("Não foi possível remover o áudio temporário: %s", exc)
+        _remover_arquivo(arquivo_audio)
 
 
 def _quebrar_texto_para_fala(texto: str, max_chars: int = 110) -> list[str]:
-    texto = re.sub(r"[^\wÀ-ÿ\s]", " ", texto or "", flags=re.UNICODE)
+    # Mantém a pontuação: ela dá as pausas da voz e separa as frases nos blocos.
+    texto = re.sub(r"[^\wÀ-ÿ\s.,!?;:%$-]", " ", texto or "", flags=re.UNICODE)
     texto = re.sub(r"\s+", " ", texto).strip()
     if not texto:
         return []

@@ -3,7 +3,7 @@ beautifulsoup4
 SpeechRecognition
 PyAudio
 pygame
-edge-tts
+edge-tts>=7.3.0
 chromadb
 pypdf
 openai

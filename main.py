@@ -19,6 +19,7 @@ from config import (
     JANELA_CONTINUACAO_SEGUNDOS,
 )
 from llm_clients import llm_clients
+from agentes import PainelCompartilhado, criar_orquestrador
 import memory
 from memory import (
     indexar_pasta_documentos,
@@ -944,6 +945,13 @@ def inicializar_biblioteca_automatica():
         return False
 
 
+def anunciar_tarefa_concluida(pedido: str, tarefa):
+    """Chamado pelo orquestrador (em segundo plano) quando os agentes terminam uma tarefa."""
+    falar_e_registrar(pedido, tarefa.mensagem_final)
+    duracao = (tarefa.concluida_em or time.time()) - tarefa.criada_em
+    analisador.registrar_interacao(pedido, ["orquestrador", *tarefa.plano], duracao, tarefa.status == "concluída")
+
+
 def publicar_status_painel(dados_compartilhados, intervalo=2.0):
     """Mantém o painel informado sobre a indexação e o modo, e aplica o modo escolhido nas abas.
 
@@ -974,6 +982,8 @@ def main(evento_carregamento=None):
     gerenciador_audio = multiprocessing.Manager()
     configuracao_audio = gerenciador_audio.dict({"microfone": None, "saida": ""})
     threading.Thread(target=publicar_status_painel, args=(configuracao_audio,), daemon=True).start()
+    # O andamento das tarefas dos agentes vai para o mesmo dicionário que o painel lê.
+    orquestrador = criar_orquestrador(publicar=PainelCompartilhado(configuracao_audio))
 
     try:
         processo_interface = multiprocessing.Process(
@@ -1066,6 +1076,18 @@ def main(evento_carregamento=None):
             continue
 
         comando_normalizado = agente_aprendizagem.normalizar(comando)
+
+        # Agentes antes das ferramentas: as ferramentas reagem a palavras soltas ("hoje", "agenda"),
+        # e "faça um PDF com as notícias de hoje" viraria a resposta da data.
+        resposta_tarefas = orquestrador.responder_gerenciamento(comando)
+        if resposta_tarefas:
+            falar_e_registrar(comando, resposta_tarefas)
+            analisador.registrar_interacao(comando, ["orquestrador"], 0.0, True)
+            continue
+        tarefa = orquestrador.enviar(comando, ao_concluir=lambda t, pedido=comando: anunciar_tarefa_concluida(pedido, t))
+        if tarefa:
+            falar_e_registrar(comando, orquestrador.mensagem_inicio(tarefa))
+            continue
 
         ferramenta_executada, resposta_ferramenta = tentar_executar_ferramenta(comando)
         if ferramenta_executada:

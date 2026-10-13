@@ -8,6 +8,7 @@ from datetime import datetime
 from tkinter import filedialog, ttk
 
 import memory
+from agentes import PainelCompartilhado, criar_orquestrador
 from config import (
     ARQUIVO_MEMORIA_USUARIO,
     AUTO_CARREGAR_FONTES,
@@ -82,12 +83,24 @@ FONTE_MONO_PEQUENA = ("Consolas", 9)
 PLACEHOLDER_ENTRADA = "Digite um comando ou pergunta...  (Enter envia · Shift+Enter quebra linha)"
 
 ATALHOS_RAPIDOS = (
+    ("Criar apresentação", "Crie uma apresentação com 8 slides sobre "),
+    ("Criar documento Word", "Crie um documento em Word sobre "),
+    ("Criar PDF com pesquisa", "Pesquise e faça um PDF sobre "),
     ("Resumir minha memória", "Resuma o que você sabe sobre mim."),
     ("Buscar nos documentos", "O que meus documentos dizem sobre "),
     ("Explicação técnica", "Explique de forma técnica e passo a passo: "),
     ("Aula de inglês", "Quero uma aula de inglês."),
-    ("Encerrar aula", "Encerrar aula."),
 )
+
+CORES_STATUS_TAREFA = {
+    "na fila": COR_SUAVE,
+    "executando": COR_AMBAR,
+    "revisando": COR_AMBAR,
+    "relatando": COR_AMBAR,
+    "concluída": COR_VERDE,
+    "falhou": COR_VERMELHO,
+    "cancelada": COR_SUAVE,
+}
 
 
 class JanelaCarregamento(tk.Tk):
@@ -216,6 +229,10 @@ class JanelaComandos(tk.Tk):
         self._inicio_processamento = 0.0
         self._total_respostas = 0
         self._soma_tempos = 0.0
+        # Tarefas dos agentes: as do painel e as pedidas por voz aparecem juntas no quadro "Agentes",
+        # porque os dois processos publicam no mesmo dicionário compartilhado.
+        self._dados_tarefas = audio_config if audio_config is not None else {}
+        self.orquestrador = criar_orquestrador(publicar=PainelCompartilhado(self._dados_tarefas))
 
         self.style = ttk.Style(self)
         try:
@@ -230,6 +247,66 @@ class JanelaComandos(tk.Tk):
         self.atualizar_recursos()
         self.atualizar_painel_dados()
         self.atualizar_agenda_e_clima()
+        self.atualizar_tarefas()
+
+    # ------------------------------------------------------------------ agentes
+    def atualizar_tarefas(self):
+        """Redesenha o quadro "Agentes" quando alguma tarefa muda de etapa."""
+        try:
+            tarefas = PainelCompartilhado.listar(self._dados_tarefas)[:4]
+            assinatura = [(t["id"], t["status"], t["etapa"], t.get("nota")) for t in tarefas]
+            if assinatura != self._assinatura_tarefas:
+                self._assinatura_tarefas = assinatura
+                self._desenhar_tarefas(tarefas)
+            self.after(1500, self.atualizar_tarefas)
+        except tk.TclError:
+            pass  # janela fechada
+
+    def _desenhar_tarefas(self, tarefas):
+        for filho in self.lista_tarefas.winfo_children():
+            filho.destroy()
+        ativas = sum(1 for t in tarefas if t["status"] in ("na fila", "executando", "revisando", "relatando"))
+        self.painel_agentes.definir_destaque(f"· {ativas} em andamento" if ativas else "· livres",
+                                             COR_AMBAR if ativas else COR_VERDE)
+        if not tarefas:
+            tk.Label(self.lista_tarefas, text="Peça um documento, PDF, Word ou\napresentação e acompanhe aqui.",
+                     font=("Consolas", 8), fg=COR_SUAVE, bg=COR_PAINEL, justify="left").pack(anchor="w")
+            return
+        for tarefa in tarefas:
+            cor = CORES_STATUS_TAREFA.get(tarefa["status"], COR_SUAVE)
+            linha = tk.Frame(self.lista_tarefas, bg=COR_PAINEL, cursor="hand2")
+            linha.pack(fill="x", pady=(0, 4))
+            topo = tk.Frame(linha, bg=COR_PAINEL)
+            topo.pack(fill="x")
+            tk.Label(topo, text="●", font=("Segoe UI", 8), fg=cor, bg=COR_PAINEL).pack(side="left")
+            pedido = tarefa["pedido"] if len(tarefa["pedido"]) <= 40 else tarefa["pedido"][:39] + "…"
+            tk.Label(topo, text=pedido, font=("Consolas", 8), fg=COR_TEXTO, bg=COR_PAINEL, anchor="w").pack(side="left", padx=(4, 0))
+            if tarefa["etapa"]:
+                detalhe = f"{tarefa['status']} · {tarefa['etapa']}"
+            else:
+                partes = [tarefa["status"]]
+                if tarefa.get("nota") is not None:
+                    partes.append(f"nota {tarefa['nota']}/10")
+                if tarefa.get("arquivos"):
+                    partes.append(", ".join(os.path.splitext(a)[1].lstrip(".").upper() for a in tarefa["arquivos"]))
+                detalhe = " · ".join(partes)
+            tk.Label(linha, text=f"   {detalhe}", font=("Consolas", 8), fg=cor, bg=COR_PAINEL, anchor="w").pack(fill="x")
+            if tarefa.get("pasta"):
+                for widget in (linha, *linha.winfo_children(), *topo.winfo_children()):
+                    widget.bind("<Button-1>", lambda e, pasta=tarefa["pasta"]: self._abrir_pasta_tarefa(pasta))
+
+    def _abrir_pasta_tarefa(self, pasta):
+        if os.path.isdir(pasta):
+            os.startfile(pasta)
+        else:
+            self.definir_status("A pasta desta tarefa ainda não foi criada", erro=True)
+
+    def _tarefa_concluida(self, tarefa):
+        self.adicionar_mensagem("Beatriz", tarefa.mensagem_final, tag="status" if tarefa.status == "falhou" else "beatriz")
+        if tarefa.relatorio:
+            self.adicionar_mensagem("Beatriz", f"Pasta da tarefa: {tarefa.pasta}", tag="status")
+        self._ultima_resposta = tarefa.mensagem_final
+        falar_async(tarefa.mensagem_final)
 
     # ------------------------------------------------------------------ estilo
     def configure_padrao(self):
@@ -496,7 +573,7 @@ class JanelaComandos(tk.Tk):
         self.biblioteca_var = tk.StringVar(value="--")
         tk.Label(self.painel_biblioteca.corpo, textvariable=self.biblioteca_var, font=("Consolas", 9), fg=COR_TEXTO,
                  bg=COR_PAINEL, justify="left", anchor="w").pack(fill="x")
-        self.rede_biblioteca = RedeBiblioteca(self.painel_biblioteca.corpo, altura=128)
+        self.rede_biblioteca = RedeBiblioteca(self.painel_biblioteca.corpo, altura=104)
         self.rede_biblioteca.pack(fill="x", pady=(4, 0))
 
         self.painel_memoria = PainelHUD(coluna, "Memória do usuário")
@@ -504,6 +581,12 @@ class JanelaComandos(tk.Tk):
         self.memoria_var = tk.StringVar(value="--")
         tk.Label(self.painel_memoria.corpo, textvariable=self.memoria_var, font=("Consolas", 9), fg=COR_TEXTO,
                  bg=COR_PAINEL, justify="left", anchor="w", wraplength=286).pack(fill="x")
+
+        self.painel_agentes = PainelHUD(coluna, "Agentes")
+        self.painel_agentes.pack(fill="x", pady=(8, 0))
+        self.lista_tarefas = tk.Frame(self.painel_agentes.corpo, bg=COR_PAINEL)
+        self.lista_tarefas.pack(fill="x")
+        self._assinatura_tarefas = None
 
         atalhos = PainelHUD(coluna, "Atalhos")
         atalhos.pack(fill="both", expand=True, pady=(8, 0))
@@ -1074,6 +1157,20 @@ class JanelaComandos(tk.Tk):
     def processar_texto(self, comando):
         comando = comando.strip()
         if not comando:
+            return
+
+        # Pedidos de entrega (documento, PDF, Word, apresentação) vão para os agentes em segundo plano;
+        # o chat fica livre na hora.
+        gerenciamento = self.orquestrador.responder_gerenciamento(comando)
+        if gerenciamento:
+            self.adicionar_mensagem("Beatriz", gerenciamento, tag="beatriz")
+            return
+        tarefa = self.orquestrador.enviar(comando, ao_concluir=lambda t: self.after(0, lambda: self._tarefa_concluida(t)))
+        if tarefa:
+            mensagem = self.orquestrador.mensagem_inicio(tarefa)
+            self.adicionar_mensagem("Beatriz", mensagem, tag="beatriz")
+            falar_async(mensagem)
+            self.definir_status("Tarefa enviada aos agentes")
             return
 
         self._processando = True

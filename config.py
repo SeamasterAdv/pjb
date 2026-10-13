@@ -58,6 +58,15 @@ PALAVRAS_ATIVACAO = [
 JANELA_ATIVACAO_SEGUNDOS = float(os.getenv("JANELA_ATIVACAO_SEGUNDOS", "8"))
 # Depois de uma resposta (contado a partir do fim estimado da fala), aceita perguntas de seguimento sem o nome.
 JANELA_CONTINUACAO_SEGUNDOS = float(os.getenv("JANELA_CONTINUACAO_SEGUNDOS", "15"))
+
+# Agentes (documentos, apresentações e pesquisas completas, com crítico e relator).
+# Os arquivos gerados ficam fora de documentos_assistente para não entrarem na biblioteca.
+PASTA_DOCUMENTOS_GERADOS = os.getenv("PASTA_DOCUMENTOS_GERADOS", os.path.join(NOTELOOKLM_PATH, "documentos_gerados"))
+# Modelo do Ollama usado pelos agentes (padrão: o mesmo da conversa, para não carregar outro na memória).
+MODELO_AGENTES = os.getenv("MODELO_AGENTES", OLLAMA_MODEL)
+# Quantas vezes o crítico pode devolver o trabalho para correção.
+MAX_REVISOES_AGENTES = int(os.getenv("MAX_REVISOES_AGENTES", "1"))
+ABRIR_DOCUMENTOS_GERADOS = os.getenv("ABRIR_DOCUMENTOS_GERADOS", "true").strip().lower() in {"1", "true", "yes", "on"}
 # Intervalos (em segundos)
 INTERVALO_REINDEXACAO = 3600  # 1 hora
 INTERVALO_CACHE_MEMORIA = 300  # 5 minutos

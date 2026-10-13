@@ -17,3 +17,6 @@ obsidian/
 historico_conversas.jsonl
 beatriz_analise.json
 auditoria_memoria.jsonl
+
+# Documentos e relatórios produzidos pelos agentes
+documentos_gerados/

@@ -67,6 +67,16 @@ Todas as respostas passam por `falar_e_registrar` (TTS + `memory.registrar_conve
 ### Configuração (`config.py`)
 Lê o `.env` com `python-dotenv`. Define as chaves de API e os caminhos de tokens do Google (Drive, Calendar, Gmail), a personalidade da Beatriz (`PERSONALIDADE_BEATRIZ`, usada como prompt de sistema em `llm_clients.chat_beatriz`), os modos e as pastas. **Ao ser importado, cria as pastas da vault e de documentos.** `AUTO_CARREGAR_FONTES` (padrão `true`) liga ou desliga a indexação automática.
 
+### Agentes (`agentes/`)
+Pedidos de entrega ("crie uma apresentação…", "faz um PDF sobre…", "pesquisa completa sobre…") são reconhecidos por `agentes.planejar` (regras, sem LLM) **antes** de `tentar_executar_ferramenta`, tanto na voz (`main.py`) quanto no chat do painel (`interface_texto.py`). O `Orquestrador` roda cada tarefa em segundo plano (fila de 1 trabalhador) com o fluxo:
+`[biblioteca] → [pesquisa] → documento | apresentacao → critico (→ 1 correção) → relator`.
+- `especialistas.py`: um agente por função; todos usam o mesmo modelo do Ollama (`MODELO_AGENTES`) com instruções próprias e respostas em JSON (`Agente.pedir_json`).
+- `critico.py`: verificações objetivas nos arquivos (formato, nº de slides, profundidade) + nota do LLM só sobre o conteúdo; aprova se nada falhar e nota ≥ 7.
+- `relator.py`: grava `relatorio.md` na pasta da tarefa; a pesquisa grava `fontes.md`.
+- `geradores.py`: Word (python-docx), PDF (PyMuPDF `Story`) e PowerPoint (python-pptx), sem LLM.
+- Arquivos em `documentos_gerados/<data>_<tema>/` (fora da biblioteca, no `.gitignore`). O andamento vai para o `Manager().dict` compartilhado com chaves `tarefa:<id>` (`PainelCompartilhado`) e aparece no quadro "Agentes" do HUD.
+- Testes em `test_agentes.py` usam um LLM falso; não precisam do Ollama.
+
 ### Outros módulos
 - `voice.py`: `falar`, `falar_async`, `ouvir`, seleção de microfone e saída de áudio. Se o áudio não estiver disponível, degrada sem quebrar.
 - `visao.py`: detecção de gestos da mão com MediaPipe/OpenCV (`GestosMaoDetector`, `GestorVisao`).

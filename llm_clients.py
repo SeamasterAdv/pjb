@@ -116,7 +116,8 @@ class LLMClients:
     def is_ollama_available(self):
         return self.ollama_available and self._check_ollama()
 
-    def chat(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None):
+    def chat(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None, formato=None):
+        """Conversa com o Ollama. `formato="json"` força uma resposta em JSON válido."""
         if not self.is_ollama_available():
             raise RuntimeError("Ollama não está disponível. Inicie o serviço local.")
 
@@ -130,6 +131,8 @@ class LLMClients:
         argumentos = {"model": model or self.model, "messages": messages}
         if opcoes:
             argumentos["options"] = opcoes
+        if formato:
+            argumentos["format"] = formato
         response = self.ollama_client.chat(**argumentos)
         return response["message"]["content"].strip()
 

@@ -6,13 +6,16 @@ import urllib.parse
 import logging
 import re
 import tempfile
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone as datetime_timezone
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import pywhatkit
 
 logger = logging.getLogger(__name__)
+# Os feeds RSS são lidos com o parser HTML (não há lxml); funciona, só gera um aviso.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 _PLAYWRIGHT = None
 _BROWSER = None
@@ -349,7 +352,7 @@ def _resultados_duckduckgo(consulta: str) -> list[tuple[str, str, str]]:
     return resultados
 
 
-def _resultados_google_noticias(consulta: str) -> list[tuple[str, str, str]]:
+def buscar_manchetes(consulta: str) -> list[tuple[str, str, str]]:
     url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(consulta) + "&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     resposta = requests.get(url, headers=_HEADERS_BUSCA, timeout=10)
     resposta.raise_for_status()
@@ -357,7 +360,7 @@ def _resultados_google_noticias(consulta: str) -> list[tuple[str, str, str]]:
     resultados = []
     for item in soup.find_all("item")[:8]:
         titulo = item.title.get_text(" ", strip=True) if item.title else ""
-        data = item.pubDate.get_text(" ", strip=True) if item.pubDate else ""
+        data = item.find("pubdate").get_text(" ", strip=True) if item.find("pubdate") else ""  # o parser HTML deixa as tags em minúsculas
         if titulo:
             resultados.append((titulo, "", f"Notícia publicada em {data}"))
     return resultados
@@ -368,6 +371,8 @@ _PALAVRAS_VAZIAS = {
     "para", "pelo", "pela", "com", "sem", "sobre", "entre", "uma", "umas", "uns", "dos", "das",
     "que", "hoje", "agora", "atual", "último", "última", "ultimo", "ultima", "ganhou", "está", "esta",
     "foi", "são", "ser", "tem", "isso", "esse", "essa", "mais", "melhor", "pesquise", "pesquisa",
+    # Palavras de atualidade casam com a página inicial de qualquer portal; não servem de filtro.
+    "notícias", "noticias", "notícia", "noticia", "últimas", "ultimas", "recentes", "principais",
 }
 
 
@@ -398,7 +403,7 @@ def pesquisar_web_autonoma(consulta: str, limite: int = 4) -> str:
     """
     try:
         brutos = []
-        for buscador in (_resultados_bing, _resultados_duckduckgo, _resultados_google_noticias):
+        for buscador in (_resultados_bing, _resultados_duckduckgo, buscar_manchetes):
             try:
                 brutos = _filtrar_relevantes(consulta, buscador(consulta))
             except Exception as exc:
@@ -465,7 +470,7 @@ def obter_principais_noticias(temas=None, limite_por_tema=3) -> str:
             for item in soup.find_all("item")[:limite_por_tema]:
                 titulo = item.title.get_text(" ", strip=True) if item.title else ""
                 link = item.link.get_text(" ", strip=True) if item.link else ""
-                data = item.pubDate.get_text(" ", strip=True) if item.pubDate else ""
+                data = item.find("pubdate").get_text(" ", strip=True) if item.find("pubdate") else ""  # o parser HTML deixa as tags em minúsculas
                 if titulo:
                     noticias.append(f"[{tema}] {titulo} ({data})\n{link}")
         except Exception as exc:

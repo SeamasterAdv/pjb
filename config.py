@@ -46,6 +46,18 @@ MODO_CONVERSA_PADRAO = "padrão"
 # Se quiser desativar, rode com: $env:AUTO_CARREGAR_FONTES='false'
 AUTO_CARREGAR_FONTES = os.getenv("AUTO_CARREGAR_FONTES", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+# Palavra de ativação: pela voz, a Beatriz só reage quando é chamada pelo nome.
+# Comandos digitados no painel não exigem o nome. Para desativar: EXIGIR_PALAVRA_ATIVACAO=false
+EXIGIR_PALAVRA_ATIVACAO = os.getenv("EXIGIR_PALAVRA_ATIVACAO", "true").strip().lower() in {"1", "true", "yes", "on"}
+PALAVRAS_ATIVACAO = [
+    palavra.strip().lower()
+    for palavra in os.getenv("PALAVRAS_ATIVACAO", "beatriz,beatris,biatriz,biatris,beatrix,beatrice").split(",")
+    if palavra.strip()
+]
+# Depois de ouvir só o nome, a próxima frase é aceita sem repeti-lo por este tempo.
+JANELA_ATIVACAO_SEGUNDOS = float(os.getenv("JANELA_ATIVACAO_SEGUNDOS", "8"))
+# Depois de uma resposta (contado a partir do fim estimado da fala), aceita perguntas de seguimento sem o nome.
+JANELA_CONTINUACAO_SEGUNDOS = float(os.getenv("JANELA_CONTINUACAO_SEGUNDOS", "15"))
 # Intervalos (em segundos)
 INTERVALO_REINDEXACAO = 3600  # 1 hora
 INTERVALO_CACHE_MEMORIA = 300  # 5 minutos

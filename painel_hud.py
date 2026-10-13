@@ -141,8 +141,12 @@ class NucleoHUD(tk.Canvas):
         self.after(40, self._animar)
 
     def definir_legenda(self, chave, rotulo, valor):
+        nova = chave not in self.legendas
         self.legendas[chave] = (rotulo, str(valor))
-        self.itemconfigure(f"valor_{chave}", text=str(valor))
+        if nova:
+            self._montar()  # uma legenda nova precisa de posição no desenho
+        else:
+            self.itemconfigure(f"valor_{chave}", text=str(valor))
 
     def _montar(self):
         self.delete("all")

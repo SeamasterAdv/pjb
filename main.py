@@ -5,9 +5,19 @@ import re
 import time
 import multiprocessing
 import threading
+import difflib
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
-from config import MODO_CONVERSA_PADRAO, AUTO_CARREGAR_FONTES
+from config import (
+    MODO_CONVERSA_PADRAO,
+    AUTO_CARREGAR_FONTES,
+    EXIGIR_PALAVRA_ATIVACAO,
+    PALAVRAS_ATIVACAO,
+    JANELA_ATIVACAO_SEGUNDOS,
+    JANELA_CONTINUACAO_SEGUNDOS,
+)
 from llm_clients import llm_clients
 import memory
 from memory import (
@@ -310,6 +320,7 @@ def falar_e_registrar(pergunta: str, resposta: str):
     registrar_conversa(pergunta, resposta_limpa)
     llm_clients.registrar_turno(pergunta, resposta_limpa)
     falar_async(resposta_limpa)
+    abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), resposta_limpa)
 
 
 def resumir_noticias(noticias: str) -> str:
@@ -711,7 +722,7 @@ def diagnosticar_hardware():
 def obter_comando_usuario():
     """Obtém entrada em voz, ou em texto como fallback se o microfone não estiver disponível."""
     if (MICROFONE_EVENTO is None or MICROFONE_EVENTO.is_set()) and microfone_ativo() and microfone_disponivel():
-        return ouvir()
+        return filtrar_fala_por_ativacao(ouvir())
 
     try:
         retorno = input("Digite seu comando (ou 'sair'): ").strip()
@@ -722,12 +733,139 @@ def obter_comando_usuario():
         return ""
 
 
+def filtrar_fala_por_ativacao(texto: str) -> str:
+    """Só repassa a fala que chamou a Beatriz (ou veio dentro da janela de conversa)."""
+    comando = extrair_comando_ativado(texto, time.time(), ESTADO_ATIVACAO)
+    if comando is None:
+        return ""
+    if comando == "":
+        print(f"\nBeatriz: {RESPOSTA_SO_NOME}")
+        falar_async(RESPOSTA_SO_NOME)
+        return ""
+    return comando
+
+
 def comando_solicita_encerramento(comando: str, palavras_desligar: list[str]) -> bool:
     """Reconhece desligamento sem confundir trechos de palavras maiores."""
     texto = re.sub(r"[^\wÀ-ÿ\s]", " ", (comando or "").lower(), flags=re.UNICODE)
     texto = re.sub(r"\s+", " ", texto).strip()
     comandos_exatos = {re.sub(r"\s+", " ", palavra.lower()).strip() for palavra in palavras_desligar}
     return texto in comandos_exatos
+
+
+# ------------------------------------------------------------------ palavra de ativação
+RESPOSTA_SO_NOME = "Sim? Pode falar."
+INTERJEICOES_CHAMADA = {"ei", "ô", "o", "ok", "okay", "hey", "alô", "e aí", "ah"}
+CARACTERES_FALA_POR_SEGUNDO = 14.0  # estimativa da voz a +15%, para a janela começar depois da fala
+
+
+@dataclass
+class EstadoAtivacao:
+    """Até quando a próxima frase falada é aceita sem o nome (relógio de time.time())."""
+    janela_ate: float = 0.0
+
+    def janela_aberta(self, agora: float) -> bool:
+        return agora < self.janela_ate
+
+
+ESTADO_ATIVACAO = EstadoAtivacao()
+
+
+def _normalizar_token(token: str) -> str:
+    sem_acento = unicodedata.normalize("NFKD", token.lower())
+    sem_acento = "".join(c for c in sem_acento if not unicodedata.combining(c))
+    return re.sub(r"[^\w]", "", sem_acento)
+
+
+INTERJEICOES_CHAMADA_NORMALIZADAS = {_normalizar_token(i) for i in INTERJEICOES_CHAMADA}
+
+
+def _eh_palavra_ativacao(token: str, palavras=None) -> bool:
+    palavras = [_normalizar_token(p) for p in (palavras or PALAVRAS_ATIVACAO)]
+    normal = _normalizar_token(token)
+    if not normal:
+        return False
+    if normal in palavras:
+        return True
+    # Tolera pequenas variações da transcrição ("beatrys", "beatri").
+    return len(normal) >= 6 and bool(difflib.get_close_matches(normal, palavras, n=1, cutoff=0.85))
+
+
+def _localizar_nome(tokens: list[str]) -> tuple[int, int] | None:
+    """Devolve (início, fim) do nome entre os tokens: nas 3 primeiras palavras ou na última.
+
+    No meio da frase o nome costuma ser citação ("falei com a Beatriz ontem"), não chamado.
+    """
+    candidatos = list(range(min(3, len(tokens))))
+    if tokens and len(tokens) - 1 not in candidatos:
+        candidatos.append(len(tokens) - 1)
+    for i in candidatos:
+        if _eh_palavra_ativacao(tokens[i]):
+            return i, i + 1
+        # A transcrição às vezes separa o nome em dois ("bia triz").
+        if i + 1 < len(tokens) and _eh_palavra_ativacao(tokens[i] + tokens[i + 1]):
+            return i, i + 2
+    return None
+
+
+def _limpar_bordas(texto: str) -> str:
+    return re.sub(r"^[\s,;:.!?-]+|[\s,;:-]+$", "", texto)
+
+
+def extrair_comando_ativado(texto: str, agora: float, estado: EstadoAtivacao,
+                            exigir: bool | None = None) -> str | None:
+    """Filtra a fala captada pelo microfone pela palavra de ativação.
+
+    Retorna None para ignorar a frase (conversa de fundo), "" quando ela só chamou
+    o nome (abre uma janela curta para o comando) ou o comando sem o nome.
+    """
+    texto = (texto or "").strip()
+    if not texto:
+        return None
+    if exigir is None:
+        exigir = EXIGIR_PALAVRA_ATIVACAO
+    if not exigir:
+        return texto
+
+    tokens = texto.split()
+    posicao = _localizar_nome(tokens)
+    if posicao is None:
+        if estado.janela_aberta(agora):
+            estado.janela_ate = 0.0  # a janela vale para uma frase; a resposta abre outra
+            return texto
+        logger.debug("Fala ignorada (sem a palavra de ativação): %s", texto)
+        return None
+
+    inicio, fim = posicao
+    antes = _limpar_bordas(" ".join(tokens[:inicio]))
+    depois = _limpar_bordas(" ".join(tokens[fim:]))
+    if _normalizar_token(antes) in INTERJEICOES_CHAMADA_NORMALIZADAS:
+        antes = ""  # "ei, Beatriz" é só a chamada
+    # "Beatriz, que horas são?", "que horas são, Beatriz?", "bom dia Beatriz".
+    comando = " ".join(parte for parte in (antes, depois) if parte)
+
+    if not comando:
+        estado.janela_ate = agora + JANELA_ATIVACAO_SEGUNDOS
+        return ""
+    estado.janela_ate = 0.0
+    return comando
+
+
+def abrir_janela_continuacao(estado: EstadoAtivacao, agora: float, resposta: str = "") -> None:
+    """Depois de responder, aceita perguntas de seguimento sem o nome por um tempo curto.
+
+    A fala é assíncrona, então a janela conta a partir do fim estimado da resposta falada.
+    """
+    duracao_fala = len(resposta or "") / CARACTERES_FALA_POR_SEGUNDO
+    estado.janela_ate = max(estado.janela_ate, agora + duracao_fala + JANELA_CONTINUACAO_SEGUNDOS)
+
+
+def estado_escuta(agora: float | None = None) -> str:
+    """Texto curto para o painel: se a voz precisa do nome ou já está escutando."""
+    if not EXIGIR_PALAVRA_ATIVACAO:
+        return "escutando"
+    agora = time.time() if agora is None else agora
+    return "escutando" if ESTADO_ATIVACAO.janela_aberta(agora) else "aguardando o nome"
 
 
 DIAS_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
@@ -819,6 +957,7 @@ def publicar_status_painel(dados_compartilhados, intervalo=2.0):
             dados_compartilhados["painel"] = {
                 "indexacao": status_indexacao(),
                 "modo": memory.MODO_CONVERSA_ATUAL,
+                "escuta": estado_escuta(),
             }
         except (EOFError, BrokenPipeError, ConnectionError):
             return  # o gerenciador foi encerrado junto com o programa

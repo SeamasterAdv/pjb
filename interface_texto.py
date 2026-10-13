@@ -720,6 +720,10 @@ class JanelaComandos(tk.Tk):
         if modo:
             self._marcar_aba_modo(modo)
             self.nucleo.definir_legenda("modo", "Modo", modo)
+        # Pela voz ela só reage ao nome; depois de chamada, escuta a próxima frase sem ele.
+        escuta = painel.get("escuta")
+        if escuta:
+            self.nucleo.definir_legenda("escuta", "Voz", escuta)
 
     def atualizar_agenda_e_clima(self):
         def coletar():

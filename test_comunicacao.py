@@ -274,3 +274,68 @@ def test_historico_e_memoria_usam_indice_incremental(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "ARQUIVO_MEMORIA_USUARIO", str(fatos))
     resposta = memory.buscar_memoria("quando é meu aniversário?")
     assert "30 de agosto" in resposta and "café" not in resposta
+
+
+# ------------------------------------------------------------------ palavra de ativação
+def test_fala_sem_o_nome_e_ignorada():
+    estado = main.EstadoAtivacao()
+    assert main.extrair_comando_ativado("esse óculos aqui tu comprou quando foi com Bia", 100.0, estado, exigir=True) is None
+    assert main.extrair_comando_ativado("não tá escutando ai que saco", 100.0, estado, exigir=True) is None
+    # Nome no meio da frase é citação, não chamado.
+    assert main.extrair_comando_ativado("ontem eu falei com a Beatriz sobre o trabalho", 100.0, estado, exigir=True) is None
+
+
+def test_nome_e_removido_do_comando_com_variacoes_de_transcricao():
+    estado = main.EstadoAtivacao()
+    assert main.extrair_comando_ativado("Beatriz, que horas são?", 100.0, estado, exigir=True) == "que horas são?"
+    assert main.extrair_comando_ativado("beatris que horas são", 100.0, estado, exigir=True) == "que horas são"
+    assert main.extrair_comando_ativado("Biatriz abre o YouTube", 100.0, estado, exigir=True) == "abre o YouTube"
+    assert main.extrair_comando_ativado("ei Beatrix, qual a previsão do tempo", 100.0, estado, exigir=True) == "qual a previsão do tempo"
+    assert main.extrair_comando_ativado("que horas são, Beatriz?", 100.0, estado, exigir=True) == "que horas são"
+    assert main.extrair_comando_ativado("bom dia Beatriz", 100.0, estado, exigir=True) == "bom dia"
+
+
+def test_so_o_nome_abre_janela_curta_para_o_comando(monkeypatch):
+    monkeypatch.setattr(main, "JANELA_ATIVACAO_SEGUNDOS", 8)
+    estado = main.EstadoAtivacao()
+    assert main.extrair_comando_ativado("Beatriz", 100.0, estado, exigir=True) == ""
+    assert main.extrair_comando_ativado("que horas são", 105.0, estado, exigir=True) == "que horas são"
+    # A janela vale para uma frase só.
+    assert main.extrair_comando_ativado("e o clima", 106.0, estado, exigir=True) is None
+
+    assert main.extrair_comando_ativado("ô Beatriz!", 200.0, estado, exigir=True) == ""
+    assert main.extrair_comando_ativado("que horas são", 209.0, estado, exigir=True) is None
+
+
+def test_depois_da_resposta_aceita_seguimento_sem_o_nome(monkeypatch):
+    monkeypatch.setattr(main, "JANELA_CONTINUACAO_SEGUNDOS", 15)
+    estado = main.EstadoAtivacao()
+    assert main.extrair_comando_ativado("Beatriz, quem descobriu o Brasil?", 100.0, estado, exigir=True)
+    main.abrir_janela_continuacao(estado, 101.0)
+    assert main.extrair_comando_ativado("e em que ano foi isso?", 110.0, estado, exigir=True) == "e em que ano foi isso?"
+
+    main.abrir_janela_continuacao(estado, 200.0)
+    assert main.extrair_comando_ativado("e em que ano foi isso?", 216.0, estado, exigir=True) is None
+
+    # A janela conta a partir do fim estimado da fala da resposta.
+    resposta_longa = "x" * int(main.CARACTERES_FALA_POR_SEGUNDO * 20)
+    main.abrir_janela_continuacao(estado, 300.0, resposta_longa)
+    assert main.extrair_comando_ativado("e depois?", 330.0, estado, exigir=True) == "e depois?"
+
+
+def test_palavra_de_ativacao_desligada_aceita_tudo():
+    estado = main.EstadoAtivacao()
+    assert main.extrair_comando_ativado("que horas são", 100.0, estado, exigir=False) == "que horas são"
+
+
+def test_fala_ignorada_nao_chega_ao_laco_principal(monkeypatch):
+    falas = []
+    monkeypatch.setattr(main, "ESTADO_ATIVACAO", main.EstadoAtivacao())
+    monkeypatch.setattr(main, "EXIGIR_PALAVRA_ATIVACAO", True)
+    monkeypatch.setattr(main, "falar_async", falas.append)
+    assert main.filtrar_fala_por_ativacao("conversa de fundo qualquer") == ""
+    assert main.filtrar_fala_por_ativacao("Beatriz") == ""
+    assert falas == [main.RESPOSTA_SO_NOME]
+    assert main.estado_escuta() == "escutando"
+    assert main.filtrar_fala_por_ativacao("que horas são") == "que horas são"
+    assert main.estado_escuta() == "aguardando o nome"

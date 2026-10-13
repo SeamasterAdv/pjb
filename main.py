@@ -20,6 +20,7 @@ from config import (
 )
 from llm_clients import llm_clients
 from agentes import PainelCompartilhado, criar_orquestrador
+from llm_nuvem import responder_na_nuvem
 import memory
 from memory import (
     indexar_pasta_documentos,
@@ -53,6 +54,7 @@ from tools import (
     navegar_e_consultar_site,
     analisar_tela,
     pesquisar_web_autonoma,
+    buscar_manchetes,
     salvar_pesquisa_web,
     obter_principais_noticias,
     verificar_novos_emails,
@@ -233,6 +235,18 @@ def responder_com_pesquisa_web(pergunta: str, salvar: bool = False):
             logger.warning("Falha ao abrir navegador antes da pesquisa: %s", exc)
 
     conteudo = pesquisar_web_autonoma(consulta)
+    if consulta:
+        # Esta rota recebe perguntas sobre fatos atuais: as manchetes do Google Notícias trazem
+        # data e veículo, e muitas vezes o próprio dado ("X lidera as vendas em setembro").
+        try:
+            manchetes = buscar_manchetes(consulta)
+        except Exception as exc:
+            logger.warning("Manchetes indisponíveis: %s", exc)
+            manchetes = []
+        if manchetes:
+            linhas = "\n".join(f"- {titulo} ({data.replace('Notícia publicada em ', '')})" for titulo, _, data in manchetes)
+            bloco = f"[Fonte: Google Notícias, manchetes recentes]\n{linhas}"
+            conteudo = bloco if conteudo.startswith(("Nenhuma fonte", "Não foi possível")) else f"{bloco}\n\n{conteudo}"
     if conteudo.startswith(("Nenhuma fonte", "Não foi possível")):
         leitura_navegador = navegar_e_consultar_site(consulta, consulta) if consulta else ""
         if leitura_navegador and not leitura_navegador.startswith(("Não consegui", "Para ler sites", "Erro:")):
@@ -257,13 +271,15 @@ def responder_com_pesquisa_web(pergunta: str, salvar: bool = False):
         "Não diga que abriu navegador. Sem emojis, markdown ou listas com marcadores.\n\n"
         f"Pergunta: {pergunta}\n\nFontes da internet:\n{conteudo}\n\nResposta:"
     )
-    try:
-        resposta = llm_clients.chat_beatriz(
-            prompt,
-            contexto="Use as fontes fornecidas e preserve o tom natural da Beatriz.",
-        )
-    except Exception:
-        resposta = conteudo[:5000]
+    contexto = "Use as fontes fornecidas e preserve o tom natural da Beatriz."
+    # Claude, depois Gemini: só a pergunta e o conteúdo público das fontes vão para a nuvem
+    # (sem memória nem histórico). Se nenhuma puder responder, o Ollama responde.
+    resposta = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3})
+    if not resposta:
+        try:
+            resposta = llm_clients.chat_beatriz(prompt, contexto=contexto)
+        except Exception:
+            resposta = conteudo[:5000]
     if salvar:
         resposta += "\nO conteúdo completo foi salvo para consultas futuras."
     return resposta

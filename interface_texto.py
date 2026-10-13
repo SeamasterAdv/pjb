@@ -9,6 +9,7 @@ from tkinter import filedialog, ttk
 
 import memory
 from agentes import PainelCompartilhado, criar_orquestrador
+from llm_nuvem import claude, gemini
 from config import (
     ARQUIVO_MEMORIA_USUARIO,
     AUTO_CARREGAR_FONTES,
@@ -504,6 +505,8 @@ class JanelaComandos(tk.Tk):
         c = sistemas.corpo
         self.indicador_llm = self._criar_linha_sistema(c, "LLM", "verificando...", COR_AMBAR)
         self._criar_linha_sistema(c, "Visão", OLLAMA_VISION_MODEL, COR_CIANO)
+        self.indicador_claude = self._criar_linha_sistema(c, "Claude", "verificando...", COR_AMBAR)
+        self.indicador_gemini = self._criar_linha_sistema(c, "Gemini", "verificando...", COR_AMBAR)
         self.indicador_mic = self._criar_linha_sistema(c, "Microfone", "ativo", COR_VERDE)
         self.indicador_saida = self._criar_linha_sistema(c, "Saída", "padrão", COR_CIANO)
         self._criar_linha_sistema(c, "Voz", f"{VOZ_BEATRIZ.replace('pt-BR-', '').replace('Neural', '')} {VELOCIDADE_VOZ}", COR_CIANO)
@@ -766,6 +769,10 @@ class JanelaComandos(tk.Tk):
         self.after(5000, self.atualizar_painel_dados)
 
     def _aplicar_painel_dados(self, dados, painel):
+        cores_nuvem = {"ativo": COR_VERDE, "pausado": COR_AMBAR, "sem_chave": COR_SUAVE, "desligado": COR_SUAVE}
+        for indicador, provedor in ((self.indicador_claude, claude), (self.indicador_gemini, gemini)):
+            texto, estado = provedor.status()
+            self._definir_indicador(indicador, texto[:24], cores_nuvem.get(estado, COR_SUAVE))
         metricas = dados["metricas"]
         if metricas:
             self.nucleo.definir_legenda("interacoes", "Interações", metricas["interacoes"])

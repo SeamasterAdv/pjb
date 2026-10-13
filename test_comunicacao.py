@@ -75,6 +75,8 @@ def test_web_search_opens_browser_before_search(monkeypatch):
     monkeypatch.setattr(main, "abrir_navegador", fake_abrir_navegador)
     monkeypatch.setattr(main, "pesquisar_web_autonoma", fake_pesquisar_web_autonoma)
     monkeypatch.setattr(main.llm_clients, "chat_beatriz", fake_chat_beatriz)
+    monkeypatch.setattr(main, "responder_na_nuvem", lambda *a, **k: None)  # sem nuvem: responde o Ollama
+    monkeypatch.setattr(main, "buscar_manchetes", lambda consulta: [])
 
     resposta = main.responder_com_pesquisa_web("qual é a capital do Brasil?")
 

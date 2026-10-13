@@ -11,13 +11,20 @@ def criar_orquestrador(publicar=None) -> Orquestrador:
         MODELO_AGENTES,
         PASTA_DOCUMENTOS_GERADOS,
     )
+    from llm_clients import llm_clients
+    from llm_nuvem import LLMComReserva, provedores_nuvem
 
+    # Os agentes escrevem com o Claude (assinatura) ou o Gemini (gratuito), nessa ordem,
+    # e caem no Ollama se nenhum puder responder (limite, sem login, sem internet).
+    provedores = provedores_nuvem()
+    llm_nuvem = LLMComReserva(provedores, llm_clients) if provedores else None
     return Orquestrador(
         pasta_saida=PASTA_DOCUMENTOS_GERADOS,
         modelo=MODELO_AGENTES,
         publicar=publicar,
         max_revisoes=MAX_REVISOES_AGENTES,
         abrir_ao_concluir=ABRIR_DOCUMENTOS_GERADOS,
+        llm_nuvem=llm_nuvem,
     )
 
 

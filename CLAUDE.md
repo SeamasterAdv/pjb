@@ -77,6 +77,13 @@ Pedidos de entrega ("crie uma apresentação…", "faz um PDF sobre…", "pesqui
 - Arquivos em `documentos_gerados/<data>_<tema>/` (fora da biblioteca, no `.gitignore`). O andamento vai para o `Manager().dict` compartilhado com chaves `tarefa:<id>` (`PainelCompartilhado`) e aparece no quadro "Agentes" do HUD.
 - Testes em `test_agentes.py` usam um LLM falso; não precisam do Ollama.
 
+### IAs na nuvem sem custo extra (`llm_nuvem.py`)
+Ordem de tentativa (`ORDEM_IA_NUVEM`): **Claude → Gemini → Ollama**. Os clientes têm a mesma assinatura de `llm_clients.chat`; `LLMComReserva` percorre a lista e cai no Ollama em `NuvemIndisponivel`; `responder_na_nuvem` faz o mesmo para a pesquisa da conversa (`responder_com_pesquisa_web`: a Beatriz busca as fontes e a IA da nuvem redige). Os agentes de tarefas sem a etapa `biblioteca` usam a cadeia.
+- `ClienteClaudeCode`: Claude **pela assinatura** do usuário, chamando o Claude Code em modo sem interface (`claude -p --output-format json --tools ""`, pergunta pela entrada padrão, numa pasta temporária vazia). Remove `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` do ambiente para nunca usar a API paga. O executável vem do `.env` (`CLAUDE_CODE_CAMINHO`), do PATH ou da versão mais nova baixada pelo app desktop (`%APPDATA%\Claude\claude-code\<versão>\…\claude.exe`). Limite do plano pausa de 15 min até 3 h; sem login, 1 h.
+- `ClienteGemini`: SDK `google-genai`, plano gratuito, `GEMINI_MODELO` (padrão `gemini-3.8-flash`). Não inclui a pesquisa no Google (grounding) e responde 429/503 com frequência: 429 pausa de 1 min até 1 h, 5xx pausa 2 min.
+- **Privacidade:** para a nuvem vão só a pergunta e conteúdo público da web, nunca documentos, notas, memória ou histórico; tarefas com `biblioteca` rodam inteiras no Ollama.
+- O uso diário fica em `banco_memoria/uso_claude.json` e `uso_gemini.json` e aparece no quadro Sistemas do painel. Testes em `test_nuvem.py` usam clientes e executores falsos (não gastam o plano).
+
 ### Outros módulos
 - `voice.py`: `falar`, `falar_async`, `ouvir`, seleção de microfone e saída de áudio. Se o áudio não estiver disponível, degrada sem quebrar.
 - `visao.py`: detecção de gestos da mão com MediaPipe/OpenCV (`GestosMaoDetector`, `GestorVisao`).

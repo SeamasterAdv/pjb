@@ -67,6 +67,24 @@ MODELO_AGENTES = os.getenv("MODELO_AGENTES", OLLAMA_MODEL)
 # Quantas vezes o crítico pode devolver o trabalho para correção.
 MAX_REVISOES_AGENTES = int(os.getenv("MAX_REVISOES_AGENTES", "1"))
 ABRIR_DOCUMENTOS_GERADOS = os.getenv("ABRIR_DOCUMENTOS_GERADOS", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+# Gemini no plano gratuito (chave em GEMINI_API_KEY): escreve as respostas de pesquisa e
+# trabalha nos agentes. Só recebe a pergunta e conteúdo público da internet, nunca seus
+# documentos ou memória. No plano gratuito o Google pode usar esses dados para melhorar
+# os produtos dele. Para desligar: USAR_GEMINI=false
+USAR_GEMINI = os.getenv("USAR_GEMINI", "true").strip().lower() in {"1", "true", "yes", "on"}
+GEMINI_MODELO = os.getenv("GEMINI_MODELO", "gemini-3.8-flash")
+
+# Claude pela assinatura (Pro/Max), sem cobrança à parte: a Beatriz chama o Claude Code
+# (`claude -p`) que já vem com o app desktop, usando o login da sua conta. Gasta os limites
+# do plano. Mesma regra de privacidade do Gemini. Para desligar: USAR_CLAUDE=false
+USAR_CLAUDE = os.getenv("USAR_CLAUDE", "true").strip().lower() in {"1", "true", "yes", "on"}
+CLAUDE_CODE_CAMINHO = os.getenv("CLAUDE_CODE_CAMINHO", "")  # vazio: acha sozinho
+CLAUDE_MODELO = os.getenv("CLAUDE_MODELO", "")  # vazio: o padrão do plano; ou 'sonnet', 'opus'...
+CLAUDE_ESFORCO = os.getenv("CLAUDE_ESFORCO", "")  # vazio: o padrão; ou low, medium, high
+# Ordem em que as IAs da nuvem são tentadas antes do Ollama local.
+ORDEM_IA_NUVEM = [n.strip().lower() for n in os.getenv("ORDEM_IA_NUVEM", "claude,gemini").split(",") if n.strip()]
+
 # Intervalos (em segundos)
 INTERVALO_REINDEXACAO = 3600  # 1 hora
 INTERVALO_CACHE_MEMORIA = 300  # 5 minutos

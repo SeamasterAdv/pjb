@@ -7,7 +7,7 @@ edge-tts>=7.3.0
 chromadb
 pypdf
 openai
-google-generativeai
+google-genai
 google-api-python-client
 google-auth-oauthlib
 pywhatkit

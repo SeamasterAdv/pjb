@@ -1,12 +1,14 @@
 # main.py
 import os
 import logging
+import queue
 import re
 import time
 import multiprocessing
 import threading
 import difflib
 import unicodedata
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -17,10 +19,24 @@ from config import (
     PALAVRAS_ATIVACAO,
     JANELA_ATIVACAO_SEGUNDOS,
     JANELA_CONTINUACAO_SEGUNDOS,
+    JANELA_CONVERSA_SEGUNDOS,
+    ENTENDER_SEM_NOME,
+    CONFIANCA_MINIMA_VOZ,
+    WHATSAPP_COMANDOS,
+    WHATSAPP_MEU_NUMERO,
+    AGENDA_LEMBRETES_WHATSAPP,
 )
+import tools
+from jeito_de_falar import frase, tipo_de_encerramento, todas as todas_as_frases
+from agente_agenda import criar_agente_agenda, iniciar_lembretes
+from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
+from agente_leis import AgenteLeis
+from canal_whatsapp import CanalWhatsApp
 from llm_clients import llm_clients
-from agentes import PainelCompartilhado, criar_orquestrador
-from llm_nuvem import responder_na_nuvem
+from agentes import PainelCompartilhado, criar_orquestrador, pede_envio, pedido_de_arquivo, texto_da_entrega
+from cinema import cartao_de_filmes, responder_pedido_de_cinema
+from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
+from llm_nuvem import NOMES_IA, extrair_ia_pedida, responder_na_nuvem
 import memory
 from memory import (
     indexar_pasta_documentos,
@@ -75,15 +91,19 @@ from tools import (
 from voice import (
     falar,
     falar_async,
-    microfone_ativo,
+    falar_resposta_em_stream,
+    falou_durante,
+    fim_da_ultima_fala,
+    iniciar_escuta_continua,
     microfone_disponivel,
-    ouvir,
+    parar_fala,
+    parece_eco,
+    preparar_frases,
     selecionar_microfone,
     selecionar_saida_audio,
 )
 from analytics import AnalisadorSistema
 from agente_aprendizagem import AgenteAprendizagem
-from agenda_lembretes import GerenciadorAgenda
 from google_drive_sync import sync_notelooklm_from_google_drive
 from visao import GestosMaoDetector, GestorVisao
 from interface_texto import (
@@ -91,6 +111,19 @@ from interface_texto import (
     iniciar_tela_carregamento_em_background,
     fechar_tela_carregamento,
 )
+from config import INTERFACE
+
+
+def escolher_painel():
+    """A função que abre o painel: o web (padrão) ou, sem o pywebview ou com INTERFACE=tk, o clássico."""
+    if INTERFACE != "tk":
+        try:
+            import webview  # noqa: F401  (só confere se está instalado)
+            from painel_web import iniciar as iniciar_painel_web
+            return iniciar_painel_web
+        except ImportError as exc:
+            logger.warning("Painel web indisponível (%s); abrindo o painel clássico.", exc)
+    return iniciar_interface_texto
 from professora_idiomas import processar_comando_idiomas
 
 logging.basicConfig(
@@ -105,7 +138,6 @@ logger = logging.getLogger(__name__)
 
 analisador = AnalisadorSistema()
 agente_aprendizagem = AgenteAprendizagem()
-gerenciador_agenda = GerenciadorAgenda()
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
 GESTO_ATUAL = {"valor": None}
 MICROFONE_EVENTO = None
@@ -113,6 +145,9 @@ MICROFONE_EVENTO = None
 
 def pedir_confirmacao(acao: str) -> bool:
     """Exige confirmação explícita antes de executar uma ação externa."""
+    if CANAL["atual"] == "whatsapp":
+        # Pelo WhatsApp não há ninguém no teclado: cancela em vez de travar esperando o input().
+        return False
     try:
         resposta = input(f"Confirmar {acao}? [s/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -163,19 +198,41 @@ def classificar_com_ollama(comando):
         resposta = llm_clients.chat(
             f"Comando: {comando}\nCategoria:",
             system_prompt=(
-                "Classifique o comando do usuário em exatamente uma categoria e responda só com ela.\n"
-                "simples: conversa, cumprimento, opinião, explicação ou conhecimento geral estável.\n"
-                "pesquisa: fatos atuais, notícias, preços, resultados, clima, pessoas ou dados que mudam.\n"
-                "ferramentas: abrir, enviar, criar, agendar ou controlar algo.\n"
-                "sistema: configuração ou estado da própria assistente."
+                "Classifique o comando do usuário. Responda com UMA palavra: simples, pesquisa, ferramentas ou sistema.\n"
+                "simples = conversa, cumprimento, piada, opinião, sentimentos, explicação ou conhecimento geral que "
+                "não muda.\n"
+                "pesquisa = fatos atuais: notícias, preços, cotações, resultados de jogos, clima, pessoas ou dados "
+                "que mudam.\n"
+                "ferramentas = abrir, enviar, criar, agendar ou controlar algo.\n"
+                "sistema = configuração ou estado da própria assistente.\n"
+                "Exemplos: 'me conta uma piada' -> simples; 'tô cansado' -> simples; 'qual a capital da França' -> "
+                "simples; 'quanto tá o dólar' -> pesquisa; 'abre o youtube' -> ferramentas."
             ),
             opcoes={"temperature": 0, "num_predict": 5},
-        ).lower()
+        )
     except Exception as exc:
         logger.warning("Falha ao classificar com Ollama: %s", exc)
         return None
-    for categoria in ("simples", "pesquisa", "ferramentas", "sistema"):
-        if categoria in resposta:
+    return categoria_da_resposta(resposta)
+
+
+# Os modelos pequenos às vezes respondem com a descrição ("conversa", "conhecimento geral") em vez do
+# rótulo; sem isso, papo e piada caíam na rota da biblioteca e saíam com cara de relatório.
+SINONIMOS_CATEGORIA = (
+    ("simples", ("simples", "conversa", "cumpriment", "piada", "opini", "sentiment", "explica", "conhecimento")),
+    ("pesquisa", ("pesquisa", "fatos atuais", "noticia", "preco", "cotac", "resultado", "clima")),
+    ("ferramentas", ("ferramenta", "abrir", "enviar", "criar", "agendar", "controlar")),
+    ("sistema", ("sistema", "configurac")),
+)
+
+
+def categoria_da_resposta(resposta: str) -> str | None:
+    texto = _normalizar_frase(resposta or "")
+    for categoria, _ in SINONIMOS_CATEGORIA:  # o rótulo certo primeiro
+        if categoria in texto:
+            return categoria
+    for categoria, pistas in SINONIMOS_CATEGORIA:
+        if any(pista in texto for pista in pistas):
             return categoria
     return None
 
@@ -192,10 +249,25 @@ def extrair_texto_apos_comando(comando: str, frases: list[str]) -> str:
 
 def perguntar_durante_agendamento(pergunta: str) -> str:
     """Pergunta um dado por voz e permite digitação se a captura falhar."""
+    if CANAL["atual"] == "whatsapp" and CANAL_WHATSAPP is not None:
+        # Pelo WhatsApp a pergunta vai para a conversa e a resposta é a próxima mensagem.
+        CANAL_WHATSAPP.enviar(pergunta)
+        limite = time.time() + SEGUNDOS_RESPOSTA_WHATSAPP
+        while time.time() < limite:
+            resposta = CANAL_WHATSAPP.receber()
+            if resposta:
+                avisar_painel("ouvido", f"WhatsApp: {resposta}", pensando=False)
+                return resposta.strip()
+            time.sleep(0.5)
+        return ""
     falar(pergunta)
-    resposta = obter_comando_usuario()
-    if resposta:
-        return resposta.strip()
+    # A resposta vem sem o nome ("amanhã às três"), então abre a janela de seguimento.
+    abrir_janela_continuacao(ESTADO_ATIVACAO, time.time())
+    limite = time.time() + JANELA_CONTINUACAO_SEGUNDOS
+    while time.time() < limite:
+        resposta = obter_comando_usuario()
+        if resposta:
+            return resposta.strip()
 
     try:
         resposta = input(f"{pergunta} ").strip()
@@ -206,26 +278,32 @@ def perguntar_durante_agendamento(pergunta: str) -> str:
         return ""
 
 
-def agendar_compromisso_interativo(comando: str):
-    """Coleta os dados que faltam e cria o compromisso no calendário."""
-    titulo = perguntar_durante_agendamento("Qual é o título do compromisso?")
-    hora = perguntar_durante_agendamento("Qual é a hora do compromisso? Exemplo: 14 horas.")
-    data = perguntar_durante_agendamento("Qual é o dia do compromisso? Exemplo: amanhã ou 10 de setembro.")
-    quando_lembrar = perguntar_durante_agendamento(
-        "Quando devo lembrar você? Exemplo: 10 minutos antes ou no dia anterior."
-    )
-
-    if not titulo or not data or not hora or not quando_lembrar:
-        return "Não consegui reunir todos os dados. O agendamento foi cancelado."
-
-    return criar_evento_agenda(titulo, f"{data} às {hora}", quando_lembrar=quando_lembrar)
+# Pedido de resumo na frase de pesquisa: "resuma", "me dê um resumo", "explique".
+RE_PEDIDO_RESUMO = re.compile(r"\b(?:resum[aeio]\w*|expliqu\w*|explica\w*)\b", re.IGNORECASE)
+# O trecho que pede o resumo sai da consulta, para a busca receber só o assunto.
+RE_FRASE_RESUMO = re.compile(
+    r"\b(?:e\s+)?(?:me\s+|pra mim\s+)?"
+    r"(?:(?:(?:d[aáeê]|fa[çc]a|faz|traga|traz|mande|manda|quero|preciso de)\s+)?um\s+(?:breve\s+|pequeno\s+|bom\s+)?resumo"
+    r"|resum[ae]|resumir|explique|explica|explicar)\b"
+    r"(?:\s+(?:pra|para)\s+mim)?(?:\s+(?:sobre|a respeito d[eoa]s?|de|do|da|dos|das)\b)?",
+    re.IGNORECASE,
+)
 
 
-def responder_com_pesquisa_web(pergunta: str, salvar: bool = False):
+def tirar_pedido_de_resumo(consulta: str) -> str:
+    """'e me dê um resumo sobre a reforma tributária' -> 'a reforma tributária'."""
+    limpa = re.sub(r"\s+", " ", RE_FRASE_RESUMO.sub(" ", consulta)).strip(" ?!.,;:")
+    limpa = re.sub(r"^e\s+|\s+e$", "", limpa).strip(" ?!.,;:")
+    return limpa or consulta
+
+
+def responder_com_pesquisa_web(pergunta: str, salvar: bool = False, preferir: str = None, resumo: bool = False):
     """Pesquisa várias fontes por HTTP e resume; o Playwright fica como reserva.
 
     O navegador é aberto só para o usuário acompanhar; a resposta vem das páginas
     lidas diretamente, que trazem conteúdo real em vez do texto da página do Google.
+    `preferir` ("claude" ou "gemini") escolhe a IA da nuvem que redige primeiro; `resumo`
+    troca a resposta direta por um resumo falado de uns dois parágrafos.
     """
     consulta = pergunta.strip()
     if consulta:
@@ -261,25 +339,43 @@ def responder_com_pesquisa_web(pergunta: str, salvar: bool = False):
         salvar_pesquisa_web(consulta, conteudo)
         indexar_pasta_documentos()
 
-    prompt = (
-        "Responda em português usando apenas as fontes abaixo. "
-        "Responda exatamente o que foi perguntado: se a pergunta pede um valor, nome ou data, "
-        "a primeira frase deve trazer esse dado. Não explique o tema em geral. "
-        "Use duas a quatro frases no total. Quando as fontes divergirem, diga isso e prefira a mais recente. "
-        "Se o dado pedido não aparecer nas fontes, diga isso claramente e não invente. "
-        "Cite de passagem o nome do site principal, por exemplo segundo o G1, sem ler URLs. "
-        "Não diga que abriu navegador. Sem emojis, markdown ou listas com marcadores.\n\n"
-        f"Pergunta: {pergunta}\n\nFontes da internet:\n{conteudo}\n\nResposta:"
-    )
+    if resumo:
+        prompt = (
+            "Faça em português um resumo falado sobre o tema abaixo, usando apenas as fontes. "
+            "Escreva dois parágrafos curtos: o primeiro com o essencial do assunto, "
+            "o segundo com os pontos e as novidades mais relevantes. "
+            "Escreva como numa conversa, em frases completas, sem emojis, markdown, títulos ou listas com marcadores. "
+            "Cite de passagem o nome dos sites, por exemplo segundo o G1, sem ler URLs. "
+            "Quando as fontes divergirem, diga isso e prefira a mais recente. "
+            "Se as fontes não cobrirem algum ponto importante, diga isso e não invente. "
+            "Não diga que abriu navegador.\n\n"
+            f"Tema: {pergunta}\n\nFontes da internet:\n{conteudo}\n\nResumo:"
+        )
+    else:
+        prompt = (
+            "Responda em português usando apenas as fontes abaixo. "
+            "Responda exatamente o que foi perguntado: se a pergunta pede um valor, nome ou data, "
+            "a primeira frase deve trazer esse dado. Não explique o tema em geral. "
+            "Use duas a quatro frases no total. Quando as fontes divergirem, diga isso e prefira a mais recente. "
+            "Se o dado pedido não aparecer nas fontes, diga isso claramente e não invente. "
+            "Cite de passagem o nome do site principal, por exemplo segundo o G1, sem ler URLs. "
+            "Não diga que abriu navegador. Sem emojis, markdown ou listas com marcadores.\n\n"
+            f"Pergunta: {pergunta}\n\nFontes da internet:\n{conteudo}\n\nResposta:"
+        )
     contexto = "Use as fontes fornecidas e preserve o tom natural da Beatriz."
-    # Claude, depois Gemini: só a pergunta e o conteúdo público das fontes vão para a nuvem
-    # (sem memória nem histórico). Se nenhuma puder responder, o Ollama responde.
-    resposta = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3})
+    # Claude, depois Gemini (ou a IA pedida na frase, primeiro): só a pergunta e o conteúdo público
+    # das fontes vão para a nuvem (sem memória nem histórico). Se nenhuma puder responder, o Ollama responde.
+    quem_respondeu = []
+    resposta = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3}, preferir=preferir, registro=quem_respondeu)
     if not resposta:
         try:
             resposta = llm_clients.chat_beatriz(prompt, contexto=contexto)
         except Exception:
             resposta = conteudo[:5000]
+    if preferir in NOMES_IA and NOMES_IA[preferir] not in quem_respondeu:
+        # A IA pedida não pôde responder (limite, sem chave, sem internet): diz quem respondeu no lugar.
+        substituta = f"o {quem_respondeu[0]}" if quem_respondeu else "a IA local"
+        resposta = f"O {NOMES_IA[preferir]} não pôde responder agora; usei {substituta}. {resposta}"
     if salvar:
         resposta += "\nO conteúdo completo foi salvo para consultas futuras."
     return resposta
@@ -320,24 +416,157 @@ def limpar_texto_para_fala(texto: str) -> str:
     texto = re.sub(r"\[Fonte:[^\]]*\]", " ", texto)
     texto = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", texto, flags=re.MULTILINE)
     texto = re.sub(r"\s*\n+\s*", ". ", texto)
-    texto = re.sub(r"[^\wÀ-ÿ\s.,!?;:%$-]", " ", texto, flags=re.UNICODE)
+    # Só o alfabeto do português: alguns modelos (como o qwen) às vezes soltam uma palavra em chinês.
+    texto = re.sub(r"[^A-Za-z0-9_À-ÿºª\s.,!?;:%$-]", " ", texto)
+    # Risada escrita soa estranha na voz ("Ahah", "hahaha", "kkkk", "rsrs").
+    texto = re.sub(r"\b(?:a?h[ae]h[aeh]*|k{3,}|(?:rs){2,})\b[\s,!.]*", " ", texto, flags=re.IGNORECASE)
     texto = re.sub(r"\s+([.,!?;:])", r"\1", texto)
     texto = re.sub(r"([.!?])(?:\s*[.!?])+", r"\1", texto)
     texto = re.sub(r"\s+", " ", texto).strip(" ,;:")
     texto = re.sub(r"^[.!?]+\s*", "", texto)
     if texto and texto[-1] not in ".!?":
         texto += "."
-    return texto
+    return texto[:1].upper() + texto[1:]
 
 
-def falar_e_registrar(pergunta: str, resposta: str):
-    """Mostra a resposta em texto primeiro e fala em paralelo para manter a conversa mais fluida."""
-    resposta_limpa = limpar_texto_para_fala(resposta)
-    print(f"\nBeatriz: {resposta_limpa}")
+def registrar_resposta(pergunta: str, resposta_limpa: str, abrir_janela: bool = True):
+    """Guarda a troca no histórico e abre a janela para perguntas de seguimento sem o nome."""
     registrar_conversa(pergunta, resposta_limpa)
     llm_clients.registrar_turno(pergunta, resposta_limpa)
-    falar_async(resposta_limpa)
-    abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), resposta_limpa)
+    if abrir_janela:
+        abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), resposta_limpa)
+
+
+# ------------------------------------------------------------------ WhatsApp
+# De onde veio o comando que está sendo atendido: "voz" (inclui o teclado) ou "whatsapp".
+# Só o laço principal muda este valor; as tarefas em segundo plano guardam o canal de origem.
+CANAL = {"atual": "voz"}
+CANAL_WHATSAPP = None  # CanalWhatsApp criado em main() quando WHATSAPP_COMANDOS está ligado
+SEGUNDOS_RESPOSTA_WHATSAPP = 180.0
+CONTEXTO_CONVERSA_ESCRITA = (
+    "Esta conversa é pelo WhatsApp, por escrito, no tom leve e informal de uma amiga. Responda de forma "
+    "direta e útil; pode usar listas curtas quando ajudarem (sem títulos longos) e, no máximo, um emoji "
+    "quando combinar."
+)
+
+
+def responder_no_whatsapp(pergunta: str, resposta: str, arquivos=(), registrar: bool = True):
+    """Envia a resposta pela conversa do WhatsApp (e mostra no painel), sem falar em casa."""
+    CANAL_WHATSAPP.enviar(resposta, arquivos)
+    avisar_painel("resposta", resposta)
+    if registrar:
+        # A janela de seguimento por voz não abre: quem perguntou não está falando em casa.
+        registrar_resposta(pergunta, limpar_texto_para_fala(resposta), abrir_janela=False)
+
+
+RE_PARA_O_WHATSAPP = re.compile(r"\b(pro|para o|pelo|no) (meu )?(whats\w*|zap)\b", re.IGNORECASE)
+
+
+def mandar_arquivo_pedido(comando: str, orquestrador) -> bool:
+    """Atende "manda o arquivo/o PDF/a planilha" com os arquivos da última tarefa. False se não for esse pedido.
+
+    Pelo WhatsApp vale sempre; pela voz, só quando o pedido diz para onde ("... pro meu WhatsApp").
+    """
+    pedido = pedido_de_arquivo(comando)
+    if pedido is None or CANAL_WHATSAPP is None:
+        return False
+    if CANAL["atual"] != "whatsapp" and not RE_PARA_O_WHATSAPP.search(comando):
+        return False
+    tarefa = orquestrador.ultima_com_arquivos()
+    if tarefa is None:
+        resposta, arquivos = "Ainda não tenho nenhum arquivo pronto para mandar. Peça um documento, planilha ou apresentação.", []
+    elif pedido == "relatorio":
+        arquivos = [tarefa.relatorio] if tarefa.relatorio else []
+        resposta = "Aqui está o relatório da última tarefa." if arquivos else "A última tarefa não tem relatório."
+    else:
+        arquivos = [a for a in tarefa.arquivos if not pedido or a.lower().endswith(pedido)]
+        nomes = ", ".join(os.path.basename(a) for a in arquivos)
+        tipos = ", ".join(sorted({os.path.splitext(a)[1].lstrip(".").upper() for a in tarefa.arquivos}))
+        resposta = f"Aqui está: {nomes}." if arquivos else f"A última tarefa não gerou esse tipo de arquivo; tenho {tipos}."
+    if CANAL["atual"] == "whatsapp":
+        responder_no_whatsapp(comando, resposta, arquivos=arquivos, registrar=False)
+    else:
+        CANAL_WHATSAPP.enviar(resposta, arquivos)
+        responder_rapido("Mandei no seu WhatsApp." if arquivos else resposta)
+    return True
+
+
+def proximo_comando_whatsapp() -> str:
+    """Comando que chegou pelo WhatsApp; troca o canal atual para as respostas irem para lá."""
+    if CANAL_WHATSAPP is None:
+        return ""
+    comando = CANAL_WHATSAPP.receber()
+    if comando:
+        CANAL["atual"] = "whatsapp"
+        tools.CONFIRMAR_NO_TECLADO = False
+        avisar_painel("ouvido", f"WhatsApp: {comando}")
+    return comando
+
+
+def falar_e_registrar(pergunta: str, resposta: str, texto_painel: str = "", canal: str = None):
+    """Mostra a resposta em texto primeiro e fala em paralelo para manter a conversa mais fluida.
+
+    `texto_painel` mostra no painel uma versão mais completa do que foi falado (ex.: o resumo inteiro).
+    `canal` vem das tarefas em segundo plano; sem ele vale o canal do comando atual.
+    """
+    if (canal or CANAL["atual"]) == "whatsapp" and CANAL_WHATSAPP is not None:
+        responder_no_whatsapp(pergunta, texto_painel or resposta)
+        return
+    resposta_limpa = limpar_texto_para_fala(resposta)
+    falar_async(resposta_limpa)  # já exibe o texto
+    avisar_painel("resposta", texto_painel or resposta_limpa)
+    registrar_resposta(pergunta, resposta_limpa)
+
+
+# A conversa por voz pede respostas curtas: cada frase a mais é tempo de fala a mais.
+CONTEXTO_CONVERSA_FALADA = (
+    "Isto é uma conversa por voz, solta e informal, como entre amigos. Responda em até três frases curtas "
+    "(menos, se der). Reaja ao que a pessoa disse, de um jeito diferente da última vez, e responda de "
+    "verdade: se pedir uma piada, conte uma piada; se pedir para escolher, escolha. Se for papo, mostre "
+    "interesse e, quando fizer sentido, termine com uma pergunta curta. Se o assunto pedir mais, dê o "
+    "essencial e ofereça os detalhes. Nada de listas, títulos ou markdown.\n"
+    "Exemplos do tom (não copie as frases, só o jeito):\n"
+    "Pessoa: tô entediado. Beatriz: Ah, vamos resolver isso! Sabia que o polvo tem três corações? "
+    "Quer mais uma curiosidade ou uma ideia do que fazer?\n"
+    "Pessoa: me conta uma piada. Beatriz: Lá vai: por que o livro de matemática ficou triste? Porque tinha "
+    "problemas demais! Essa foi fraquinha, mas eu gosto. Quer outra?\n"
+    "Pessoa: pizza ou hambúrguer? Beatriz: Pizza, sem dúvida! Dá pra dividir e ainda sobra pro café da "
+    "manhã. Vai de qual sabor?\n"
+    "Pessoa: perdi meu emprego hoje. Beatriz: Poxa, sinto muito. Isso pesa mesmo, e é normal ficar "
+    "abalado. Quer desabafar um pouco ou prefere que eu ajude a pensar nos próximos passos?\n"
+    "Pessoa: tudo bem com você? Beatriz: Tudo ótimo, ainda mais agora com você aqui! E com você, como "
+    "tá o dia?"
+)
+
+
+def responder_conversa_em_stream(pergunta: str) -> str:
+    """Resposta simples falada enquanto o LLM ainda escreve: a primeira frase sai em segundos."""
+    if CANAL["atual"] == "whatsapp" and CANAL_WHATSAPP is not None:
+        resposta = llm_clients.chat_beatriz(pergunta, contexto=CONTEXTO_CONVERSA_ESCRITA)
+        responder_no_whatsapp(pergunta, resposta)
+        return resposta
+    resposta = falar_resposta_em_stream(
+        llm_clients.chat_beatriz_stream(pergunta, contexto=CONTEXTO_CONVERSA_FALADA),
+        limpar=limpar_texto_para_fala,
+    )
+    resposta_limpa = limpar_texto_para_fala(resposta)
+    print(f"\nBeatriz: {resposta_limpa}")
+    avisar_painel("resposta", resposta_limpa)
+    registrar_resposta(pergunta, resposta_limpa)
+    return resposta_limpa
+
+
+def cumprimentar():
+    """Saudação inicial. Ela termina perguntando, então a resposta vale sem dizer o nome."""
+    try:
+        agenda_de_hoje = AGENDA.resumo_de_abertura()  # "Hoje você ainda tem 2 compromissos; o próximo é..."
+    except Exception as exc:
+        logger.warning("Agenda indisponível na saudação: %s", exc)
+        agenda_de_hoje = ""
+    saudacao = saudacao_inicial(agenda_de_hoje)
+    falar_async(saudacao)
+    avisar_painel("resposta", saudacao)
+    abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), saudacao)
 
 
 def resumir_noticias(noticias: str) -> str:
@@ -384,6 +613,14 @@ def tentar_executar_ferramenta(comando: str):
 
     c = texto.lower()
 
+    # Antes da data e hora: "quais filmes estão em cartaz hoje" é sobre cinema, não sobre o dia.
+    resposta_cinema = responder_pedido_de_cinema(texto)
+    if resposta_cinema:
+        cartao = cartao_de_filmes(texto)
+        if cartao:  # pôsteres no painel web; o texto é o mesmo que ela vai falar
+            avisar_painel("filmes", limpar_texto_para_fala(resposta_cinema), **cartao)
+        return True, resposta_cinema
+
     if any(termo in c for termo in ["qual a hora", "que horas", "data de hoje", "qual a data", "hoje"]):
         return True, obter_data_hora_atual()
 
@@ -424,7 +661,8 @@ def tentar_executar_ferramenta(comando: str):
                 break
         return True, navegar_e_consultar_site(alvo.strip() or texto, pergunta.strip())
 
-    if any(termo in c for termo in ["filmes em cartaz", "filmes no ingresso", "horários do cinema", "horarios do cinema"]):
+    # Horários das sessões ainda vêm da página do Ingresso.com aberta no navegador (filmes e cinemas: cinema.py).
+    if any(termo in c for termo in ["filmes no ingresso", "horários do cinema", "horarios do cinema"]):
         return True, navegar_e_consultar_site(
             "https://www.ingresso.com/",
             "Quais filmes estão em cartaz e quais são os horários das sessões? Liste cinema, filme, data e horário quando estiverem visíveis.",
@@ -445,43 +683,13 @@ def tentar_executar_ferramenta(comando: str):
         alvo = consulta or "educação"
         return True, pesquisar_planalto_leis(alvo)
 
-    if any(termo in c for termo in [
-        "marcar na agenda",
-        "agende pra mim",
-        "agendar pra mim",
-        "agende para mim",
-        "agendar para mim",
-        "agenda pra mim",
-        "agenda para mim",
-    ]):
-        return True, agendar_compromisso_interativo(texto)
+    if any(termo in c for termo in ["conectar gmail", "vincular gmail", "conectar meu gmail", "conectar o gmail"]):
+        from google_gmail import conectar_gmail
+        falar("Vou abrir o navegador para você liberar a leitura do Gmail.")
+        return True, conectar_gmail()
 
-    if any(termo in c for termo in [
-        "conectar google agenda",
-        "vincular google agenda",
-        "conectar agenda do google",
-        "vincular agenda do google",
-        "conectar meu google",
-    ]):
-        from google_agenda import conectar_google_agenda
-        falar("Vou abrir o navegador para você entrar na sua conta do Google.")
-        return True, conectar_google_agenda()
-
-    if any(termo in c for termo in ["desconectar google agenda", "desvincular google agenda"]):
-        from google_agenda import desconectar_google_agenda
-        return True, desconectar_google_agenda()
-
-    if any(termo in c for termo in [
-        "listar compromissos",
-        "meus compromissos",
-        "próximos eventos",
-        "quais os compromissos",
-        "o que tenho na agenda",
-        "próximos compromissos",
-    ]):
-        return True, listar_compromissos()
-
-    if any(termo in c for termo in ["abrir calendário", "abrir agenda", "calendario", "agenda"]):
+    # Compromissos, rotina e tarefas ficam com o agente de agenda (AGENDA.responder), antes daqui.
+    if any(termo in c for termo in ["calendário do windows", "calendario do windows", "app de calendário", "app de calendario"]):
         return True, abrir_calendario()
 
     if "http://" in c or "https://" in c:
@@ -501,21 +709,6 @@ def tentar_executar_ferramenta(comando: str):
     if any(termo in c for termo in ["salve o conteúdo", "salvar o conteúdo", "guarde o conteúdo", "guardar o conteúdo"]):
         consulta = extrair_texto_apos_comando(texto, ["sobre", "de"])
         return True, responder_com_pesquisa_web(consulta or texto, salvar=True)
-
-    if any(termo in c for termo in ["marcar evento", "agendar", "criar evento", "me lembre", "marque evento"]):
-        titulo = "Evento"
-        if " para " in c:
-            titulo = c.split(" para ", 1)[1].strip().split(" às ", 1)[0].strip() or titulo
-        data_hora = "hoje às 20:00"
-        if " amanhã " in c:
-            data_hora = "amanhã às 18:00"
-        if " às " in c:
-            partes = c.split(" às ", 1)[1].strip()
-            if partes:
-                data_hora = "".join(partes.split(".", 1)[0]) if "amanhã" in c else f"{('amanhã' if 'amanhã' in c else 'hoje')} às {partes}"
-        if "amanhã" in c and "às" in c:
-            data_hora = "amanhã às " + c.split(" às ", 1)[1].strip().split()[0]
-        return True, criar_evento_agenda(titulo, data_hora, confirmado=True)
 
     if any(termo in c for termo in ["abrir app", "abra o app", "abrir aplicativo", "abra o aplicativo"]):
         nome = extrair_texto_apos_comando(texto, ["abrir app", "abra o app", "abrir aplicativo", "abra o aplicativo"])
@@ -644,10 +837,19 @@ def tentar_executar_ferramenta(comando: str):
         return True, "Preciso do destinatário do e-mail para abrir o cliente de e-mail."
 
     if any(termo in c for termo in ["pesquise", "procure", "buscar"]):
-        consulta = extrair_texto_apos_comando(texto, ["pesquise", "procure", "buscar"])
+        termos = ["pesquise", "procure", "buscar"]
+        # "pelo Gemini" / "no Claude" escolhe a IA que redige; sai da consulta, como o pedido de resumo.
+        sem_ia, ia = extrair_ia_pedida(texto)
+        consulta = extrair_texto_apos_comando(sem_ia, termos)
+        if ia and not consulta:
+            # "pesquise pelo Gemini": aqui o Gemini é o assunto da pesquisa, não a IA escolhida.
+            ia, consulta = None, extrair_texto_apos_comando(texto, termos)
+        resumo = bool(RE_PEDIDO_RESUMO.search(c))
+        if resumo and consulta:
+            consulta = tirar_pedido_de_resumo(consulta)
         alvo = consulta or "assistente pessoal"
         salvar = any(termo in c for termo in ["salve", "salvar", "guarde", "guardar"])
-        return True, responder_com_pesquisa_web(alvo, salvar=salvar)
+        return True, responder_com_pesquisa_web(alvo, salvar=salvar, preferir=ia, resumo=resumo)
 
     return False, None
 
@@ -736,10 +938,105 @@ def diagnosticar_hardware():
     return status
 
 
-def obter_comando_usuario():
-    """Obtém entrada em voz, ou em texto como fallback se o microfone não estiver disponível."""
-    if (MICROFONE_EVENTO is None or MICROFONE_EVENTO.is_set()) and microfone_ativo() and microfone_disponivel():
-        return filtrar_fala_por_ativacao(ouvir())
+# Frases entendidas pela escuta contínua (voice.py), na ordem: (texto, início, fim, confiança).
+FILA_FALAS = queue.Queue()
+# O que a voz ouviu (e se aceitou) e o que a Beatriz respondeu, para o painel mostrar no chat.
+PAINEL_VOZ = None  # multiprocessing.Queue criada em main()
+# Tudo o que o microfone captou e o que ela respondeu, para resumir quando pedirem. Fica só
+# em memória: são conversas da casa, que não vão para o disco nem para a nuvem.
+REGISTRO_CONVERSA = deque(maxlen=600)  # (quando, quem, texto)
+
+
+def avisar_painel(tipo: str, texto: str, motivo: str = "", pensando: bool | None = None, **dados):
+    """tipo: "ouvido" (frase aceita), "ignorado" (com o motivo) ou "resposta" (o que ela falou).
+
+    `pensando` diz ao painel se ela vai trabalhar no pedido (padrão: frase aceita sem motivo).
+    Cartões do painel web ("resumo", "filmes") levam os dados deles em `dados`.
+    """
+    if not texto:
+        return
+    quem = {"ouvido": "Usuário", "ignorado": "Ouvido sem resposta", "resposta": "Beatriz"}.get(tipo)
+    if quem:
+        REGISTRO_CONVERSA.append((time.time(), quem, texto))
+    if PAINEL_VOZ is None:
+        return
+    if pensando is None:
+        pensando = tipo == "ouvido" and not motivo
+    try:
+        PAINEL_VOZ.put_nowait({"tipo": tipo, "texto": texto, "motivo": motivo, "pensando": pensando, **dados})
+    except Exception as exc:
+        logger.debug("Painel não recebeu o aviso da voz: %s", exc)
+
+
+# Agenda local (compromissos, rotina, lembretes e tarefas) num SQLite do PC; a conversa livre sobre
+# ela usa só o Ollama local. "Abre a agenda" pede ao painel para abrir a janela da agenda.
+AGENDA = criar_agente_agenda(llm=llm_clients, ao_abrir=lambda: avisar_painel("abrir_agenda", "abrir a agenda"))
+
+# Impressora (agente_impressora.py): arquivos, textos ditados, a última resposta e a agenda, com um
+# "sim" antes de gastar papel. A impressão roda em segundo plano; só um erro volta (avisar).
+IMPRESSORA = criar_agente_impressora(
+    respostas_recentes=lambda: [resposta for _, resposta in reversed(llm_clients.historico_recente())],
+    texto_agenda=lambda t: texto_da_agenda(AGENDA, t),
+    avisar=lambda texto: responder_rapido(texto),
+)
+
+# Artigos de lei (agente_leis.py): lê o texto oficial do Planalto e explica com o Gemini; "não entendi"
+# traz outra explicação, com outra abordagem.
+LEIS = AgenteLeis()
+
+
+def responder_lei(pergunta: str, resposta) -> None:
+    """Lê o artigo (ou fala uma frase curta) e, enquanto isso toca, a IA escreve a explicação."""
+    if resposta.leitura:
+        falar_e_registrar(pergunta, resposta.leitura, texto_painel=resposta.painel)
+    if resposta.explicar:
+        try:
+            explicacao = resposta.explicar()
+        except Exception as exc:
+            logger.warning("A explicação da lei falhou: %s", exc)
+            explicacao = frase("erro")
+        falar_e_registrar(pergunta, explicacao)
+
+
+def avisar_lembrete(texto: str):
+    """Lembrete da agenda: fala em casa, aparece no painel e, se ligado, chega no WhatsApp (no celular)."""
+    falar_async(texto)
+    avisar_painel("lembrete", texto)
+    if AGENDA_LEMBRETES_WHATSAPP and CANAL_WHATSAPP is not None and CANAL_WHATSAPP.status().get("status") == "conectado":
+        CANAL_WHATSAPP.enviar(f"⏰ {texto}")
+
+
+def responder_rapido(texto: str):
+    """Fala curta que não entra no histórico ("Oi! Fala!", "Beleza, deixa pra lá!")."""
+    if CANAL["atual"] == "whatsapp" and CANAL_WHATSAPP is not None:
+        responder_no_whatsapp("", texto, registrar=False)
+        return
+    falar_async(texto)
+    avisar_painel("resposta", texto)
+
+
+def receber_fala(texto: str, inicio: float, fim: float, confianca: float | None = None):
+    FILA_FALAS.put((texto, inicio, fim, confianca))
+
+
+def pode_escutar() -> bool:
+    """O painel pausa o microfone por este evento compartilhado."""
+    return MICROFONE_EVENTO is None or MICROFONE_EVENTO.is_set()
+
+
+def obter_comando_usuario(espera: float = 0.5):
+    """Próxima frase ouvida pela escuta contínua (ou comando do WhatsApp); sem microfone, lê do teclado."""
+    comando_whatsapp = proximo_comando_whatsapp()
+    if comando_whatsapp:
+        return comando_whatsapp
+    CANAL["atual"] = "voz"
+    tools.CONFIRMAR_NO_TECLADO = True
+    if microfone_disponivel():
+        try:
+            texto, inicio, fim, confianca = FILA_FALAS.get(timeout=espera)
+        except queue.Empty:
+            return ""
+        return filtrar_fala_por_ativacao(texto, inicio, fim, confianca)
 
     try:
         retorno = input("Digite seu comando (ou 'sair'): ").strip()
@@ -750,16 +1047,236 @@ def obter_comando_usuario():
         return ""
 
 
-def filtrar_fala_por_ativacao(texto: str) -> str:
-    """Só repassa a fala que chamou a Beatriz (ou veio dentro da janela de conversa)."""
-    comando = extrair_comando_ativado(texto, time.time(), ESTADO_ATIVACAO)
-    if comando is None:
+# ------------------------------------------------------------------ confirmação
+@dataclass
+class Confirmacao:
+    """Pedido que espera um "sim" ou um "não" antes de ser feito."""
+    comando: str = ""
+    ate: float = 0.0
+
+    def ativa(self, agora: float) -> bool:
+        return bool(self.comando) and agora < self.ate
+
+    def limpar(self):
+        self.comando, self.ate = "", 0.0
+
+
+CONFIRMACAO = Confirmacao()
+SEGUNDOS_PARA_CONFIRMAR = 15.0  # contados do fim estimado da pergunta
+INTERVALO_ENTRE_PERGUNTAS = 30.0  # conversa do ambiente não vira uma pergunta atrás da outra
+_ULTIMA_PERGUNTA = {"em": 0.0}
+RESPOSTAS_SIM = {"sim", "isso", "isso mesmo", "e isso", "pode", "pode sim", "pode ser", "confirma", "confirmo",
+                 "claro", "ok", "okay", "beleza", "manda", "vai", "faz", "faca", "exato", "correto", "certo",
+                 "quero", "aham", "uhum", "positivo", "por favor", "com certeza", "falei"}
+RESPOSTAS_NAO = {"nao", "nada", "deixa", "deixa pra la", "cancela", "esquece", "errado", "negativo",
+                 "nao precisa", "nao e isso", "nao era isso", "nao quero"}
+# Estas valem como resposta em qualquer frase; as outras ("faz", "vai", "deixa"...) só em frase
+# curta, para "faz tempo que..." ou "deixa eu ver isso aí" não virarem sim ou não.
+RESPOSTAS_FORTES = {"sim", "isso", "isso mesmo", "confirma", "confirmo", "exato", "correto", "nao", "cancela", "negativo"}
+# Ditos logo depois de uma resposta: ela pede desculpas e pergunta o que era.
+CORRECOES = {"nao era isso", "nao e isso", "nao foi isso", "nao era isso que eu queria", "entendeu errado",
+             "voce entendeu errado", "entendeu tudo errado", "errado", "errou"}
+
+
+def perguntar_antes(comando: str, pergunta: str):
+    """Faz a pergunta e guarda o pedido até a pessoa confirmar ("sim") ou negar ("não")."""
+    agora = time.time()
+    CONFIRMACAO.comando = comando
+    CONFIRMACAO.ate = agora + len(pergunta) / CARACTERES_FALA_POR_SEGUNDO + SEGUNDOS_PARA_CONFIRMAR
+    _ULTIMA_PERGUNTA["em"] = agora
+    responder_rapido(pergunta)
+
+
+def _sim_ou_nao(texto: str) -> tuple[str | None, str]:
+    """("sim" ou "nao", o resto da frase), ou (None, texto): "não, quero o clima" -> ("nao", "quero o clima")."""
+    tokens = (texto or "").split()
+    posicao = _localizar_nome(tokens)
+    if posicao and posicao[0] == 0:  # "Beatriz, sim"
+        tokens = tokens[posicao[1]:]
+    normalizados = [_normalizar_token(token) for token in tokens]
+    for tamanho in (4, 3, 2, 1):
+        inicio = " ".join(normalizados[:tamanho])
+        for decisao, respostas in (("sim", RESPOSTAS_SIM), ("nao", RESPOSTAS_NAO)):
+            if inicio in respostas and (inicio in RESPOSTAS_FORTES or len(tokens) <= 3):
+                return decisao, _limpar_bordas(" ".join(tokens[tamanho:]))
+    return None, texto
+
+
+def avaliar_fala_sem_nome(texto: str, em_conversa: bool = False) -> str:
+    """"pedido", "talvez" ou "conversa": se a frase dita sem o nome parecia ser para a Beatriz.
+
+    Usa o Ollama local, porque a frase pode ser conversa da casa; se ele falhar, "conversa".
+    `em_conversa`: ela acabou de falar com a pessoa, então reações e comentários sobre o assunto contam.
+    """
+    if len((texto or "").split()) < 2:
+        return "conversa"
+    ultima = next((fala for _, quem, fala in reversed(REGISTRO_CONVERSA) if quem == "Beatriz"), "")
+    andamento = (
+        "A assistente e a pessoa estão no meio de uma conversa: comentar ou reagir ao que a assistente "
+        "disse, perguntar mais sobre o assunto ou puxar papo com ela também é pedido. Só é conversa o que "
+        "claramente fala com outra pessoa (chama alguém pelo nome, mãe, filho...).\n"
+        "Exemplos no meio da conversa: \"sério? e amanhã também?\" -> pedido; \"nossa, que legal\" -> pedido; "
+        "\"e você, gosta?\" -> pedido; \"mãe, cadê minha mochila?\" -> conversa.\n" if em_conversa else ""
+    )
+    try:
+        resposta = llm_clients.chat(
+            f'Frase captada pelo microfone, dita sem chamar a assistente pelo nome: "{texto}"\n'
+            f'Última fala da assistente: "{ultima[:200]}"\n'
+            f"{andamento}"
+            "Classifique a frase com uma palavra:\n"
+            "pedido: pede algo que uma assistente de computador faz (horas, clima, música, pesquisa, "
+            "lembrete, abrir programas, filmes, notícias) ou responde à última fala da assistente.\n"
+            "talvez: pergunta, sugestão ou ordem que também poderia ser para outra pessoa da casa.\n"
+            "conversa: pessoas falando entre si, chamando alguém, agradecendo, se despedindo, TV ou música.\n"
+            "Exemplos: \"qual a previsão do tempo\" -> pedido; \"toca uma música calma\" -> pedido; "
+            "\"cadê o controle da TV\" -> talvez; \"bora jantar fora hoje\" -> talvez; "
+            "\"filho, vem almoçar\" -> conversa; \"valeu, até amanhã\" -> conversa.\n"
+            "Responda só com a palavra.",
+            opcoes={"temperature": 0, "num_predict": 4},
+        ).lower()
+    except Exception as exc:
+        logger.debug("Não foi possível avaliar a frase sem o nome: %s", exc)
+        return "conversa"
+    return next((categoria for categoria in ("pedido", "talvez", "conversa") if categoria in resposta), "conversa")
+
+
+def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: float | None = None,
+                              confianca: float | None = None) -> str:
+    """Decide o que fazer com a frase ouvida e devolve o pedido a executar ("" para nenhum).
+
+    - Captada enquanto ela falava: o eco da própria voz é descartado; com o nome, ou como
+      resposta a uma chamada ou a uma confirmação, a frase interrompe a fala.
+    - Com o nome, ou na janela de conversa, é pedido.
+    - Sem o nome, a IA local avalia: pedido claro é atendido, duvidoso vira pergunta
+      ("Você falou comigo?").
+    - Com a transcrição incerta, ela confirma antes de agir; "sim" faz, "não" cancela.
+    """
+    agora = time.time()
+    if inicio is not None and falou_durante(inicio, fim if fim is not None else agora):
+        if parece_eco(texto):
+            logger.debug("Eco da própria voz ignorado: %s", texto)  # não é fala do usuário: nem vai ao painel
+            return ""
+        chamou = _localizar_nome((texto or "").split()) is not None
+        respondeu = CONFIRMACAO.ativa(agora) and _sim_ou_nao(texto)[0] is not None
+        if not (chamou or respondeu or ESTADO_ATIVACAO.chamada_ate > agora):
+            logger.debug("Fala ignorada (captada enquanto a Beatriz falava): %s", texto)
+            avisar_painel("ignorado", texto, "eu estava falando; diga “Beatriz” para me interromper")
+            return ""
+        parar_fala()
+
+    if CONFIRMACAO.ativa(agora):
+        decisao, resto = _sim_ou_nao(texto)
+        if decisao:
+            pedido = CONFIRMACAO.comando
+            CONFIRMACAO.limpar()
+            ESTADO_ATIVACAO.fechar()
+            if decisao == "sim":
+                avisar_painel("ouvido", texto, pensando=True)
+                return pedido
+            # "não, eu quero saber o clima" troca o pedido; "não sei, liga pra ele" (conversa) só cancela.
+            trocou = len(resto.split()) >= 2 and avaliar_fala_sem_nome(resto) == "pedido"
+            avisar_painel("ouvido", texto, pensando=trocou)
+            if trocou:
+                return resto
+            ESTADO_ATIVACAO.encerrar()
+            responder_rapido(frase("deixa_pra_la"))
+            return ""
+
+    fim_fala = fim_da_ultima_fala()
+    comando = extrair_comando_ativado(texto, agora, ESTADO_ATIVACAO, fim_fala=fim_fala)
+    sem_nome = comando is None
+    em_conversa = sem_nome and ESTADO_ATIVACAO.em_conversa(agora, fim_fala)
+    if sem_nome:
+        if em_conversa and (tipo_de_encerramento(texto) or LEIS.e_seguimento(texto)):
+            avaliacao = "pedido"  # "valeu!", "tchau", "não entendi" (da lei): no meio da conversa, é com ela
+        elif not ENTENDER_SEM_NOME:
+            avaliacao = "conversa"
+        else:
+            avaliacao = avaliar_fala_sem_nome(texto, em_conversa=em_conversa)
+            if em_conversa and avaliacao == "talvez":
+                avaliacao = "pedido"  # no meio do papo, o duvidoso é com ela: nada de "Foi comigo?"
+        if avaliacao == "talvez" and agora - _ULTIMA_PERGUNTA["em"] > INTERVALO_ENTRE_PERGUNTAS:
+            avisar_painel("ouvido", texto, "não sei se foi comigo; perguntei", pensando=False)
+            perguntar_antes(texto, frase("foi_comigo", texto=texto))
+            return ""
+        if avaliacao != "pedido":
+            avisar_painel("ignorado", texto, "diga “Beatriz” antes do pedido")
+            return ""
+        comando = texto
+
+    normalizado = _normalizar_frase(comando)
+    if normalizado in COMANDOS_PARAR_FALA:
+        parar_fala()  # "Beatriz, para": só interrompe, sem responder
+        avisar_painel("ouvido", texto, "parei de falar")
+        return ""
+    if normalizado in CORRECOES:
+        parar_fala()
+        avisar_painel("ouvido", texto, pensando=False)
+        pergunta = frase("entendi_errado")
+        responder_rapido(pergunta)
+        abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), pergunta)
         return ""
     if comando == "":
-        print(f"\nBeatriz: {RESPOSTA_SO_NOME}")
-        falar_async(RESPOSTA_SO_NOME)
+        avisar_painel("ouvido", texto, pensando=False)
+        responder_rapido(frase("so_nome"))
         return ""
+    if confianca is not None and confianca < CONFIANCA_MINIMA_VOZ:
+        avisar_painel("ouvido", texto, "não tenho certeza do que ouvi; perguntei", pensando=False)
+        perguntar_antes(comando, frase("confirmar_ouvido", comando=comando))
+        return ""
+    motivo = ("no meio da conversa, sem precisar do nome" if em_conversa
+              else "sem o nome, mas entendi como pedido" if sem_nome else "")
+    avisar_painel("ouvido", texto, motivo, pensando=True)
     return comando
+
+
+# ------------------------------------------------------------------ resumo do que ouviu
+RE_RESUMO_CONVERSA = re.compile(
+    r"\b(resum\w*|recapitul\w*)\b.*\b(conversa\w*|ouviu|ouvido|falad[oa]s?|falamos|conversamos|disse|dissemos|"
+    r"reuniao|aula|ultim[oa]s? \d+ minutos?|ultima hora)\b"
+    r"|\bo que (voce ouviu|(foi|a gente|nos|eu) (falad[oa]|falou|falamos|conversamos|disse))\b"
+)
+
+
+def pede_resumo_da_conversa(comando: str) -> bool:
+    return bool(RE_RESUMO_CONVERSA.search(_normalizar_frase(comando)))
+
+
+def minutos_pedidos(comando: str, padrao: int = 30) -> int:
+    texto = _normalizar_frase(comando)
+    if re.search(r"\b(ultima|uma) hora\b", texto):
+        return 60
+    numero = re.search(r"\b(\d+) minutos?\b", texto)
+    return int(numero.group(1)) if numero else padrao
+
+
+def resumir_o_que_ouvi(minutos: int = 30) -> str:
+    """Resumo falado do que o microfone captou e do que ela respondeu, só com o Ollama local."""
+    desde = time.time() - minutos * 60
+    falas = [(quando, quem, texto) for quando, quem, texto in list(REGISTRO_CONVERSA) if quando >= desde]
+    if len(falas) < 3:
+        return f"Ouvi muito pouco nos últimos {minutos} minutos, não dá para fazer um resumo."
+    transcricao = "\n".join(f"[{time.strftime('%H:%M', time.localtime(q))}] {quem}: {t}" for q, quem, t in falas)
+    prompt = (
+        f"Abaixo está o que o microfone da Beatriz captou nos últimos {minutos} minutos: falas do usuário, "
+        "conversas do ambiente que ela ouviu sem responder e as respostas dela. A transcrição automática "
+        "tem erros. Faça um resumo falado, em português, em até cinco frases: os assuntos, os pedidos, o que "
+        "foi decidido e o que ficou para fazer. Comece direto pelo conteúdo, sem frase de abertura. Não invente "
+        "nada que não esteja escrito. Sem listas nem markdown."
+        f"\n\n{transcricao[-12000:]}\n\nResumo:"
+    )
+    try:
+        # Só no computador: conversa da casa não vai para a nuvem.
+        return llm_clients.chat_beatriz(prompt, contexto="Resumo de conversa captada pelo microfone.",
+                                        usar_historico=False)
+    except Exception as exc:
+        logger.warning("Não foi possível resumir a conversa: %s", exc)
+        return "Não consegui fazer o resumo agora: o Ollama não respondeu."
+
+
+# Só estas desligam o sistema. "Tchau", "até logo" e "era só isso" encerram a conversa (responder_encerramento).
+PALAVRAS_DESLIGAR = ["desligar", "desliga", "pode desligar", "desliga o sistema", "encerrar", "encerrar o sistema",
+                     "sair", "fechar", "finalizar", "terminar"]
 
 
 def comando_solicita_encerramento(comando: str, palavras_desligar: list[str]) -> bool:
@@ -771,21 +1288,49 @@ def comando_solicita_encerramento(comando: str, palavras_desligar: list[str]) ->
 
 
 # ------------------------------------------------------------------ palavra de ativação
-RESPOSTA_SO_NOME = "Sim? Pode falar."
 INTERJEICOES_CHAMADA = {"ei", "ô", "o", "ok", "okay", "hey", "alô", "e aí", "ah"}
 CARACTERES_FALA_POR_SEGUNDO = 14.0  # estimativa da voz a +15%, para a janela começar depois da fala
+# Pedidos para ela só parar de falar, sem responder nada.
+COMANDOS_PARAR_FALA = {"para", "pare", "chega", "silencio", "espera", "pera", "psiu", "cala a boca", "fica quieta"}
 
 
 @dataclass
 class EstadoAtivacao:
     """Até quando a próxima frase falada é aceita sem o nome (relógio de time.time())."""
     janela_ate: float = 0.0
+    seguimento: bool = False  # depois de uma resposta, a janela também conta do fim real da fala
+    chamada_ate: float = 0.0  # chamaram só o nome: a próxima frase pode interromper o "Oi! Fala!"
+    conversa_ate: float = 0.0  # conversa em andamento (JANELA_CONVERSA_SEGUNDOS depois da última fala)
+    conversando: bool = False
 
-    def janela_aberta(self, agora: float) -> bool:
-        return agora < self.janela_ate
+    def janela_aberta(self, agora: float, fim_fala: float = 0.0) -> bool:
+        if agora < self.janela_ate:
+            return True
+        return self.seguimento and fim_fala > 0 and agora < fim_fala + JANELA_CONTINUACAO_SEGUNDOS
+
+    def em_conversa(self, agora: float, fim_fala: float = 0.0) -> bool:
+        if not self.conversando:
+            return False
+        return agora < self.conversa_ate or (fim_fala > 0 and agora < fim_fala + JANELA_CONVERSA_SEGUNDOS)
+
+    def fechar(self):
+        """Fecha a janela de uma frase; a conversa em andamento continua."""
+        self.janela_ate = 0.0
+        self.seguimento = False
+        self.chamada_ate = 0.0
+
+    def encerrar(self):
+        """Fim da conversa ("tchau", "deixa pra lá"): daqui em diante, só com o nome."""
+        self.fechar()
+        self.conversa_ate = 0.0
+        self.conversando = False
 
 
 ESTADO_ATIVACAO = EstadoAtivacao()
+
+
+def _normalizar_frase(texto: str) -> str:
+    return " ".join(_normalizar_token(token) for token in (texto or "").split() if _normalizar_token(token))
 
 
 def _normalizar_token(token: str) -> str:
@@ -830,11 +1375,12 @@ def _limpar_bordas(texto: str) -> str:
 
 
 def extrair_comando_ativado(texto: str, agora: float, estado: EstadoAtivacao,
-                            exigir: bool | None = None) -> str | None:
+                            exigir: bool | None = None, fim_fala: float = 0.0) -> str | None:
     """Filtra a fala captada pelo microfone pela palavra de ativação.
 
     Retorna None para ignorar a frase (conversa de fundo), "" quando ela só chamou
     o nome (abre uma janela curta para o comando) ou o comando sem o nome.
+    `fim_fala` é quando a última fala da Beatriz terminou de tocar.
     """
     texto = (texto or "").strip()
     if not texto:
@@ -847,8 +1393,8 @@ def extrair_comando_ativado(texto: str, agora: float, estado: EstadoAtivacao,
     tokens = texto.split()
     posicao = _localizar_nome(tokens)
     if posicao is None:
-        if estado.janela_aberta(agora):
-            estado.janela_ate = 0.0  # a janela vale para uma frase; a resposta abre outra
+        if estado.janela_aberta(agora, fim_fala):
+            estado.fechar()  # a janela vale para uma frase; a resposta abre outra
             return texto
         logger.debug("Fala ignorada (sem a palavra de ativação): %s", texto)
         return None
@@ -862,19 +1408,25 @@ def extrair_comando_ativado(texto: str, agora: float, estado: EstadoAtivacao,
     comando = " ".join(parte for parte in (antes, depois) if parte)
 
     if not comando:
-        estado.janela_ate = agora + JANELA_ATIVACAO_SEGUNDOS
+        estado.fechar()
+        estado.janela_ate = estado.chamada_ate = agora + JANELA_ATIVACAO_SEGUNDOS
         return ""
-    estado.janela_ate = 0.0
+    estado.fechar()
     return comando
 
 
 def abrir_janela_continuacao(estado: EstadoAtivacao, agora: float, resposta: str = "") -> None:
     """Depois de responder, aceita perguntas de seguimento sem o nome por um tempo curto.
 
-    A fala é assíncrona, então a janela conta a partir do fim estimado da resposta falada.
+    A fala é assíncrona: a janela vale do fim estimado da resposta falada e também do fim
+    real (o `fim_fala` que `extrair_comando_ativado` recebe), o que vier depois.
     """
     duracao_fala = len(resposta or "") / CARACTERES_FALA_POR_SEGUNDO
     estado.janela_ate = max(estado.janela_ate, agora + duracao_fala + JANELA_CONTINUACAO_SEGUNDOS)
+    estado.seguimento = True
+    if JANELA_CONVERSA_SEGUNDOS > 0:
+        estado.conversa_ate = max(estado.conversa_ate, agora + duracao_fala + JANELA_CONVERSA_SEGUNDOS)
+        estado.conversando = True
 
 
 def estado_escuta(agora: float | None = None) -> str:
@@ -882,7 +1434,7 @@ def estado_escuta(agora: float | None = None) -> str:
     if not EXIGIR_PALAVRA_ATIVACAO:
         return "escutando"
     agora = time.time() if agora is None else agora
-    return "escutando" if ESTADO_ATIVACAO.janela_aberta(agora) else "aguardando o nome"
+    return "escutando" if ESTADO_ATIVACAO.janela_aberta(agora, fim_da_ultima_fala()) else "aguardando o nome"
 
 
 DIAS_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
@@ -905,15 +1457,16 @@ def periodo_do_dia(hora: int) -> str:
     return "Boa noite"
 
 
-def saudacao_inicial():
-    """Saudação de abertura no estilo Jarvis: período do dia, hora e data."""
+def saudacao_inicial(agenda_de_hoje: str = "") -> str:
+    """Saudação de abertura, animada e diferente a cada vez: período do dia, hora, data e a agenda."""
     agora = time.localtime()
     periodo = periodo_do_dia(agora.tm_hour)
     data = f"{DIAS_SEMANA[agora.tm_wday]}, {agora.tm_mday} de {MESES[agora.tm_mon - 1]}"
-    return (
-        f"{periodo}! São {agora.tm_hour:02d}:{agora.tm_min:02d} desta {data}. "
-        "Todos os sistemas estão online. Em que posso ajudar?"
-    )
+    partes = [f"{periodo}! {frase('abertura')}", f"São {agora.tm_hour:02d}:{agora.tm_min:02d} desta {data}."]
+    if agenda_de_hoje:
+        partes.append(agenda_de_hoje)
+    partes.append(frase("convite"))
+    return " ".join(partes)
 
 
 def responder_saudacao(comando: str) -> str | None:
@@ -922,8 +1475,17 @@ def responder_saudacao(comando: str) -> str | None:
     texto = re.sub(r"\s+", " ", texto).strip()
     if texto not in SAUDACOES_USUARIO:
         return None
-    periodo = periodo_do_dia(time.localtime().tm_hour)
-    return f"{periodo}! Estou aqui. O que vamos fazer?"
+    return frase("saudacao", periodo=periodo_do_dia(time.localtime().tm_hour))
+
+
+def responder_encerramento(comando: str) -> str | None:
+    """'Valeu!' ganha um 'de nada' animado; 'tchau'/'era só isso' encerra a conversa (sem desligar)."""
+    tipo = tipo_de_encerramento(comando)
+    if tipo == "tchau":
+        return frase("tchau")
+    if tipo == "obrigado":
+        return frase("obrigado")
+    return None
 
 
 def iniciar_tela_carregamento():
@@ -961,9 +1523,28 @@ def inicializar_biblioteca_automatica():
         return False
 
 
-def anunciar_tarefa_concluida(pedido: str, tarefa):
-    """Chamado pelo orquestrador (em segundo plano) quando os agentes terminam uma tarefa."""
-    falar_e_registrar(pedido, tarefa.mensagem_final)
+def anunciar_tarefa_concluida(pedido: str, tarefa, canal: str = "voz", mandar_arquivos: bool = False):
+    """Chamado pelo orquestrador (em segundo plano) quando os agentes terminam uma tarefa.
+
+    `canal` é de onde o pedido veio. Pelo WhatsApp a resposta é uma mensagem com o principal do
+    resultado; os arquivos só vão se o pedido disse para mandar (`mandar_arquivos`) ou se pedirem depois.
+    """
+    if canal == "whatsapp" and CANAL_WHATSAPP is not None:
+        texto = tarefa.mensagem_final
+        detalhes = texto_da_entrega(tarefa)
+        if detalhes:
+            texto += f"\n\n{detalhes}"
+        if tarefa.arquivos and not mandar_arquivos:
+            texto += "\n\nSe quiser o arquivo, é só pedir: *manda o arquivo*."
+        responder_no_whatsapp(pedido, texto, arquivos=tarefa.arquivos if mandar_arquivos else ())
+    else:
+        falar_e_registrar(pedido, tarefa.mensagem_final, canal="voz")
+    # "Faz um PDF sobre X e imprime": com o arquivo pronto, ela pergunta se imprime (a resposta vem
+    # pelo mesmo canal e cai em IMPRESSORA.responder).
+    if tarefa.arquivos and pede_impressao(pedido):
+        oferta = IMPRESSORA.oferecer_arquivos(tarefa.arquivos)
+        if oferta:
+            falar_e_registrar(pedido, oferta, canal="whatsapp" if canal == "whatsapp" else "voz")
     duracao = (tarefa.concluida_em or time.time()) - tarefa.criada_em
     analisador.registrar_interacao(pedido, ["orquestrador", *tarefa.plano], duracao, tarefa.status == "concluída")
 
@@ -990,21 +1571,60 @@ def publicar_status_painel(dados_compartilhados, intervalo=2.0):
         time.sleep(intervalo)
 
 
+def acompanhar_whatsapp(canal: CanalWhatsApp):
+    """Avisa no painel (e pela voz, quando precisa de você) as mudanças de estado do WhatsApp."""
+    anterior = None
+    while canal.processo is not None and canal.processo.is_alive():
+        situacao = canal.status().get("status")
+        if situacao and situacao != anterior:
+            if situacao == "aguardando QR":
+                responder_rapido_por_voz("Para receber comandos pelo WhatsApp, leia o QR code na janela que abri: "
+                                         "no celular, WhatsApp, Aparelhos conectados, Conectar um aparelho.")
+            elif situacao == "conectado":
+                avisar_painel("resposta", "WhatsApp conectado: mande comandos na conversa Mensagem para você.")
+            logger.info("WhatsApp: %s", situacao)
+            anterior = situacao
+        time.sleep(2)
+
+
+def responder_rapido_por_voz(texto: str):
+    falar_async(texto)
+    avisar_painel("resposta", texto)
+
+
 def main(evento_carregamento=None):
-    global MICROFONE_EVENTO
+    global MICROFONE_EVENTO, PAINEL_VOZ, CANAL_WHATSAPP
     MICROFONE_EVENTO = multiprocessing.Event()
     MICROFONE_EVENTO.set()
+    PAINEL_VOZ = multiprocessing.Queue()
+    # Adianta o que deixaria a primeira conversa lenta: carregar o modelo (~3 s) e gerar
+    # o áudio da resposta ao nome, que assim toca na hora.
+    threading.Thread(target=llm_clients.aquecer, daemon=True).start()
+    preparar_frases(todas_as_frases("so_nome"))
+    iniciar_escuta_continua(receber_fala, pode_escutar=pode_escutar)
     inicializar_biblioteca_automatica()
     gerenciador_audio = multiprocessing.Manager()
     configuracao_audio = gerenciador_audio.dict({"microfone": None, "saida": ""})
     threading.Thread(target=publicar_status_painel, args=(configuracao_audio,), daemon=True).start()
+    # As ferramentas (API, mapa de ferramentas) usam o mesmo agente; os lembretes só rodam neste processo.
+    tools._AGENTE_AGENDA = AGENDA
+    iniciar_lembretes(AGENDA, avisar_lembrete)
     # O andamento das tarefas dos agentes vai para o mesmo dicionário que o painel lê.
     orquestrador = criar_orquestrador(publicar=PainelCompartilhado(configuracao_audio))
+    if WHATSAPP_COMANDOS:
+        # O estado do WhatsApp (QR, conectado...) também vai para o dicionário do painel.
+        CANAL_WHATSAPP = CanalWhatsApp(configuracao_audio, numero=WHATSAPP_MEU_NUMERO)
+        try:
+            CANAL_WHATSAPP.iniciar()
+            threading.Thread(target=acompanhar_whatsapp, args=(CANAL_WHATSAPP,), daemon=True).start()
+        except Exception as exc:
+            logger.warning("Não foi possível iniciar o canal do WhatsApp: %s", exc)
+            CANAL_WHATSAPP = None
 
     try:
         processo_interface = multiprocessing.Process(
-            target=iniciar_interface_texto,
-            args=(evento_carregamento, MICROFONE_EVENTO, configuracao_audio),
+            target=escolher_painel(),
+            args=(evento_carregamento, MICROFONE_EVENTO, configuracao_audio, PAINEL_VOZ),
             daemon=True,
         )
         processo_interface.start()
@@ -1032,8 +1652,8 @@ def main(evento_carregamento=None):
     # e reduzir o tempo antes do usuário poder formular o primeiro pedido.
     logger.info("Monitor automático de notícias/e-mails desativado por padrão.")
 
-    # falar_async fala em paralelo, então a saudação não atrasa o primeiro comando.
-    falar_async(saudacao_inicial())
+    # A fala é em paralelo, então a saudação não atrasa o primeiro comando.
+    cumprimentar()
     print("Biblioteca de conhecimento sendo carregada em segundo plano. Quando terminar, eu aviso que todas as funções já estão prontas.")
 
     try:
@@ -1047,7 +1667,7 @@ def main(evento_carregamento=None):
     except Exception as exc:
         logger.warning("Não foi possível iniciar a webcam: %s", exc)
 
-    palavras_desligar = ["desligar", "encerrar", "sair", "tchau", "fechar", "até logo", "adeus", "finalizar", "parar", "terminar"]
+    palavras_desligar = PALAVRAS_DESLIGAR
     biblioteca_pronta = False
     configuracao_aplicada = (None, "")
 
@@ -1068,11 +1688,19 @@ def main(evento_carregamento=None):
             print("Biblioteca de conhecimento pronta. Todas as funções locais e de memória já estão disponíveis.")
             biblioteca_pronta = True
 
-        for aviso in gerenciador_agenda.verificar_lembretes():
-            falar_async(aviso)
-
         comando = obter_comando_usuario()
         if not comando:
+            continue
+
+        # "Beatriz, resume o que você ouviu (nos últimos 10 minutos)": antes dos agentes e da aula de idiomas.
+        if pede_resumo_da_conversa(comando) and CANAL["atual"] == "whatsapp":
+            # São conversas da casa: ficam no computador, não vão para o WhatsApp.
+            responder_rapido("Por privacidade, o resumo do que ouvi em casa só sai pela voz ou no painel.")
+            continue
+        if pede_resumo_da_conversa(comando):
+            inicio_resumo = time.time()
+            falar_e_registrar(comando, resumir_o_que_ouvi(minutos_pedidos(comando)))
+            analisador.registrar_interacao(comando, ["resumo_da_conversa"], time.time() - inicio_resumo, True)
             continue
 
         idiomas_executado, resposta_idiomas = processar_comando_idiomas(comando)
@@ -1082,7 +1710,12 @@ def main(evento_carregamento=None):
             continue
 
         if comando_solicita_encerramento(comando, palavras_desligar):
-            falar("Encerrando o sistema. Até logo!")
+            if CANAL["atual"] == "whatsapp":
+                # Desligada pelo WhatsApp, ela não teria como ser religada à distância.
+                responder_rapido("Pelo WhatsApp eu não desligo, para não ficar fora do ar sem ninguém para me religar. "
+                                 "Para me desligar, fale comigo ou feche o painel.")
+                continue
+            falar(frase("encerrando"))
             break
 
         resposta_saudacao = responder_saudacao(comando)
@@ -1091,7 +1724,46 @@ def main(evento_carregamento=None):
             analisador.registrar_interacao(comando, [], 0.0, True)
             continue
 
+        # "Valeu!" ganha um "de nada"; "tchau" ou "era só isso" encerra a conversa, sem desligar o sistema.
+        resposta_encerramento = responder_encerramento(comando)
+        if resposta_encerramento:
+            falar_e_registrar(comando, resposta_encerramento)
+            if tipo_de_encerramento(comando) == "tchau":
+                ESTADO_ATIVACAO.encerrar()  # daqui em diante, só chamando "Beatriz"
+            analisador.registrar_interacao(comando, [], 0.0, True)
+            continue
+
         comando_normalizado = agente_aprendizagem.normalizar(comando)
+
+        # Impressora antes da agenda e dos agentes: "imprime minha agenda" é impressão, e o "sim" que
+        # confirma uma impressão é dela. "Faz um PDF sobre X e imprime" passa (os agentes criam antes).
+        resposta_impressora = IMPRESSORA.responder(comando)
+        if resposta_impressora:
+            falar_e_registrar(comando, resposta_impressora)
+            analisador.registrar_interacao(comando, ["impressora"], 0.0, True)
+            continue
+
+        # Artigos de lei antes dos agentes, do resumo e das ferramentas: "me explica o artigo 5 da
+        # Constituição" não é pesquisa na web. "Faz um PDF sobre o artigo 5" passa (os agentes fazem).
+        inicio_lei = time.time()
+        resposta_lei = LEIS.responder(comando)
+        if resposta_lei:
+            responder_lei(comando, resposta_lei)
+            analisador.registrar_interacao(comando, ["leis"], time.time() - inicio_lei, True)
+            continue
+
+        # "Manda o arquivo" (pelo WhatsApp) ou "manda o PDF pro meu WhatsApp" (pela voz).
+        if mandar_arquivo_pedido(comando, orquestrador):
+            continue
+
+        # Agenda antes dos agentes e das ferramentas: "o que tenho hoje" não é a data de hoje, e
+        # "amanhã às 3" pode ser a resposta a uma pergunta da agenda ("Para quando eu marco?").
+        # Pedidos de documento ("faz um PDF da minha agenda") e o resumo do dia passam direto.
+        resposta_agenda = AGENDA.responder(comando)
+        if resposta_agenda:
+            falar_e_registrar(comando, resposta_agenda)
+            analisador.registrar_interacao(comando, ["agenda"], 0.0, True)
+            continue
 
         # Agentes antes das ferramentas: as ferramentas reagem a palavras soltas ("hoje", "agenda"),
         # e "faça um PDF com as notícias de hoje" viraria a resposta da data.
@@ -1100,9 +1772,29 @@ def main(evento_carregamento=None):
             falar_e_registrar(comando, resposta_tarefas)
             analisador.registrar_interacao(comando, ["orquestrador"], 0.0, True)
             continue
-        tarefa = orquestrador.enviar(comando, ao_concluir=lambda t, pedido=comando: anunciar_tarefa_concluida(pedido, t))
+        tarefa = orquestrador.enviar(
+            comando,
+            ao_concluir=lambda t, pedido=comando, canal=CANAL["atual"], mandar=pede_envio(comando):
+                anunciar_tarefa_concluida(pedido, t, canal, mandar),
+            # Pedido pelo WhatsApp: ninguém está na frente do PC para ver o arquivo aberto.
+            abrir=CANAL["atual"] != "whatsapp",
+        )
         if tarefa:
             falar_e_registrar(comando, orquestrador.mensagem_inicio(tarefa))
+            continue
+
+        # "Faz um resumo sobre X": pesquisa e escreve um resumo explicativo. Depois dos agentes,
+        # que cuidam dos resumos em PDF, de e-mails, do dia e para prova.
+        pedido_resumo = preparar_pedido_de_resumo(comando, llm_clients.historico_recente())
+        if pedido_resumo:
+            tema, ia = pedido_resumo
+            responder_rapido(f"Vou pesquisar e preparar um resumo sobre {tema}. Leva mais ou menos meio minuto.")
+            inicio_resumo = time.time()
+            resumo = gerar_resumo(tema, preferir=ia)
+            avisar_painel("resumo", resumo.texto, fala=resumo.fala, tema=resumo.tema, secoes=resumo.secoes,
+                          fontes=resumo.fontes, arquivo=resumo.arquivo)
+            falar_e_registrar(comando, resumo.fala, texto_painel=resumo.texto)
+            analisador.registrar_interacao(comando, ["resumo_explicativo"], time.time() - inicio_resumo, True)
             continue
 
         ferramenta_executada, resposta_ferramenta = tentar_executar_ferramenta(comando)
@@ -1110,11 +1802,6 @@ def main(evento_carregamento=None):
             if resposta_ferramenta:
                     falar_e_registrar(comando, resposta_ferramenta)
             analisador.registrar_interacao(comando, ["ferramenta_nativa"], 0.0, True)
-            continue
-
-        if comando_normalizado in ["obrigado", "obrigada", "valeu", "agradecido", "agradecida" , "muito obrigado", "muito obrigada"]:
-            falar_e_registrar(comando, "Por nada! Estou aqui para ajudar.")
-            analisador.registrar_interacao(comando, [], 0.0, True)
             continue
 
         if any(expr in comando_normalizado for expr in ["que horas", "qual a hora", "data de hoje"]):
@@ -1125,7 +1812,7 @@ def main(evento_carregamento=None):
 
         if comando_normalizado.strip(" .!?,") in COMANDOS_NOVA_CONVERSA:
             llm_clients.limpar_historico()
-            falar_e_registrar(comando, "Certo, começando um assunto novo.")
+            falar_e_registrar(comando, frase("assunto_novo"))
             analisador.registrar_interacao(comando, [], 0.0, True)
             continue
 
@@ -1135,15 +1822,15 @@ def main(evento_carregamento=None):
 
         if categoria == "simples":
             try:
-                texto = llm_clients.chat_beatriz(comando)
-                falar_e_registrar(comando, texto)
-                analisador.registrar_interacao(comando, [], 0.0, True)
+                inicio_resposta = time.time()
+                responder_conversa_em_stream(comando)
+                analisador.registrar_interacao(comando, [], time.time() - inicio_resposta, True)
                 continue
             except Exception as exc:
                 logger.warning("Ollama falhou para resposta simples: %s", exc)
 
         if not llm_clients.is_ollama_available():
-            falar("Ollama não está disponível. Verifique se o serviço local está ativo.")
+            responder_rapido("Ollama não está disponível. Verifique se o serviço local está ativo.")
             analisador.registrar_interacao(comando, [], 0.0, False)
             continue
 
@@ -1163,7 +1850,7 @@ def main(evento_carregamento=None):
             analisador.registrar_interacao(comando, [], time.time() - tempo_inicio, True)
         except Exception as exc:
             logger.error("Erro no fluxo principal: %s", exc)
-            falar("Desculpe, ocorreu um erro.")
+            responder_rapido(frase("erro"))
             analisador.registrar_interacao(comando, [], 0.0, False)
 
 

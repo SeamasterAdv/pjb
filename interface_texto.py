@@ -1,4 +1,6 @@
+import ctypes
 import os
+import queue
 import threading
 import time
 import tkinter as tk
@@ -8,7 +10,13 @@ from datetime import datetime
 from tkinter import filedialog, ttk
 
 import memory
+from agente_agenda import criar_agente_agenda
+from agente_impressora import criar_agente_impressora, texto_da_agenda
+from agente_leis import AgenteLeis
 from agentes import PainelCompartilhado, criar_orquestrador
+from cinema import responder_pedido_de_cinema
+from jeito_de_falar import frase
+from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
 from llm_nuvem import claude, gemini
 from config import (
     ARQUIVO_MEMORIA_USUARIO,
@@ -26,8 +34,11 @@ from memory import importar_fonte_local, notelooklm_responder
 from painel_hud import (
     HUD_AMBAR,
     HUD_BORDA,
-    HUD_CIANO,
+    HUD_CARTAO,
+    HUD_DESTAQUE,
+    HUD_DESTAQUE_CLARO,
     HUD_FUNDO,
+    HUD_LILAS,
     HUD_PAINEL,
     HUD_SUAVE,
     HUD_TEXTO,
@@ -41,6 +52,7 @@ from painel_hud import (
     PainelHUD,
     RedeBiblioteca,
     contar_linhas,
+    foto_sol,
     grupos_da_biblioteca,
     ler_fatos_memoria,
     ler_metricas_analise,
@@ -64,32 +76,86 @@ from voice import (
 
 _JANELA_CARREGAMENTO = None
 
-# Paleta do painel (tema escuro "HUD")
+# Ícone das janelas e da barra de tarefas (gerado por assets/gerar_icone.py).
+PASTA_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ICONE_ICO = os.path.join(PASTA_ASSETS, "beatriz_icone.ico")
+ICONE_PNG = os.path.join(PASTA_ASSETS, "beatriz_icone_256.png")
+ID_APP_WINDOWS = "Beatriz.Assistente"
+
+
+def definir_id_app_windows():
+    """Separa a Beatriz do python.exe na barra de tarefas, para que ela mostre o próprio ícone.
+
+    Precisa rodar antes de a janela aparecer.
+    """
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ID_APP_WINDOWS)
+    except (AttributeError, OSError):
+        pass  # fora do Windows
+
+
+def aplicar_icone(janela):
+    """Usa o sol da Beatriz como ícone desta janela e das que ela abrir."""
+    try:
+        if os.name == "nt":
+            janela.iconbitmap(default=ICONE_ICO)  # o .ico traz versões próprias de 16 a 256 px
+        else:
+            janela.iconphoto(True, tk.PhotoImage(master=janela, file=ICONE_PNG))
+    except tk.TclError:
+        pass  # sem o arquivo, a janela abre com o ícone padrão
+
+
+def pintar_barra_de_titulo(janela):
+    """No Windows 11, pinta a barra de título e a borda com as cores do painel (no 10 nada muda)."""
+    def colorref(cor):  # o Windows guarda as cores como 0x00BBGGRR
+        r, g, b = (int(cor[i:i + 2], 16) for i in (1, 3, 5))
+        return ctypes.c_int(r | g << 8 | b << 16)
+
+    try:
+        hwnd = int(janela.wm_frame(), 16)
+        # DWMWA_BORDER_COLOR (34), DWMWA_CAPTION_COLOR (35) e DWMWA_TEXT_COLOR (36)
+        for atributo, cor in ((34, HUD_BORDA), (35, HUD_FUNDO), (36, HUD_TEXTO)):
+            valor = colorref(cor)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, atributo, ctypes.byref(valor), ctypes.sizeof(valor))
+    except (AttributeError, OSError, ValueError, tk.TclError):
+        pass  # fora do Windows ou sem o DWM
+
+# Paleta do painel (roxo e dourado, de identidade_visual.py)
 COR_FUNDO = HUD_FUNDO
 COR_PAINEL = HUD_PAINEL
-COR_CARTAO = "#0C1E2C"
+COR_CARTAO = HUD_CARTAO
 COR_BORDA = HUD_BORDA
 COR_TEXTO = HUD_TEXTO
 COR_SUAVE = HUD_SUAVE
-COR_CIANO = HUD_CIANO
+COR_DESTAQUE = HUD_DESTAQUE
+COR_LILAS = HUD_LILAS
 COR_VERDE = HUD_VERDE
 COR_AMBAR = HUD_AMBAR
 COR_VERMELHO = HUD_VERMELHO
-COR_CODIGO = "#04121B"
+COR_REALCE = "#3D2861"  # botão sob o mouse e aba ativa
+COR_SELECAO = "#4A3275"
+COR_CODIGO = "#150C25"
 
 FONTE_TEXTO = ("Segoe UI", 10)
-FONTE_MONO = ("Consolas", 10)
-FONTE_MONO_PEQUENA = ("Consolas", 9)
+FONTE_MONO = ("Consolas", 10)  # só nos blocos de código
+FONTE_PEQUENA = ("Segoe UI", 9)
 
 PLACEHOLDER_ENTRADA = "Digite um comando ou pergunta...  (Enter envia · Shift+Enter quebra linha)"
 
 ATALHOS_RAPIDOS = (
-    ("Criar apresentação", "Crie uma apresentação com 8 slides sobre "),
-    ("Criar documento Word", "Crie um documento em Word sobre "),
-    ("Criar PDF com pesquisa", "Pesquise e faça um PDF sobre "),
-    ("Resumir minha memória", "Resuma o que você sabe sobre mim."),
-    ("Buscar nos documentos", "O que meus documentos dizem sobre "),
-    ("Explicação técnica", "Explique de forma técnica e passo a passo: "),
+    ("Apresentação", "Crie uma apresentação com 8 slides sobre "),
+    ("Word", "Crie um documento em Word sobre "),
+    ("PDF + pesquisa", "Pesquise e faça um PDF sobre "),
+    ("Planilha Excel", "Crie uma planilha em Excel com gráfico de "),
+    ("Estudos", "Crie 15 flashcards e 8 questões sobre "),
+    ("Minha agenda", "O que tenho hoje?"),
+    ("Marcar compromisso", "Marca "),
+    ("Organizar o dia", "Organiza meu dia"),
+    ("Minhas tarefas", "Quais minhas tarefas?"),
+    ("Resumo do dia", "Qual o resumo do dia?"),
+    ("Meus e-mails", "Resuma meus e-mails e rascunhe as respostas."),
+    ("Minha memória", "Resuma o que você sabe sobre mim."),
+    ("Documentos", "O que meus documentos dizem sobre "),
     ("Aula de inglês", "Quero uma aula de inglês."),
 )
 
@@ -101,6 +167,7 @@ CORES_STATUS_TAREFA = {
     "concluída": COR_VERDE,
     "falhou": COR_VERMELHO,
     "cancelada": COR_SUAVE,
+    "não realizada": COR_AMBAR,  # falta configurar algo (ex.: vincular o Gmail)
 }
 
 
@@ -124,19 +191,21 @@ class JanelaCarregamento(tk.Tk):
         estilo.configure(
             "Carregando.Horizontal.TProgressbar",
             troughcolor=COR_CARTAO,
-            background=COR_CIANO,
+            background=COR_DESTAQUE,
             bordercolor=COR_CARTAO,
-            lightcolor=COR_CIANO,
-            darkcolor=COR_CIANO,
+            lightcolor=COR_DESTAQUE,
+            darkcolor=COR_DESTAQUE,
         )
 
-        frame = tk.Frame(self, bg=COR_FUNDO, padx=28, pady=22)
+        frame = tk.Frame(self, bg=COR_FUNDO, padx=40, pady=24)
         frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-        tk.Label(frame, text="B.E.A.T.R.I.Z", font=("Consolas", 20, "bold"), fg=COR_CIANO, bg=COR_FUNDO).pack(anchor="center")
-        tk.Label(frame, text="assistente local · inicializando sistemas", font=FONTE_MONO_PEQUENA, fg=COR_SUAVE, bg=COR_FUNDO).pack(anchor="center", pady=(2, 14))
+        self._sol = foto_sol(96)
+        tk.Label(frame, image=self._sol, bg=COR_FUNDO).pack(anchor="center")
+        tk.Label(frame, text="Beatriz", font=("Segoe UI Semibold", 22), fg=HUD_DESTAQUE_CLARO, bg=COR_FUNDO).pack(anchor="center")
+        tk.Label(frame, text="sua assistente pessoal está acordando", font=FONTE_PEQUENA, fg=COR_SUAVE, bg=COR_FUNDO).pack(anchor="center", pady=(0, 14))
 
-        self.status = tk.Label(frame, text="> Inicializando módulos...", font=FONTE_MONO, fg=COR_VERDE, bg=COR_FUNDO)
+        self.status = tk.Label(frame, text="Inicializando módulos...", font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_FUNDO)
         self.status.pack(anchor="center", pady=(0, 12))
 
         self.progress = ttk.Progressbar(
@@ -163,7 +232,7 @@ class JanelaCarregamento(tk.Tk):
 
     def atualizar_status(self, texto):
         if self.winfo_exists():
-            self.status.config(text=f"> {texto}")
+            self.status.config(text=texto)
             self.update_idletasks()
 
     def fechar(self):
@@ -205,11 +274,15 @@ def verificar_ollama(timeout=2):
 
 
 class JanelaComandos(tk.Tk):
-    def __init__(self, microfone_evento=None, audio_config=None):
+    def __init__(self, microfone_evento=None, audio_config=None, fila_voz=None):
+        definir_id_app_windows()
         super().__init__()
+        aplicar_icone(self)
         self.microfone_evento = microfone_evento
         self.audio_config = audio_config
-        self.title("B.E.A.T.R.I.Z · Painel")
+        self.fila_voz = fila_voz  # o que a voz ouviu e respondeu, vindo do processo principal
+        self._voz_pensando_desde = 0.0
+        self.title("Beatriz")
         self.geometry("1440x900")
         self.minsize(1180, 720)
         self.configure(bg=COR_FUNDO)
@@ -234,6 +307,13 @@ class JanelaComandos(tk.Tk):
         # porque os dois processos publicam no mesmo dicionário compartilhado.
         self._dados_tarefas = audio_config if audio_config is not None else {}
         self.orquestrador = criar_orquestrador(publicar=PainelCompartilhado(self._dados_tarefas))
+        self.agenda = criar_agente_agenda(llm=None)  # a mesma agenda local da voz (mesmo arquivo)
+        self.leis = AgenteLeis()  # artigos de lei: texto oficial e explicação pelo Gemini
+        self.impressora = criar_agente_impressora(
+            respostas_recentes=lambda: [self._ultima_resposta],
+            texto_agenda=lambda t: texto_da_agenda(self.agenda, t),
+            avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="status")),
+        )
 
         self.style = ttk.Style(self)
         try:
@@ -249,6 +329,8 @@ class JanelaComandos(tk.Tk):
         self.atualizar_painel_dados()
         self.atualizar_agenda_e_clima()
         self.atualizar_tarefas()
+        self.acompanhar_voz()
+        self.after(100, lambda: pintar_barra_de_titulo(self))  # a moldura da janela só existe depois de aparecer
 
     # ------------------------------------------------------------------ agentes
     def atualizar_tarefas(self):
@@ -270,8 +352,8 @@ class JanelaComandos(tk.Tk):
         self.painel_agentes.definir_destaque(f"· {ativas} em andamento" if ativas else "· livres",
                                              COR_AMBAR if ativas else COR_VERDE)
         if not tarefas:
-            tk.Label(self.lista_tarefas, text="Peça um documento, PDF, Word ou\napresentação e acompanhe aqui.",
-                     font=("Consolas", 8), fg=COR_SUAVE, bg=COR_PAINEL, justify="left").pack(anchor="w")
+            tk.Label(self.lista_tarefas, text="Peça um documento, apresentação, planilha,\nmaterial de estudo ou o resumo do dia.",
+                     font=("Segoe UI", 8), fg=COR_SUAVE, bg=COR_PAINEL, justify="left").pack(anchor="w")
             return
         for tarefa in tarefas:
             cor = CORES_STATUS_TAREFA.get(tarefa["status"], COR_SUAVE)
@@ -281,7 +363,7 @@ class JanelaComandos(tk.Tk):
             topo.pack(fill="x")
             tk.Label(topo, text="●", font=("Segoe UI", 8), fg=cor, bg=COR_PAINEL).pack(side="left")
             pedido = tarefa["pedido"] if len(tarefa["pedido"]) <= 40 else tarefa["pedido"][:39] + "…"
-            tk.Label(topo, text=pedido, font=("Consolas", 8), fg=COR_TEXTO, bg=COR_PAINEL, anchor="w").pack(side="left", padx=(4, 0))
+            tk.Label(topo, text=pedido, font=("Segoe UI", 8), fg=COR_TEXTO, bg=COR_PAINEL, anchor="w").pack(side="left", padx=(4, 0))
             if tarefa["etapa"]:
                 detalhe = f"{tarefa['status']} · {tarefa['etapa']}"
             else:
@@ -291,7 +373,7 @@ class JanelaComandos(tk.Tk):
                 if tarefa.get("arquivos"):
                     partes.append(", ".join(os.path.splitext(a)[1].lstrip(".").upper() for a in tarefa["arquivos"]))
                 detalhe = " · ".join(partes)
-            tk.Label(linha, text=f"   {detalhe}", font=("Consolas", 8), fg=cor, bg=COR_PAINEL, anchor="w").pack(fill="x")
+            tk.Label(linha, text=f"   {detalhe}", font=("Segoe UI", 8), fg=cor, bg=COR_PAINEL, anchor="w").pack(fill="x")
             if tarefa.get("pasta"):
                 for widget in (linha, *linha.winfo_children(), *topo.winfo_children()):
                     widget.bind("<Button-1>", lambda e, pasta=tarefa["pasta"]: self._abrir_pasta_tarefa(pasta))
@@ -316,7 +398,7 @@ class JanelaComandos(tk.Tk):
         s.configure("TFrame", background=COR_PAINEL)
         s.configure("Fundo.TFrame", background=COR_FUNDO)
         s.configure("TLabel", background=COR_PAINEL, foreground=COR_TEXTO, font=FONTE_TEXTO)
-        s.configure("Secao.TLabel", background=COR_PAINEL, foreground=COR_SUAVE, font=("Consolas", 8, "bold"))
+        s.configure("Secao.TLabel", background=COR_PAINEL, foreground=COR_DESTAQUE, font=("Segoe UI Semibold", 10))
         s.configure(
             "Botao.TButton",
             background=COR_CARTAO,
@@ -331,30 +413,30 @@ class JanelaComandos(tk.Tk):
         )
         s.map(
             "Botao.TButton",
-            background=[("disabled", COR_PAINEL), ("pressed", COR_BORDA), ("active", "#1A2636")],
+            background=[("disabled", COR_PAINEL), ("pressed", COR_BORDA), ("active", COR_REALCE)],
             foreground=[("disabled", COR_SUAVE)],
-            bordercolor=[("active", COR_CIANO)],
+            bordercolor=[("active", COR_DESTAQUE)],
         )
         s.configure(
             "Enviar.TButton",
-            background=COR_CIANO,
+            background=COR_DESTAQUE,
             foreground=COR_FUNDO,
-            bordercolor=COR_CIANO,
-            lightcolor=COR_CIANO,
-            darkcolor=COR_CIANO,
-            focuscolor=COR_CIANO,
+            bordercolor=COR_DESTAQUE,
+            lightcolor=COR_DESTAQUE,
+            darkcolor=COR_DESTAQUE,
+            focuscolor=COR_DESTAQUE,
             font=("Segoe UI", 10, "bold"),
             padding=(18, 10),
         )
         s.map(
             "Enviar.TButton",
-            background=[("disabled", COR_BORDA), ("active", "#67E8F9")],
+            background=[("disabled", COR_BORDA), ("active", HUD_DESTAQUE_CLARO)],
             foreground=[("disabled", COR_SUAVE)],
         )
         s.configure(
             "Atalho.TButton",
             background=COR_PAINEL,
-            foreground=COR_CIANO,
+            foreground=COR_DESTAQUE,
             bordercolor=COR_PAINEL,
             lightcolor=COR_PAINEL,
             darkcolor=COR_PAINEL,
@@ -369,7 +451,7 @@ class JanelaComandos(tk.Tk):
             fieldbackground=COR_CARTAO,
             background=COR_CARTAO,
             foreground=COR_TEXTO,
-            arrowcolor=COR_CIANO,
+            arrowcolor=COR_DESTAQUE,
             bordercolor=COR_BORDA,
             lightcolor=COR_CARTAO,
             darkcolor=COR_CARTAO,
@@ -383,7 +465,7 @@ class JanelaComandos(tk.Tk):
         )
         self.option_add("*TCombobox*Listbox.background", COR_CARTAO)
         self.option_add("*TCombobox*Listbox.foreground", COR_TEXTO)
-        self.option_add("*TCombobox*Listbox.selectBackground", COR_CIANO)
+        self.option_add("*TCombobox*Listbox.selectBackground", COR_DESTAQUE)
         self.option_add("*TCombobox*Listbox.selectForeground", COR_FUNDO)
         s.map("Vertical.TScrollbar", background=[("active", COR_BORDA), ("!active", COR_CARTAO)])
         s.configure(
@@ -438,7 +520,7 @@ class JanelaComandos(tk.Tk):
         ):
             self.nucleo.definir_legenda(chave, rotulo, valor)
 
-        painel_chat = PainelHUD(centro, "Canal de comunicação")
+        painel_chat = PainelHUD(centro, "Conversa")
         painel_chat.pack(fill="both", expand=True, pady=(8, 0))
         painel_chat.corpo.configure(bg=COR_FUNDO, padx=0, pady=0)
         self._criar_entrada(painel_chat.corpo)
@@ -458,22 +540,22 @@ class JanelaComandos(tk.Tk):
         self._abas_modos = {}
         for modo in MODOS_PASTAS:
             aba = tk.Label(
-                barra, text=modo.upper(), font=("Bahnschrift", 9), padx=14, pady=3, cursor="hand2",
+                barra, text=modo.capitalize(), font=("Segoe UI", 9), padx=14, pady=3, cursor="hand2",
                 bg=COR_CARTAO, fg=COR_SUAVE, highlightthickness=1, highlightbackground=COR_BORDA,
             )
             aba.pack(side="left", padx=(0, 4))
             aba.bind("<Button-1>", lambda e, m=modo: self.escolher_modo(m))
             self._abas_modos[modo] = aba
-        tk.Label(barra, text="MODO DE CONVERSA", font=("Consolas", 8), fg=COR_SUAVE, bg=COR_FUNDO).pack(side="left", padx=8)
+        tk.Label(barra, text="modo de conversa", font=("Segoe UI", 8), fg=COR_SUAVE, bg=COR_FUNDO).pack(side="left", padx=8)
         self._marcar_aba_modo(memory.MODO_CONVERSA_ATUAL)
 
     def _marcar_aba_modo(self, modo_ativo):
         for modo, aba in self._abas_modos.items():
             ativo = modo == modo_ativo
             aba.configure(
-                bg="#0E3A50" if ativo else COR_CARTAO,
-                fg=COR_CIANO if ativo else COR_SUAVE,
-                highlightbackground=COR_CIANO if ativo else COR_BORDA,
+                bg=COR_REALCE if ativo else COR_CARTAO,
+                fg=COR_DESTAQUE if ativo else COR_SUAVE,
+                highlightbackground=COR_DESTAQUE if ativo else COR_BORDA,
             )
 
     def escolher_modo(self, modo):
@@ -489,8 +571,8 @@ class JanelaComandos(tk.Tk):
         linha.pack(fill="x", pady=1)
         ponto = tk.Label(linha, text="●", font=("Segoe UI", 8), fg=cor, bg=COR_PAINEL)
         ponto.pack(side="left")
-        tk.Label(linha, text=rotulo, font=("Consolas", 9), fg=COR_SUAVE, bg=COR_PAINEL, width=10, anchor="w").pack(side="left", padx=(4, 0))
-        texto = tk.Label(linha, text=valor, font=("Consolas", 9), fg=COR_TEXTO, bg=COR_PAINEL, anchor="e")
+        tk.Label(linha, text=rotulo, font=("Segoe UI", 9), fg=COR_SUAVE, bg=COR_PAINEL, width=10, anchor="w").pack(side="left", padx=(4, 0))
+        texto = tk.Label(linha, text=valor, font=("Segoe UI", 9), fg=COR_TEXTO, bg=COR_PAINEL, anchor="e")
         texto.pack(side="right")
         return ponto, texto
 
@@ -504,12 +586,13 @@ class JanelaComandos(tk.Tk):
         sistemas.pack(fill="x")
         c = sistemas.corpo
         self.indicador_llm = self._criar_linha_sistema(c, "LLM", "verificando...", COR_AMBAR)
-        self._criar_linha_sistema(c, "Visão", OLLAMA_VISION_MODEL, COR_CIANO)
+        self._criar_linha_sistema(c, "Visão", OLLAMA_VISION_MODEL, COR_DESTAQUE)
         self.indicador_claude = self._criar_linha_sistema(c, "Claude", "verificando...", COR_AMBAR)
         self.indicador_gemini = self._criar_linha_sistema(c, "Gemini", "verificando...", COR_AMBAR)
+        self.indicador_whatsapp = self._criar_linha_sistema(c, "WhatsApp", "desligado", COR_SUAVE)
         self.indicador_mic = self._criar_linha_sistema(c, "Microfone", "ativo", COR_VERDE)
-        self.indicador_saida = self._criar_linha_sistema(c, "Saída", "padrão", COR_CIANO)
-        self._criar_linha_sistema(c, "Voz", f"{VOZ_BEATRIZ.replace('pt-BR-', '').replace('Neural', '')} {VELOCIDADE_VOZ}", COR_CIANO)
+        self.indicador_saida = self._criar_linha_sistema(c, "Saída", "padrão", COR_DESTAQUE)
+        self._criar_linha_sistema(c, "Voz", f"{VOZ_BEATRIZ.replace('pt-BR-', '').replace('Neural', '')} {VELOCIDADE_VOZ}", COR_DESTAQUE)
         self.indicador_camera = self._criar_linha_sistema(c, "Câmera", *self._camera_status)
         self.indicador_agenda = self._criar_linha_sistema(c, "Agenda", "verificando...", COR_AMBAR)
         gmail = os.path.exists(GMAIL_TOKEN_FILE)
@@ -526,7 +609,7 @@ class JanelaComandos(tk.Tk):
         self.medidor_ram = MedidorCircular(medidores, "RAM")
         self.medidor_ram.pack(side="left", expand=True)
         self.ram_var = tk.StringVar(value="")
-        tk.Label(recursos.corpo, textvariable=self.ram_var, font=("Consolas", 8), fg=COR_SUAVE, bg=COR_PAINEL).pack(anchor="center")
+        tk.Label(recursos.corpo, textvariable=self.ram_var, font=("Segoe UI", 8), fg=COR_SUAVE, bg=COR_PAINEL).pack(anchor="center")
         self.grafico_cpu = GraficoBarras(recursos.corpo, quantidade=30, altura=44)
         self.grafico_cpu.pack(fill="x", pady=(4, 0))
 
@@ -546,7 +629,7 @@ class JanelaComandos(tk.Tk):
         for indice, botao in enumerate(botoes):
             botao.grid(row=indice // 2, column=indice % 2, sticky="ew", padx=2, pady=2)
 
-        tk.Label(controles.corpo, text="CATEGORIA DOS ANEXOS", font=("Consolas", 8), fg=COR_SUAVE, bg=COR_PAINEL).pack(anchor="w", pady=(6, 2))
+        tk.Label(controles.corpo, text="Categoria dos anexos", font=("Segoe UI", 8), fg=COR_SUAVE, bg=COR_PAINEL).pack(anchor="w", pady=(6, 2))
         self.categoria_var = tk.StringVar(value="auto")
         self.categoria = ttk.Combobox(
             controles.corpo,
@@ -561,12 +644,12 @@ class JanelaComandos(tk.Tk):
         self.painel_agenda.pack(fill="x")
         self.agenda_var = tk.StringVar(value="Carregando compromissos...")
         tk.Label(
-            self.painel_agenda.corpo, textvariable=self.agenda_var, font=("Consolas", 9), fg=COR_TEXTO, bg=COR_PAINEL,
+            self.painel_agenda.corpo, textvariable=self.agenda_var, font=("Segoe UI", 9), fg=COR_TEXTO, bg=COR_PAINEL,
             justify="left", anchor="w", wraplength=286,
         ).pack(fill="x")
         self.clima_var = tk.StringVar(value="")
         self._rotulo_clima = tk.Label(
-            self.painel_agenda.corpo, textvariable=self.clima_var, font=("Consolas", 9), fg=COR_AMBAR, bg=COR_PAINEL,
+            self.painel_agenda.corpo, textvariable=self.clima_var, font=("Segoe UI", 9), fg=COR_AMBAR, bg=COR_PAINEL,
             justify="left", anchor="w", wraplength=286,
         )
         self._rotulo_clima.pack(fill="x", pady=(4, 0))
@@ -574,7 +657,7 @@ class JanelaComandos(tk.Tk):
         self.painel_biblioteca = PainelHUD(coluna, "Biblioteca")
         self.painel_biblioteca.pack(fill="x", pady=(8, 0))
         self.biblioteca_var = tk.StringVar(value="--")
-        tk.Label(self.painel_biblioteca.corpo, textvariable=self.biblioteca_var, font=("Consolas", 9), fg=COR_TEXTO,
+        tk.Label(self.painel_biblioteca.corpo, textvariable=self.biblioteca_var, font=("Segoe UI", 9), fg=COR_TEXTO,
                  bg=COR_PAINEL, justify="left", anchor="w").pack(fill="x")
         self.rede_biblioteca = RedeBiblioteca(self.painel_biblioteca.corpo, altura=104)
         self.rede_biblioteca.pack(fill="x", pady=(4, 0))
@@ -582,7 +665,7 @@ class JanelaComandos(tk.Tk):
         self.painel_memoria = PainelHUD(coluna, "Memória do usuário")
         self.painel_memoria.pack(fill="x", pady=(8, 0))
         self.memoria_var = tk.StringVar(value="--")
-        tk.Label(self.painel_memoria.corpo, textvariable=self.memoria_var, font=("Consolas", 9), fg=COR_TEXTO,
+        tk.Label(self.painel_memoria.corpo, textvariable=self.memoria_var, font=("Segoe UI", 9), fg=COR_TEXTO,
                  bg=COR_PAINEL, justify="left", anchor="w", wraplength=286).pack(fill="x")
 
         self.painel_agentes = PainelHUD(coluna, "Agentes")
@@ -593,10 +676,13 @@ class JanelaComandos(tk.Tk):
 
         atalhos = PainelHUD(coluna, "Atalhos")
         atalhos.pack(fill="both", expand=True, pady=(8, 0))
-        for rotulo, texto in ATALHOS_RAPIDOS:
+        grade = tk.Frame(atalhos.corpo, bg=COR_PAINEL)
+        grade.pack(fill="x")
+        grade.grid_columnconfigure((0, 1), weight=1, uniform="atalhos")
+        for indice, (rotulo, texto) in enumerate(ATALHOS_RAPIDOS):
             ttk.Button(
-                atalhos.corpo, text=f"›  {rotulo}", style="Atalho.TButton", command=lambda t=texto: self.usar_atalho(t)
-            ).pack(fill="x")
+                grade, text=f"› {rotulo}", style="Atalho.TButton", command=lambda t=texto: self.usar_atalho(t)
+            ).grid(row=indice // 2, column=indice % 2, sticky="ew")
 
     def _criar_janela_audio(self):
         # Janela própria para os dispositivos, para não espremer as colunas.
@@ -609,7 +695,7 @@ class JanelaComandos(tk.Tk):
         self.painel_audio = ttk.Frame(self.janela_audio, padding=16, width=340)
         self.painel_audio.pack(fill="both", expand=True)
 
-        ttk.Label(self.painel_audio, text="DISPOSITIVOS DE ÁUDIO", style="Secao.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.painel_audio, text="Dispositivos de áudio", style="Secao.TLabel").pack(anchor="w", pady=(0, 8))
         ttk.Label(self.painel_audio, text="Microfone", foreground=COR_SUAVE, font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
         self.microfone_var = tk.StringVar()
         self.microfone_combo = ttk.Combobox(self.painel_audio, textvariable=self.microfone_var, state="readonly", width=42)
@@ -637,11 +723,12 @@ class JanelaComandos(tk.Tk):
         y = self.winfo_rooty() + max(80, self.winfo_height() - 300)
         self.janela_audio.geometry(f"+{x}+{y}")
         self.janela_audio.deiconify()
+        pintar_barra_de_titulo(self.janela_audio)
         self.janela_audio.lift()
 
     def _criar_area_chat(self, principal):
         self.digitando_var = tk.StringVar(value="")
-        tk.Label(principal, textvariable=self.digitando_var, font=FONTE_MONO_PEQUENA, fg=COR_CIANO, bg=COR_FUNDO).pack(side="bottom", anchor="w", pady=(6, 0))
+        tk.Label(principal, textvariable=self.digitando_var, font=FONTE_PEQUENA, fg=COR_DESTAQUE, bg=COR_FUNDO).pack(side="bottom", anchor="w", pady=(6, 0))
 
         moldura = tk.Frame(principal, bg=COR_BORDA, padx=1, pady=1)
         moldura.pack(fill="both", expand=True)
@@ -656,7 +743,7 @@ class JanelaComandos(tk.Tk):
             bg=COR_PAINEL,
             fg=COR_TEXTO,
             insertbackground=COR_TEXTO,
-            selectbackground="#164E63",
+            selectbackground=COR_SELECAO,
             font=FONTE_TEXTO,
             padx=16,
             pady=12,
@@ -670,21 +757,24 @@ class JanelaComandos(tk.Tk):
         barra.configure(command=self.chat.yview)
         self.chat.configure(state="disabled")
 
-        self.chat.tag_configure("cab_usuario", foreground=COR_VERDE, font=("Consolas", 9, "bold"), spacing1=10)
-        self.chat.tag_configure("cab_beatriz", foreground=COR_CIANO, font=("Consolas", 9, "bold"), spacing1=10)
-        self.chat.tag_configure("cab_status", foreground=COR_AMBAR, font=("Consolas", 9, "bold"), spacing1=10)
-        self.chat.tag_configure("hora", foreground=COR_SUAVE, font=FONTE_MONO_PEQUENA)
+        self.chat.tag_configure("cab_usuario", foreground=COR_LILAS, font=("Segoe UI", 9, "bold"), spacing1=10)
+        self.chat.tag_configure("cab_beatriz", foreground=COR_DESTAQUE, font=("Segoe UI", 9, "bold"), spacing1=10)
+        self.chat.tag_configure("cab_status", foreground=COR_AMBAR, font=("Segoe UI", 9, "bold"), spacing1=10)
+        self.chat.tag_configure("hora", foreground=COR_SUAVE, font=FONTE_PEQUENA)
         self.chat.tag_configure("usuario", foreground=COR_TEXTO, lmargin1=14, lmargin2=14)
         self.chat.tag_configure("beatriz", foreground=COR_TEXTO, lmargin1=14, lmargin2=14)
         self.chat.tag_configure("status", foreground=COR_AMBAR, lmargin1=14, lmargin2=14, font=("Segoe UI", 9, "italic"))
+        # Frases que o microfone entendeu, mas a Beatriz deixou passar (sem o nome, por exemplo).
+        self.chat.tag_configure("cab_ignorado", foreground=COR_SUAVE, font=("Segoe UI", 8), spacing1=6)
+        self.chat.tag_configure("ignorado", foreground=COR_SUAVE, lmargin1=14, lmargin2=14, font=("Segoe UI", 9, "italic"))
         self.chat.tag_configure(
-            "codigo", font=FONTE_MONO, background=COR_CODIGO, foreground="#C9F7FF", lmargin1=24, lmargin2=24, rmargin=16
+            "codigo", font=FONTE_MONO, background=COR_CODIGO, foreground="#F3E3B5", lmargin1=24, lmargin2=24, rmargin=16
         )
 
 
     def _criar_entrada(self, principal):
         self.contador_var = tk.StringVar(value="0 caracteres · ↑/↓ histórico")
-        tk.Label(principal, textvariable=self.contador_var, font=FONTE_MONO_PEQUENA, fg=COR_SUAVE, bg=COR_FUNDO).pack(side="bottom", anchor="e", pady=(4, 0))
+        tk.Label(principal, textvariable=self.contador_var, font=FONTE_PEQUENA, fg=COR_SUAVE, bg=COR_FUNDO).pack(side="bottom", anchor="e", pady=(4, 0))
 
         caixa = tk.Frame(principal, bg=COR_FUNDO)
         caixa.pack(side="bottom", fill="x", pady=(4, 0))
@@ -699,7 +789,7 @@ class JanelaComandos(tk.Tk):
             wrap="word",
             bg=COR_CARTAO,
             fg=COR_SUAVE,
-            insertbackground=COR_CIANO,
+            insertbackground=COR_DESTAQUE,
             font=FONTE_TEXTO,
             padx=10,
             pady=8,
@@ -723,17 +813,17 @@ class JanelaComandos(tk.Tk):
         barra = tk.Frame(self, bg=COR_PAINEL, padx=14, pady=5)
         barra.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="Pronta")
-        tk.Label(barra, text="STATUS", font=("Consolas", 8, "bold"), fg=COR_SUAVE, bg=COR_PAINEL).pack(side="left")
-        self._rotulo_status = tk.Label(barra, textvariable=self.status_var, font=FONTE_MONO_PEQUENA, fg=COR_VERDE, bg=COR_PAINEL)
+        tk.Label(barra, text="Status", font=("Segoe UI Semibold", 9), fg=COR_SUAVE, bg=COR_PAINEL).pack(side="left")
+        self._rotulo_status = tk.Label(barra, textvariable=self.status_var, font=FONTE_PEQUENA, fg=COR_VERDE, bg=COR_PAINEL)
         self._rotulo_status.pack(side="left", padx=(8, 0))
 
         self.metricas_var = tk.StringVar(value=f"modelo {OLLAMA_MODEL} · 0 respostas")
-        tk.Label(barra, textvariable=self.metricas_var, font=FONTE_MONO_PEQUENA, fg=COR_SUAVE, bg=COR_PAINEL).pack(side="right")
+        tk.Label(barra, textvariable=self.metricas_var, font=FONTE_PEQUENA, fg=COR_SUAVE, bg=COR_PAINEL).pack(side="right")
 
     # ------------------------------------------------------------- indicadores
     def atualizar_relogio(self):
         agora = datetime.now()
-        dias = ["SEGUNDA", "TERÇA", "QUARTA", "QUINTA", "SEXTA", "SÁBADO", "DOMINGO"]
+        dias = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
         self.cabecalho_hud.definir_relogio(agora.strftime("%H:%M:%S"), f"{dias[agora.weekday()]} · {agora:%d/%m/%Y}")
         self.after(1000, self.atualizar_relogio)
 
@@ -768,11 +858,24 @@ class JanelaComandos(tk.Tk):
         threading.Thread(target=coletar, daemon=True).start()
         self.after(5000, self.atualizar_painel_dados)
 
+    def _aplicar_status_whatsapp(self):
+        """Estado do canal de comandos pelo WhatsApp, publicado pelo processo do WhatsApp Web."""
+        try:
+            situacao = dict(self.audio_config.get("whatsapp") or {}) if self.audio_config is not None else {}
+        except Exception:
+            situacao = {}
+        status = situacao.get("status", "desligado")
+        cores = {"conectado": COR_VERDE, "aguardando QR": COR_AMBAR, "abrindo": COR_AMBAR, "conectando": COR_AMBAR,
+                 "reconectando": COR_AMBAR, "erro": COR_VERMELHO}
+        texto = {"aguardando QR": "leia o QR code"}.get(status, status)
+        self._definir_indicador(self.indicador_whatsapp, texto[:24], cores.get(status, COR_SUAVE))
+
     def _aplicar_painel_dados(self, dados, painel):
         cores_nuvem = {"ativo": COR_VERDE, "pausado": COR_AMBAR, "sem_chave": COR_SUAVE, "desligado": COR_SUAVE}
         for indicador, provedor in ((self.indicador_claude, claude), (self.indicador_gemini, gemini)):
             texto, estado = provedor.status()
             self._definir_indicador(indicador, texto[:24], cores_nuvem.get(estado, COR_SUAVE))
+        self._aplicar_status_whatsapp()
         metricas = dados["metricas"]
         if metricas:
             self.nucleo.definir_legenda("interacoes", "Interações", metricas["interacoes"])
@@ -817,10 +920,10 @@ class JanelaComandos(tk.Tk):
 
     def atualizar_agenda_e_clima(self):
         def coletar():
-            try:
-                from google_agenda import google_agenda_conectada, listar_proximos_eventos
-                conectada = google_agenda_conectada()
-                agenda = listar_proximos_eventos(4) if conectada else "Google Agenda não vinculado.\nDiga 'conectar google agenda'."
+            try:  # agenda local do PC: o que ainda tem hoje e o próximo compromisso
+                from datetime import date
+                agenda = f"{self.agenda.descrever_dia(date.today())}\n{self.agenda.proximo()}"
+                conectada = True
             except Exception as exc:
                 conectada, agenda = False, f"Agenda indisponível: {exc}"
             clima = ""
@@ -837,7 +940,7 @@ class JanelaComandos(tk.Tk):
 
     def _aplicar_agenda_e_clima(self, conectada, agenda, clima):
         self.agenda_var.set(agenda.strip()[:400])
-        self._definir_indicador(self.indicador_agenda, "vinculada" if conectada else "não vinculada", COR_VERDE if conectada else COR_SUAVE)
+        self._definir_indicador(self.indicador_agenda, "local" if conectada else "indisponível", COR_VERDE if conectada else COR_SUAVE)
         self.painel_agenda.definir_destaque("· hoje" if conectada else "", HUD_VERDE)
         self.clima_var.set(clima)
         if not clima:
@@ -858,15 +961,15 @@ class JanelaComandos(tk.Tk):
     def _aplicar_status_ollama(self, online, modelo_ok):
         if not online:
             self._definir_indicador(self.indicador_llm, "offline", COR_VERMELHO)
-            self.cabecalho_hud.definir_status("OFFLINE", HUD_VERMELHO)
+            self.cabecalho_hud.definir_status("offline", HUD_VERMELHO)
             self.painel_nucleo.definir_destaque("· sem LLM", HUD_VERMELHO)
         elif not modelo_ok:
             self._definir_indicador(self.indicador_llm, f"{OLLAMA_MODEL} ausente", COR_AMBAR)
-            self.cabecalho_hud.definir_status("PARCIAL", HUD_AMBAR)
+            self.cabecalho_hud.definir_status("parcial", HUD_AMBAR)
             self.painel_nucleo.definir_destaque("· modelo ausente", HUD_AMBAR)
         else:
             self._definir_indicador(self.indicador_llm, OLLAMA_MODEL, COR_VERDE)
-            self.cabecalho_hud.definir_status("ONLINE", HUD_VERDE)
+            self.cabecalho_hud.definir_status("online", HUD_VERDE)
             self.painel_nucleo.definir_destaque("· online", HUD_VERDE)
 
     def _animar_digitando(self):
@@ -875,7 +978,7 @@ class JanelaComandos(tk.Tk):
             return
         pontos = "." * (self._quadro_animacao % 4)
         decorrido = time.perf_counter() - self._inicio_processamento
-        self.digitando_var.set(f"◆ Beatriz está processando{pontos:<3}  {decorrido:4.1f}s")
+        self.digitando_var.set(f"☀ Beatriz está pensando{pontos:<3}  {decorrido:4.1f}s")
         self._quadro_animacao += 1
         self.after(300, self._animar_digitando)
 
@@ -911,7 +1014,7 @@ class JanelaComandos(tk.Tk):
         if not hasattr(self, "indicador_saida"):
             return
         saida = saida_audio_selecionada() or "padrão"
-        self._definir_indicador(self.indicador_saida, saida[:22], COR_CIANO)
+        self._definir_indicador(self.indicador_saida, saida[:22], COR_DESTAQUE)
 
     def aplicar_dispositivos_audio(self):
         indice = self._microfones_por_nome.get(self.microfone_var.get())
@@ -940,7 +1043,7 @@ class JanelaComandos(tk.Tk):
         if self._entrada_tem_placeholder():
             self.entrada.delete("1.0", "end")
             self.entrada.configure(fg=COR_TEXTO)
-        self._moldura_entrada.configure(bg=COR_CIANO)
+        self._moldura_entrada.configure(bg=COR_DESTAQUE)
 
     def _restaurar_placeholder(self, event=None):
         self._moldura_entrada.configure(bg=COR_BORDA)
@@ -991,6 +1094,44 @@ class JanelaComandos(tk.Tk):
         self._limpar_placeholder()
         self._definir_texto_entrada(texto)
 
+    # ---------------------------------------------------------------------- voz
+    def acompanhar_voz(self):
+        """Mostra no chat o que o microfone entendeu (e se a Beatriz aceitou) e o que ela respondeu."""
+        if self.fila_voz is None:
+            return
+        try:
+            for _ in range(20):  # poucos por vez, para não travar a janela
+                self._mostrar_evento_voz(self.fila_voz.get_nowait())
+        except queue.Empty:
+            pass
+        except (EOFError, OSError, ValueError):
+            return  # o processo principal fechou a fila
+        if self._voz_pensando_desde and time.time() - self._voz_pensando_desde > 40:
+            self._voz_pensando_desde = 0.0  # pedido que não gerou resposta falada
+            self.definir_atividade("repouso")
+        try:
+            self.after(250, self.acompanhar_voz)
+        except tk.TclError:
+            pass  # janela fechada
+
+    def _mostrar_evento_voz(self, evento):
+        tipo, texto, motivo = evento.get("tipo"), evento.get("texto", ""), evento.get("motivo", "")
+        if tipo == "ouvido":
+            self.adicionar_mensagem("Você (voz)" + (f" · {motivo}" if motivo else ""), texto, tag="usuario")
+            if evento.get("pensando", not motivo):
+                self._voz_pensando_desde = time.time()
+                self.definir_atividade("processando")
+            self.definir_status(f"{motivo[0].upper()}{motivo[1:]}" if motivo else "Entendi sua fala")
+        elif tipo == "ignorado":
+            self.adicionar_mensagem("Ouvi, mas não respondi", f"“{texto}” · {motivo}", tag="ignorado")
+            self.definir_status(f"Ouvi “{texto[:40]}”, mas ignorei: {motivo}")
+        elif tipo == "resposta":
+            self._ultima_resposta = texto
+            self._voz_pensando_desde = 0.0
+            self.adicionar_mensagem("Beatriz", texto, tag="beatriz")
+            self.definir_atividade("repouso")
+            self.definir_status("Pronta")
+
     # --------------------------------------------------------------------- chat
     def definir_status(self, texto, erro=False):
         self.status_var.set(texto)
@@ -1000,11 +1141,11 @@ class JanelaComandos(tk.Tk):
         hora = datetime.now().strftime("%H:%M:%S")
         self._historico.append((autor, hora, texto))
 
-        cabecalho = {"usuario": "cab_usuario", "status": "cab_status"}.get(tag, "cab_beatriz")
-        simbolo = {"usuario": "▸", "status": "•"}.get(tag, "◆")
+        cabecalho = {"usuario": "cab_usuario", "status": "cab_status", "ignorado": "cab_ignorado"}.get(tag, "cab_beatriz")
+        simbolo = {"usuario": "▸", "status": "•", "ignorado": "○"}.get(tag, "☀")
 
         self.chat.configure(state="normal")
-        self.chat.insert("end", f"{simbolo} {autor.upper()}", cabecalho)
+        self.chat.insert("end", f"{simbolo} {autor}", cabecalho)
         self.chat.insert("end", f"   {hora}\n", ("hora", cabecalho))
         self._inserir_corpo(texto, tag)
         self.chat.insert("end", "\n")
@@ -1166,6 +1307,18 @@ class JanelaComandos(tk.Tk):
         if not comando:
             return
 
+        resposta_impressora = self.impressora.responder(comando)
+        if resposta_impressora:  # imprimir, fila e estado da impressora: na hora, sem LLM
+            self._inicio_processamento = time.perf_counter()
+            self._finalizar_resposta(resposta_impressora)
+            return
+
+        resposta_agenda = self.agenda.responder(comando)
+        if resposta_agenda:  # compromissos, rotina e tarefas: resposta na hora, sem LLM
+            self._inicio_processamento = time.perf_counter()
+            self._finalizar_resposta(resposta_agenda)
+            return
+
         # Pedidos de entrega (documento, PDF, Word, apresentação) vão para os agentes em segundo plano;
         # o chat fica livre na hora.
         gerenciamento = self.orquestrador.responder_gerenciamento(comando)
@@ -1189,10 +1342,30 @@ class JanelaComandos(tk.Tk):
 
         def responder():
             try:
+                resposta_lei = self.leis.responder(comando)
+                if resposta_lei:  # o texto oficial do artigo e, embaixo, a explicação da IA
+                    partes, fala = [resposta_lei.painel or resposta_lei.leitura], resposta_lei.leitura
+                    if resposta_lei.explicar:
+                        explicacao = resposta_lei.explicar()
+                        partes.append(explicacao)
+                        fala = f"{fala} {explicacao}".strip()
+                    texto_final = "\n\n".join(parte for parte in partes if parte)
+                    self.after(0, lambda: self._finalizar_resposta(texto_final, fala=fala))
+                    return
                 idiomas_executado, resposta_idiomas = processar_comando_idiomas(comando)
-                resposta = resposta_idiomas if idiomas_executado else notelooklm_responder(comando)
+                pedido_resumo = None if idiomas_executado else preparar_pedido_de_resumo(comando)
+                if pedido_resumo:
+                    # O resumo inteiro aparece no chat; em voz, só a versão curta.
+                    self.after(0, lambda: self.definir_status(f"Pesquisando e resumindo: {pedido_resumo[0]}..."))
+                    resumo = gerar_resumo(*pedido_resumo)
+                    self.after(0, lambda: self._finalizar_resposta(resumo.texto, fala=resumo.fala))
+                    return
+                if idiomas_executado:
+                    resposta = resposta_idiomas
+                else:
+                    resposta = responder_pedido_de_cinema(comando) or notelooklm_responder(comando)
                 if not resposta:
-                    resposta = "Não consegui encontrar resposta útil com base no contexto atual."
+                    resposta = frase("sem_resposta")
                 self.after(0, lambda: self._finalizar_resposta(resposta))
             except Exception as exc:
                 mensagem_erro = f"Erro ao processar: {exc}"
@@ -1200,7 +1373,7 @@ class JanelaComandos(tk.Tk):
 
         threading.Thread(target=responder, daemon=True).start()
 
-    def _finalizar_resposta(self, resposta, erro=False):
+    def _finalizar_resposta(self, resposta, erro=False, fala=None):
         duracao = time.perf_counter() - self._inicio_processamento
         self._processando = False
         self.definir_atividade("repouso")
@@ -1210,7 +1383,7 @@ class JanelaComandos(tk.Tk):
         if not erro:
             self._ultima_resposta = resposta
             self._atualizar_metricas(duracao)
-            falar_async(resposta)
+            falar_async(fala or resposta)
         self.definir_status("Erro" if erro else f"Pronta · respondeu em {duracao:.1f}s", erro=erro)
 
     def enviar(self):
@@ -1230,8 +1403,8 @@ class JanelaComandos(tk.Tk):
         self.processar_texto(comando)
 
 
-def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None):
-    app = JanelaComandos(microfone_evento=microfone_evento, audio_config=audio_config)
+def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None, fila_voz=None):
+    app = JanelaComandos(microfone_evento=microfone_evento, audio_config=audio_config, fila_voz=fila_voz)
     if evento_pronto is not None:
         evento_pronto.set()
     app.mainloop()

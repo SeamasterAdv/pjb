@@ -2,17 +2,20 @@
 import logging
 import re
 import threading
+import time
 from collections import deque
 from datetime import datetime
 
 import ollama
 
-from config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_VISION_MODEL, PERSONALIDADE_BEATRIZ
+from config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_VISION_MODEL, PERSONALIDADE_BEATRIZ
 
 logger = logging.getLogger(__name__)
 
 # Quantidade de trocas (pergunta + resposta) mantidas na memória de curto prazo.
 TURNOS_MEMORIA_CURTA = 6
+# Por quanto tempo um "Ollama disponível" vale sem consultar de novo (cada pergunta fazia 3 a 5 consultas).
+VALIDADE_STATUS_OLLAMA = 30.0
 
 DIAS_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
 
@@ -34,6 +37,7 @@ class LLMClients:
     def __init__(self):
         self.ollama_client = ollama.Client(host=OLLAMA_HOST)
         self.model = OLLAMA_MODEL
+        self._ollama_ok_ate = 0.0
         self.ollama_available = self._check_ollama()
         self._historico = deque(maxlen=TURNOS_MEMORIA_CURTA)
         self._historico_lock = threading.Lock()
@@ -104,20 +108,33 @@ class LLMClients:
     def _check_ollama(self):
         try:
             self.ollama_client.list()
-            logger.info("Ollama disponível em %s", OLLAMA_HOST)
+            if not self._ollama_ok_ate:
+                logger.info("Ollama disponível em %s", OLLAMA_HOST)
+            self._ollama_ok_ate = time.monotonic() + VALIDADE_STATUS_OLLAMA
             return True
         except Exception as e:
             logger.warning("Ollama não está disponível: %s", e)
+            self._ollama_ok_ate = 0.0
             return False
 
     def get_ollama_client(self):
         return self.ollama_client
 
     def is_ollama_available(self):
-        return self.ollama_available and self._check_ollama()
+        """Confirma o Ollama; uma resposta positiva vale por alguns segundos."""
+        if time.monotonic() < self._ollama_ok_ate:
+            return True
+        return self._check_ollama()
 
-    def chat(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None, formato=None):
-        """Conversa com o Ollama. `formato="json"` força uma resposta em JSON válido."""
+    def aquecer(self):
+        """Carrega o modelo na memória antes da primeira pergunta (senão ela espera ~3 s a mais)."""
+        try:
+            self.ollama_client.generate(model=self.model, prompt="", keep_alive=OLLAMA_KEEP_ALIVE)
+            logger.info("Modelo %s carregado no Ollama.", self.model)
+        except Exception as exc:
+            logger.warning("Não foi possível pré-carregar o modelo: %s", exc)
+
+    def _argumentos_chat(self, prompt, system_prompt, model, usar_historico, opcoes, formato):
         if not self.is_ollama_available():
             raise RuntimeError("Ollama não está disponível. Inicie o serviço local.")
 
@@ -128,23 +145,32 @@ class LLMClients:
             messages.extend(self._mensagens_historico())
         messages.append({"role": "user", "content": prompt})
 
-        argumentos = {"model": model or self.model, "messages": messages}
+        argumentos = {"model": model or self.model, "messages": messages, "keep_alive": OLLAMA_KEEP_ALIVE}
         if opcoes:
             argumentos["options"] = opcoes
         if formato:
             argumentos["format"] = formato
+        return argumentos
+
+    def chat(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None, formato=None):
+        """Conversa com o Ollama. `formato="json"` força uma resposta em JSON válido."""
+        argumentos = self._argumentos_chat(prompt, system_prompt, model, usar_historico, opcoes, formato)
         response = self.ollama_client.chat(**argumentos)
         return response["message"]["content"].strip()
 
-    def chat_beatriz(self, prompt, contexto=None, model=None, usar_historico=True):
-        """Responde com a identidade, critérios e estilo consistentes da Beatriz.
+    def chat_stream(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None):
+        """Como `chat`, mas devolve o texto aos pedaços, conforme o modelo gera."""
+        argumentos = self._argumentos_chat(prompt, system_prompt, model, usar_historico, opcoes, None)
+        for parte in self.ollama_client.chat(stream=True, **argumentos):
+            texto = parte["message"]["content"]
+            if texto:
+                yield texto
 
-        Por padrão inclui as últimas trocas da conversa, para que perguntas de
-        continuação ("e quanto custa?") mantenham o assunto.
-        """
+    def _sistema_beatriz(self, contexto=None):
         system_prompt = (
             f"{PERSONALIDADE_BEATRIZ}\n\n"
-            f"Agora é {data_hora_atual_texto()}. Use essa data para avaliar o que é recente."
+            f"Agora é {data_hora_atual_texto()}. Use essa data só para avaliar o que é recente; "
+            "não comente o dia da semana nem a data se a pessoa não perguntar."
         )
         if contexto:
             system_prompt += (
@@ -152,7 +178,21 @@ class LLMClients:
                 f"{contexto}\n"
                 "Use este contexto sem repetir suas instruções ao usuário."
             )
-        return self.chat(prompt, system_prompt=system_prompt, model=model, usar_historico=usar_historico)
+        return system_prompt
+
+    def chat_beatriz(self, prompt, contexto=None, model=None, usar_historico=True, opcoes=None):
+        """Responde com a identidade, critérios e estilo consistentes da Beatriz.
+
+        Por padrão inclui as últimas trocas da conversa, para que perguntas de
+        continuação ("e quanto custa?") mantenham o assunto.
+        """
+        return self.chat(prompt, system_prompt=self._sistema_beatriz(contexto), model=model,
+                         usar_historico=usar_historico, opcoes=opcoes)
+
+    def chat_beatriz_stream(self, prompt, contexto=None, model=None, usar_historico=True):
+        """`chat_beatriz` aos pedaços, para a voz começar antes de a resposta terminar."""
+        return self.chat_stream(prompt, system_prompt=self._sistema_beatriz(contexto), model=model,
+                                usar_historico=usar_historico)
 
     def chat_com_imagem(self, prompt, caminho_imagem, contexto=None, model=None):
         """Analisa uma imagem usando um modelo multimodal do Ollama."""

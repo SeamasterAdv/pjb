@@ -29,3 +29,5 @@ pydantic
 faster-whisper
 fastapi
 uvicorn
+pywebview
+pywin32

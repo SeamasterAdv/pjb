@@ -335,9 +335,10 @@ def test_fala_ignorada_nao_chega_ao_laco_principal(monkeypatch):
     monkeypatch.setattr(main, "ESTADO_ATIVACAO", main.EstadoAtivacao())
     monkeypatch.setattr(main, "EXIGIR_PALAVRA_ATIVACAO", True)
     monkeypatch.setattr(main, "falar_async", falas.append)
+    monkeypatch.setattr(main, "avaliar_fala_sem_nome", lambda texto, em_conversa=False: "conversa")  # sem chamar o Ollama
     assert main.filtrar_fala_por_ativacao("conversa de fundo qualquer") == ""
     assert main.filtrar_fala_por_ativacao("Beatriz") == ""
-    assert falas == [main.RESPOSTA_SO_NOME]
+    assert len(falas) == 1 and falas[0] in main.todas_as_frases("so_nome")
     assert main.estado_escuta() == "escutando"
     assert main.filtrar_fala_por_ativacao("que horas são") == "que horas são"
     assert main.estado_escuta() == "aguardando o nome"

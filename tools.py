@@ -8,7 +8,7 @@ import re
 import tempfile
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone as datetime_timezone
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import pywhatkit
@@ -22,7 +22,15 @@ _BROWSER = None
 _BROWSER_PAGE = None
 
 
+# Falso enquanto a Beatriz atende um comando do WhatsApp: ninguém está no teclado para confirmar,
+# então a ação externa é cancelada em vez de travar esperando o input().
+CONFIRMAR_NO_TECLADO = True
+
+
 def _confirmar_acao(descricao: str) -> bool:
+    if not CONFIRMAR_NO_TECLADO:
+        logger.info("Ação cancelada (pedido sem ninguém no teclado para confirmar): %s", descricao)
+        return False
     try:
         resposta = input(f"Confirmar {descricao}? [s/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -559,98 +567,37 @@ def enviar_email(destinatario: str, assunto: str, mensagem: str, confirmado: boo
     except Exception as e:
         return f"Erro: {e}"
 
+_AGENTE_AGENDA = None
+
+
+def _agente_agenda():
+    """Agente da agenda local (o mesmo banco do painel e da voz), criado na primeira vez que for usado."""
+    global _AGENTE_AGENDA
+    if _AGENTE_AGENDA is None:
+        from agente_agenda import criar_agente_agenda
+        _AGENTE_AGENDA = criar_agente_agenda()
+    return _AGENTE_AGENDA
+
+
 def criar_evento_agenda(titulo: str, data_hora: str, descricao: str = "", quando_lembrar: str = "", confirmado: bool = False) -> str:
-    """Cria o evento no Google Agenda, se vinculado; senão, gera um convite ICS para a agenda do computador."""
+    """Marca o compromisso na agenda local do PC (banco_memoria/agenda.sqlite3), sem Google.
+
+    `data_hora` aceita o que se fala: "amanhã às 14h", "20/10 às 9", "toda segunda às 7h".
+    A agenda é local (sem efeito fora do computador), então não há o que confirmar; `confirmado`
+    fica pela compatibilidade com a API e o mapa de ferramentas.
+    """
     try:
-        timezone = datetime_timezone(timedelta(hours=-3))
-        inicio = _interpretar_data_hora_agenda(data_hora, timezone)
-        if inicio is None:
-            return f"Não consegui entender a data e hora: {data_hora}."
-
-        fim = inicio + timedelta(hours=1)
-        titulo_limpo = titulo.strip() or "Evento"
-        minutos = _interpretar_lembrete(quando_lembrar)
-
-        aviso_google = ""
-        from google_agenda import criar_evento_google, google_agenda_conectada
-        if google_agenda_conectada():
-            try:
-                return criar_evento_google(titulo_limpo, inicio, fim, descricao.strip(), minutos)
-            except Exception as exc:
-                logger.warning("Falha no Google Agenda, usando a agenda do computador: %s", exc)
-                aviso_google = f"Não consegui usar o Google Agenda ({exc}). "
-        pasta_agenda = os.path.join(os.path.dirname(__file__), "agenda_nativa")
-        os.makedirs(pasta_agenda, exist_ok=True)
-        nome_arquivo = re.sub(r"[^a-zA-Z0-9_-]+", "_", titulo_limpo).strip("_") or "evento"
-        caminho = os.path.join(pasta_agenda, f"{datetime.now():%Y%m%d_%H%M%S}_{nome_arquivo}.ics")
-        inicio_ics = inicio.strftime("%Y%m%dT%H%M%S")
-        fim_ics = fim.strftime("%Y%m%dT%H%M%S")
-        criado_utc = datetime.now(datetime_timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        linhas = [
-            "BEGIN:VCALENDAR",
-            "VERSION:2.0",
-            "PRODID:-//Beatriz//Agenda Nativa//PT-BR",
-            "BEGIN:VEVENT",
-            f"UID:{criado_utc}-{nome_arquivo}@beatriz",
-            f"DTSTAMP:{criado_utc}",
-            f"DTSTART:{inicio_ics}",
-            f"DTEND:{fim_ics}",
-            f"SUMMARY:{_escapar_ics(titulo_limpo)}",
-            f"DESCRIPTION:{_escapar_ics(descricao.strip())}",
-        ]
-        if minutos is not None:
-            linhas.extend([
-                "BEGIN:VALARM",
-                f"TRIGGER:-PT{minutos}M",
-                "ACTION:DISPLAY",
-                f"DESCRIPTION:{_escapar_ics(titulo_limpo)}",
-                "END:VALARM",
-            ])
-        linhas.extend(["END:VEVENT", "END:VCALENDAR", ""])
-        with open(caminho, "w", encoding="utf-8", newline="\r\n") as arquivo:
-            arquivo.write("\r\n".join(linhas))
-
-        if hasattr(os, "startfile"):
-            os.startfile(caminho)
-            return f"{aviso_google}Evento '{titulo_limpo}' enviado para a agenda nativa do computador."
-        webbrowser.open(caminho)
-        return f"{aviso_google}Arquivo do evento '{titulo_limpo}' criado em '{caminho}'."
+        lembretes = None
+        if quando_lembrar:
+            minutos = _interpretar_lembrete(quando_lembrar)
+            if minutos is not None:
+                lembretes = [minutos]
+            elif re.search(r"sem lembrete|n[ãa]o lembrar", quando_lembrar.lower()):
+                lembretes = []
+        return _agente_agenda().marcar(titulo, data_hora, descricao.strip(), lembretes)
     except Exception as exc:
-        logger.exception("Falha ao criar evento na agenda nativa")
-        return f"Não consegui criar o evento na agenda do computador: {exc}"
-
-
-def _escapar_ics(valor: str) -> str:
-    return (valor or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
-
-
-def _interpretar_data_hora_agenda(valor: str, timezone):
-    texto = (valor or "").strip().lower()
-    hora_match = re.search(r"(?:às|as)\s*(\d{1,2})(?::|h| horas?)?\s*(\d{2})?", texto)
-    if not hora_match:
-        hora_match = re.search(r"\b(\d{1,2}):(\d{2})\b", texto)
-    if not hora_match:
-        return None
-    hora = int(hora_match.group(1))
-    minuto = int(hora_match.group(2) or 0)
-    if hora > 23 or minuto > 59:
-        return None
-
-    hoje = datetime.now(timezone).date()
-    if "depois de amanhã" in texto or "depois de amanha" in texto:
-        dia = hoje + timedelta(days=2)
-    elif "amanhã" in texto or "amanha" in texto:
-        dia = hoje + timedelta(days=1)
-    else:
-        data_match = re.search(r"(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?", texto)
-        if data_match:
-            ano = int(data_match.group(3) or hoje.year)
-            if ano < 100:
-                ano += 2000
-            dia = datetime(ano, int(data_match.group(2)), int(data_match.group(1))).date()
-        else:
-            dia = hoje
-    return datetime.combine(dia, datetime.min.time(), tzinfo=timezone).replace(hour=hora, minute=minuto)
+        logger.exception("Falha ao criar evento na agenda local")
+        return f"Não consegui marcar na agenda: {exc}"
 
 
 def _interpretar_lembrete(valor: str):
@@ -672,10 +619,9 @@ def _interpretar_lembrete(valor: str):
     return None
 
 def listar_compromissos() -> str:
-    from google_agenda import google_agenda_conectada, listar_proximos_eventos
-    if google_agenda_conectada():
-        return listar_proximos_eventos()
-    return "O Google Agenda não está vinculado. Diga 'conectar google agenda' para fazer o login."
+    """Os compromissos dos próximos 7 dias na agenda local."""
+    hoje = datetime.now().date()
+    return _agente_agenda().descrever_periodo(hoje, hoje + timedelta(days=6))
 
 
 def abrir_whatsapp() -> str:

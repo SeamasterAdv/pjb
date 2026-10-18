@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratório da mascote</title>
+<link rel="icon" href="../assets/beatriz_icone_256.png">
+<link rel="stylesheet" href="laboratorio_mascote.css">
+<!-- Three.js 0.170.0, cópia local (interface_web/vendor/three, só os arquivos usados). -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.min.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<main class="lab">
+  <section class="palco" id="palco">
+    <canvas id="tela" aria-label="Mascote em 3D. Arraste para girar, role para aproximar."></canvas>
+    <div class="barra-topo">
+      <div class="chips" id="modos" role="group" aria-label="Animação"></div>
+      <div class="chips" id="cameras" role="group" aria-label="Câmera"></div>
+    </div>
+    <div class="barra-baixo">
+      <label class="chave"><input type="checkbox" id="ver-esqueleto"> Esqueleto</label>
+      <label class="chave"><input type="checkbox" id="girar"> Girar</label>
+      <label class="chave"><input type="checkbox" id="olhar-mouse" checked> Olhar o mouse</label>
+      <label class="chave"><input type="checkbox" id="ver-mini" checked> Tamanho real</label>
+      <label class="chave">Fundo
+        <select id="fundo">
+          <option value="estudio">Estúdio</option>
+          <option value="escuro">Escuro</option>
+          <option value="area">Área de trabalho</option>
+        </select>
+      </label>
+      <label class="chave velocidade">Velocidade <input type="range" id="velocidade" min="0.2" max="2" step="0.05" value="1"></label>
+    </div>
+    <figure class="miniatura" id="miniatura">
+      <canvas id="tela-mini" width="300" height="200"></canvas>
+      <figcaption>Tamanho real na tela (~110 px)</figcaption>
+    </figure>
+    <div class="carregando" id="carregando">Montando a mascote…</div>
+  </section>
+
+  <aside class="painel">
+    <header class="cabecalho">
+      <h1>Mascote 3D</h1>
+      <p>Mude o que quiser e veja na hora. Tudo fica salvo neste navegador; salve versões para comparar.</p>
+    </header>
+    <nav class="abas" id="abas" role="tablist"></nav>
+    <div class="conteudo" id="conteudo"></div>
+    <footer class="rodape">
+      <span id="status" role="status">Salvo automaticamente.</span>
+      <button type="button" class="botao discreto" id="restaurar">Restaurar padrão</button>
+    </footer>
+  </aside>
+</main>
+<script>
+  // Se o módulo não carregar (arquivo faltando, erro de código), avisa em vez de ficar em branco.
+  addEventListener("error", (e) => {
+    const aviso = document.getElementById("carregando");
+    if (aviso && !window.mascoteLab) aviso.textContent = "Erro ao montar a mascote: " + (e.message || e.type);
+  });
+  setTimeout(() => {
+    const aviso = document.getElementById("carregando");
+    if (aviso && !window.mascoteLab) aviso.textContent = "Não consegui carregar o Three.js (interface_web/vendor/three).";
+  }, 15000);
+</script>
+<script type="module" src="laboratorio_mascote.js"></script>
+</body>
+</html>

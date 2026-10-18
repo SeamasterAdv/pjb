@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "painel-web-demonstracao",
+      "runtimeExecutable": ".venv312/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1"],
+      "port": 8765
+    },
+    {
+      "name": "laboratorio-mascote",
+      "runtimeExecutable": ".venv312/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8771", "--bind", "127.0.0.1"],
+      "port": 8771,
+      "url": "http://127.0.0.1:8771"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Beatriz</title>
+<link rel="stylesheet" href="mascote.css">
+<!-- Three.js 0.170.0, cópia local (interface_web/vendor/three). -->
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.min.js", "three/addons/": "./vendor/three/examples/jsm/" } }
+</script>
+<style>
+  /* O fundo fica transparente pela cor-chave da janela: nada aqui pode ser semitransparente
+     por cima do fundo, senão aparece uma mancha escura. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none;
+               font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  .palco { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+  .mascote { width: 118px; aspect-ratio: 400 / 440; cursor: pointer; margin-bottom: 2px; }
+  .mascote .aura, .mascote .sombra { display: none; }
+  .balao {
+    position: absolute; left: 8px; right: 8px; bottom: 138px;
+    background: #120A22; color: #EAF6FF; border: 1.5px solid #3FA9FF; border-radius: 10px;
+    padding: 8px 10px; font-size: 12.5px; line-height: 1.4;
+    opacity: 0; transform: translateY(6px); transition: opacity .25s, transform .25s; pointer-events: none;
+  }
+  .balao.visivel { opacity: 1; transform: none; pointer-events: auto; }
+  .balao::after {
+    content: ""; position: absolute; bottom: -7px; left: 50%; width: 11px; height: 11px; background: #120A22;
+    border-right: 1.5px solid #3FA9FF; border-bottom: 1.5px solid #3FA9FF; transform: translateX(-50%) rotate(45deg);
+  }
+  .botoes { display: flex; gap: 6px; margin-top: 7px; }
+  .botoes[hidden] { display: none; }
+  .botoes button { flex: 1; font: inherit; font-size: 12px; padding: 4px 0; border-radius: 6px; cursor: pointer;
+                   background: #2A1A45; color: #EAF6FF; border: 1px solid #5A4285; }
+  .botoes button.sim { background: #F2B732; color: #1C1030; border-color: #F2B732; font-weight: 600; }
+  .zzz { position: absolute; bottom: 118px; left: 58%; color: #FFD25E; font-weight: 700; font-size: 15px; display: none; }
+  /* Mascote 3D (mascote3d_tela.js): o canvas ocupa a parte de baixo; a cabeça fica à esquerda e o
+     canvas é espelhado quando ela anda para a direita (a classe "virada" é andar para a esquerda). */
+  .mascote.em-3d { width: 240px; height: 180px; aspect-ratio: auto; margin-bottom: 0; }
+  .mascote.em-3d .tela-3d { display: block; width: 100%; height: 100%; transition: transform .25s; }
+  .mascote.em-3d:not(.virada) .tela-3d { transform: scaleX(-1); }
+  .tem-3d .balao { bottom: 172px; }
+  .tem-3d .zzz { bottom: 120px; left: 30%; }
+  .tem-3d .mascote.em-3d:not(.virada) ~ .zzz { left: 64%; }
+  .dormindo ~ .zzz { display: block; animation: zzz 2.4s ease-in-out infinite; }
+  @keyframes zzz { 0% { opacity: 0; transform: translate(0, 0) scale(.7); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(14px, -26px) scale(1.15); } }
+</style>
+</head>
+<body>
+<div class="palco">
+  <div class="balao" id="balao" role="status">
+    <div id="balao-texto"></div>
+    <div class="botoes" id="balao-botoes" hidden><button class="sim" id="btn-sim">Sim</button><button id="btn-nao">Agora não</button></div>
+  </div>
+  <div class="mascote estado-repouso" id="mascote" title="Beatriz (clique para abrir o painel)"></div>
+  <div class="zzz" aria-hidden="true">z</div>
+</div>
+<script src="mascote.js"></script>
+<script src="caminhante.js"></script>
+<script type="module" src="mascote3d_tela.js"></script>
+</body>
+</html>

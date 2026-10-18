@@ -1,9 +1,9 @@
-"""Componentes visuais do painel HUD da Beatriz (Tkinter Canvas).
+"""Componentes visuais do painel da Beatriz (Tkinter Canvas).
 
-Inspirado em painéis estilo J.A.R.V.I.S.: molduras com cantos chanfrados,
-anéis girando, medidores circulares, gráficos de barras e uma rede de nós.
-Também reúne as funções que coletam os dados exibidos (CPU/RAM, biblioteca,
-memória, métricas), todas tolerantes a falhas.
+Painéis simples em roxo e dourado, o sol da Beatriz girando no centro, medidores
+circulares, gráficos de barras e uma rede de nós. Também reúne as funções que
+coletam os dados exibidos (CPU/RAM, biblioteca, memória, métricas), todas
+tolerantes a falhas.
 """
 import ctypes
 import json
@@ -11,39 +11,71 @@ import math
 import os
 import tkinter as tk
 
-# Paleta HUD
-HUD_FUNDO = "#050B12"
-HUD_PAINEL = "#08131D"
-HUD_BORDA = "#12405A"
-HUD_BORDA_FORTE = "#1E88B4"
-HUD_CIANO = "#3FE0FF"
-HUD_CIANO_ESCURO = "#0E5872"
-HUD_AMBAR = "#FFB547"
-HUD_LARANJA = "#FF7A3D"
-HUD_VERDE = "#4ADE80"
-HUD_VERMELHO = "#FF5C5C"
-HUD_TEXTO = "#D9F6FF"
-HUD_SUAVE = "#6C93A8"
+from PIL import ImageTk
 
-FONTE_TITULO_HUD = ("Bahnschrift SemiBold", 10)
-FONTE_HUD = ("Consolas", 9)
-FONTE_HUD_GRANDE = ("Bahnschrift", 16)
+from identidade_visual import (
+    CREME,
+    DOURADO,
+    DOURADO_CLARO,
+    LARANJA,
+    LILAS,
+    LILAS_SUAVE,
+    ROXO_BORDA,
+    ROXO_CARTAO,
+    ROXO_NOITE,
+    ROXO_PAINEL,
+    ROXO_TRILHA,
+    VERDE,
+    VERMELHO,
+    imagem_sol,
+)
+
+# Paleta do painel
+HUD_FUNDO = ROXO_NOITE
+HUD_PAINEL = ROXO_PAINEL
+HUD_CARTAO = ROXO_CARTAO
+HUD_BORDA = ROXO_BORDA
+HUD_TRILHA = ROXO_TRILHA
+HUD_DESTAQUE = DOURADO
+HUD_DESTAQUE_CLARO = DOURADO_CLARO
+HUD_LILAS = LILAS
+HUD_AMBAR = LARANJA  # avisos e "processando"
+HUD_VERDE = VERDE
+HUD_VERMELHO = VERMELHO
+HUD_TEXTO = CREME
+HUD_SUAVE = LILAS_SUAVE
+
+FONTE_TITULO_HUD = ("Segoe UI Semibold", 10)
+FONTE_HUD = ("Segoe UI", 9)
 
 PASTA_PROJETO = os.path.dirname(os.path.abspath(__file__))
 
 
-# --------------------------------------------------------------- moldura HUD
+def foto_sol(tamanho, giro=0.0):
+    """Sol suavizado pronto para o Tk. Guarde a referência: o Tk não segura a imagem sozinho."""
+    return ImageTk.PhotoImage(imagem_sol(tamanho, giro=giro, superamostragem=4))
+
+
+def _pilula(canvas, x1, y1, x2, y2, cor):
+    """Retângulo de pontas redondas (o canvas do Tk não tem um pronto)."""
+    r = (y2 - y1) / 2
+    canvas.create_oval(x1, y1, x1 + 2 * r, y2, fill=cor, outline="")
+    canvas.create_oval(x2 - 2 * r, y1, x2, y2, fill=cor, outline="")
+    canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=cor, outline="")
+
+
+# -------------------------------------------------------------------- painel
 class PainelHUD(tk.Frame):
-    """Painel com aba de título chanfrada e borda fina; o conteúdo vai em `.corpo`."""
+    """Painel com título e borda fina; o conteúdo vai em `.corpo`."""
 
     def __init__(self, pai, titulo, destaque="", cor_destaque=HUD_VERDE, **kwargs):
         super().__init__(pai, bg=HUD_FUNDO, **kwargs)
         self.titulo = titulo
         self.cabecalho = tk.Canvas(self, height=24, bg=HUD_FUNDO, highlightthickness=0)
         self.cabecalho.pack(fill="x")
-        self.cabecalho.bind("<Configure>", lambda e: self._desenhar_cabecalho())
         self._destaque = destaque
         self._cor_destaque = cor_destaque
+        self._desenhar_cabecalho()
 
         borda = tk.Frame(self, bg=HUD_BORDA, padx=1, pady=1)
         borda.pack(fill="both", expand=True)
@@ -57,32 +89,22 @@ class PainelHUD(tk.Frame):
     def _desenhar_cabecalho(self):
         c = self.cabecalho
         c.delete("all")
-        largura = max(c.winfo_width(), 50)
-        texto = self.titulo.upper()
-        id_texto = c.create_text(12, 13, text=texto, anchor="w", fill=HUD_CIANO, font=FONTE_TITULO_HUD)
-        fim_texto = c.bbox(id_texto)[2]
+        id_texto = c.create_text(2, 12, text=self.titulo, anchor="w", fill=HUD_DESTAQUE, font=FONTE_TITULO_HUD)
         if self._destaque:
-            id_dest = c.create_text(fim_texto + 6, 13, text=self._destaque, anchor="w", fill=self._cor_destaque, font=FONTE_TITULO_HUD)
-            fim_texto = c.bbox(id_dest)[2]
-        aba = fim_texto + 12
-        # Aba chanfrada atrás do título e linha que segue até o fim do painel.
-        c.create_polygon(0, 23, 0, 4, 4, 0, aba, 0, aba + 14, 14, largura - 18, 14, largura - 10, 23,
-                         outline=HUD_BORDA_FORTE, fill="", width=1)
-        c.tag_lower(c.create_polygon(1, 22, 1, 5, 5, 1, aba, 1, aba + 13, 14, aba, 22, fill="#0B2433", outline=""))
-        for i in range(4):
-            x = largura - 60 + i * 9
-            c.create_line(x, 6, x + 5, 6, fill=HUD_CIANO_ESCURO, width=2)
+            c.create_text(c.bbox(id_texto)[2] + 6, 12, text=self._destaque, anchor="w", fill=self._cor_destaque,
+                          font=FONTE_HUD)
 
 
-# ------------------------------------------------------------ cabeçalho HUD
+# ------------------------------------------------------------------ cabeçalho
 class CabecalhoHUD(tk.Canvas):
-    """Faixa superior com o nome centralizado, status do sistema e relógio."""
+    """Faixa superior com o sol e o nome, o status no centro e o relógio."""
 
-    def __init__(self, pai, nome="B.E.A.T.R.I.Z.", **kwargs):
-        super().__init__(pai, height=96, bg=HUD_FUNDO, highlightthickness=0, **kwargs)
+    def __init__(self, pai, nome="Beatriz", **kwargs):
+        super().__init__(pai, height=84, bg=HUD_FUNDO, highlightthickness=0, **kwargs)
         self.nome = nome
-        self.status_texto, self.status_cor = "VERIFICANDO", HUD_AMBAR
+        self.status_texto, self.status_cor = "verificando", HUD_AMBAR
         self.hora, self.data = "", ""
+        self._sol = foto_sol(60)
         self.bind("<Configure>", lambda e: self.desenhar())
 
     def definir_status(self, texto, cor):
@@ -97,48 +119,44 @@ class CabecalhoHUD(tk.Canvas):
     def desenhar(self):
         self.delete("all")
         w = max(self.winfo_width(), 400)
-        meio = w / 2
-        # Moldura trapezoidal central e linhas laterais com degraus.
-        self.create_line(10, 20, meio - 330, 20, meio - 300, 44, meio - 230, 44, fill=HUD_BORDA_FORTE, width=2)
-        self.create_line(w - 10, 20, meio + 330, 20, meio + 300, 44, meio + 230, 44, fill=HUD_BORDA_FORTE, width=2)
-        self.create_polygon(meio - 230, 6, meio + 230, 6, meio + 205, 62, meio - 205, 62,
-                            fill="#071A26", outline=HUD_CIANO_ESCURO, width=1)
-        self.create_line(meio - 205, 62, meio + 205, 62, fill=HUD_CIANO, width=2)
-        for lado in (-1, 1):
-            for i in range(5):
-                x = meio + lado * (250 + i * 12)
-                self.create_line(x, 30, x + lado * 6, 30, fill=HUD_CIANO_ESCURO, width=3)
-        # Nome com brilho (texto deslocado mais escuro por trás).
-        self.create_text(meio + 2, 34, text=self.nome, fill=HUD_CIANO_ESCURO, font=("Bahnschrift SemiBold", 26))
-        self.create_text(meio, 32, text=self.nome, fill=HUD_CIANO, font=("Bahnschrift SemiBold", 26))
-        id_rotulo = self.create_text(meio, 80, text="STATUS DO SISTEMA: ", anchor="e", fill=HUD_CIANO,
-                                     font=("Bahnschrift", 13))
-        self.create_text(self.bbox(id_rotulo)[2], 80, text=self.status_texto, anchor="w", fill=self.status_cor,
-                         font=("Bahnschrift SemiBold", 13))
-        self.create_text(w - 24, 50, text=self.hora, anchor="e", fill=HUD_TEXTO, font=("Bahnschrift", 20), tags="hora")
-        self.create_text(w - 24, 76, text=self.data, anchor="e", fill=HUD_SUAVE, font=FONTE_HUD, tags="data")
-        self.create_text(24, 50, text="ASSISTENTE PESSOAL LOCAL", anchor="w", fill=HUD_SUAVE, font=FONTE_HUD)
-        self.create_text(24, 68, text="LLM · RAG · VOZ · VISÃO", anchor="w", fill=HUD_CIANO_ESCURO, font=FONTE_HUD)
+        self.create_image(46, 42, image=self._sol)
+        self.create_text(84, 34, text=self.nome, anchor="w", fill=HUD_DESTAQUE_CLARO, font=("Segoe UI Semibold", 22))
+        self.create_text(86, 62, text="sua assistente pessoal", anchor="w", fill=HUD_SUAVE, font=("Segoe UI", 10))
+        # Status numa pílula no centro.
+        id_status = self.create_text(w / 2, 42, text=f"●  {self.status_texto}", fill=self.status_cor,
+                                     font=("Segoe UI Semibold", 11))
+        x1, y1, x2, y2 = self.bbox(id_status)
+        _pilula(self, x1 - 16, y1 - 6, x2 + 16, y2 + 6, HUD_CARTAO)
+        self.tag_raise(id_status)
+        self.create_text(w - 24, 34, text=self.hora, anchor="e", fill=HUD_TEXTO, font=("Segoe UI Light", 22), tags="hora")
+        self.create_text(w - 24, 62, text=self.data, anchor="e", fill=HUD_SUAVE, font=FONTE_HUD, tags="data")
 
 
-# -------------------------------------------------------------- núcleo animado
+# -------------------------------------------------------------- sol animado
 class NucleoHUD(tk.Canvas):
-    """Anéis concêntricos girando em volta de um núcleo pulsante, com legendas ligadas por linhas.
+    """O sol da Beatriz girando devagar no centro, com legendas dos dois lados.
 
-    `atividade` controla a velocidade: 'repouso', 'processando' ou 'ouvindo'.
+    `atividade` muda a velocidade e a cor do halo: 'repouso', 'processando' ou 'ouvindo'.
+    Os quadros da rotação são desenhados uma vez, suavizados, e depois só trocados;
+    com a janela minimizada a animação para.
     """
 
-    CORES_ATIVIDADE = {"repouso": HUD_CIANO, "processando": HUD_AMBAR, "ouvindo": HUD_VERDE}
+    CORES_ATIVIDADE = {"repouso": HUD_TRILHA, "processando": HUD_DESTAQUE, "ouvindo": HUD_VERDE}
+    VELOCIDADES = {"repouso": 0.35, "processando": 2.0, "ouvindo": 1.0}  # quadros por passo
+    QUADROS = 30  # o sol se repete a cada 45 graus: 30 quadros de 1,5 grau fecham a volta
+    INTERVALO_MS = 70
 
     def __init__(self, pai, **kwargs):
         super().__init__(pai, bg=HUD_PAINEL, highlightthickness=0, **kwargs)
         self.atividade = "repouso"
         self.legendas = {}  # chave -> (rótulo, valor)
-        self._angulo = 0.0
-        self._quadro = 0
-        self._aneis = []
+        self._fase = 0.0
+        self._passo = 0
+        self._quadros = {}  # índice -> PhotoImage
+        self._tamanho_sol = 0
+        self._sol = None
         self.bind("<Configure>", lambda e: self._montar())
-        self.after(40, self._animar)
+        self.after(self.INTERVALO_MS, self._animar)
 
     def definir_legenda(self, chave, rotulo, valor):
         nova = chave not in self.legendas
@@ -148,103 +166,69 @@ class NucleoHUD(tk.Canvas):
         else:
             self.itemconfigure(f"valor_{chave}", text=str(valor))
 
+    def _quadro(self, indice):
+        if indice not in self._quadros:
+            self._quadros[indice] = foto_sol(self._tamanho_sol, giro=indice * 45 / self.QUADROS)
+        return self._quadros[indice]
+
     def _montar(self):
         self.delete("all")
-        self._aneis = []
+        self._sol = None
         w, h = self.winfo_width(), self.winfo_height()
         if w < 50 or h < 50:
             return
         cx, cy = w / 2, h / 2
-        r = min(h / 2 - 12, w / 5)
-        self._centro, self._raio = (cx, cy), r
+        tamanho = int(min(h - 12, w / 3))
+        if tamanho != self._tamanho_sol:
+            self._tamanho_sol, self._quadros = tamanho, {}
+        self._centro = (cx, cy)
+        self._raio = tamanho * 0.45  # ponta dos raios longos (45% do quadrado da imagem)
 
-        # Grade de fundo discreta.
-        for x in range(0, int(w), 28):
-            self.create_line(x, 0, x, h, fill="#0A1A26")
-        for y in range(0, int(h), 28):
-            self.create_line(0, y, w, y, fill="#0A1A26")
+        # Brilho atrás do sol e um anel fino que pulsa com a cor da atividade.
+        r = self._raio * 0.8
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=HUD_CARTAO, outline="")
+        self._halo = self.create_oval(cx, cy, cx, cy, outline=HUD_TRILHA, width=2)
+        self._sol = self.create_image(cx, cy, image=self._quadro(int(self._fase)))
 
-        # (raio relativo, largura, extensão do arco, velocidade, cor, quantidade de segmentos)
-        especificacao = [
-            (1.00, 3, 300, 0.6, HUD_CIANO_ESCURO, 1),
-            (0.92, 6, 70, -1.2, HUD_CIANO, 3),
-            (0.80, 2, 40, 2.0, HUD_AMBAR, 4),
-            (0.70, 10, 25, -0.8, HUD_CIANO, 6),
-            (0.56, 3, 120, 1.6, HUD_LARANJA, 2),
-            (0.46, 2, 340, -0.4, HUD_CIANO_ESCURO, 1),
-        ]
-        for rel, largura, extensao, velocidade, cor, segmentos in especificacao:
-            raio = r * rel
-            for s in range(segmentos):
-                inicio = s * 360 / segmentos
-                arco = self.create_arc(cx - raio, cy - raio, cx + raio, cy + raio, start=inicio, extent=extensao,
-                                       style="arc", outline=cor, width=largura)
-                self._aneis.append((arco, inicio, velocidade, cor))
-        # Marcas de escala em volta.
-        for i in range(72):
-            ang = math.radians(i * 5)
-            r1, r2 = r * 1.05, r * (1.10 if i % 6 == 0 else 1.07)
-            self.create_line(cx + r1 * math.cos(ang), cy + r1 * math.sin(ang), cx + r2 * math.cos(ang),
-                             cy + r2 * math.sin(ang), fill=HUD_CIANO_ESCURO)
-        # Núcleo.
-        self._halo = self.create_oval(cx - r * 0.34, cy - r * 0.34, cx + r * 0.34, cy + r * 0.34, outline=HUD_CIANO, width=2)
-        self._miolo = self.create_oval(cx - r * 0.22, cy - r * 0.22, cx + r * 0.22, cy + r * 0.22, fill="#BFF6FF", outline="#7FEAFF", width=4)
-        for i in range(10):
-            ang = math.radians(i * 36)
-            self.create_line(cx + r * 0.25 * math.cos(ang), cy + r * 0.25 * math.sin(ang), cx + r * 0.33 * math.cos(ang),
-                             cy + r * 0.33 * math.sin(ang), fill=HUD_CIANO, width=4, tags="raios")
-        self.create_text(cx, cy, text="B", fill="#06364A", font=("Bahnschrift SemiBold", max(int(r * 0.18), 10)))
-
-        # Legendas ligadas por linhas, metade de cada lado.
+        # Legendas, metade de cada lado.
         chaves = list(self.legendas)
         esquerda, direita = chaves[: (len(chaves) + 1) // 2], chaves[(len(chaves) + 1) // 2:]
         for lado, grupo in ((-1, esquerda), (1, direita)):
             for i, chave in enumerate(grupo):
                 rotulo, valor = self.legendas[chave]
-                fracao = (i + 1) / (len(grupo) + 1)
-                ang = math.radians(-60 + 120 * fracao)
-                px = cx + lado * r * 0.62 * math.cos(ang)
-                py = cy + r * 0.62 * math.sin(ang)
-                ly = 14 + fracao * (h - 28)
-                lx = cx + lado * (r * 1.25)
-                fx = 16 if lado < 0 else w - 16
-                self.create_line(px, py, lx, ly, fx, ly, fill=HUD_AMBAR, width=1)
-                self.create_oval(px - 3, py - 3, px + 3, py + 3, outline=HUD_AMBAR)
-                anc = "w" if lado < 0 else "e"
-                self.create_text(fx, ly - 9, text=rotulo.upper(), anchor=anc, fill=HUD_SUAVE, font=FONTE_HUD)
-                self.create_text(fx, ly + 10, text=valor, anchor=anc, fill=HUD_TEXTO, font=("Bahnschrift", 13),
+                y = 14 + (i + 1) / (len(grupo) + 1) * (h - 28)
+                x = 20 if lado < 0 else w - 20
+                ancora = "w" if lado < 0 else "e"
+                self.create_text(x, y - 10, text=rotulo, anchor=ancora, fill=HUD_SUAVE, font=FONTE_HUD)
+                self.create_text(x, y + 9, text=valor, anchor=ancora, fill=HUD_TEXTO, font=("Segoe UI Semibold", 13),
                                  tags=f"valor_{chave}")
 
     def _animar(self):
         try:
-            if self._aneis:
-                fator = {"repouso": 1.0, "processando": 4.0, "ouvindo": 2.5}.get(self.atividade, 1.0)
-                cor_ativa = self.CORES_ATIVIDADE.get(self.atividade, HUD_CIANO)
-                self._angulo += fator
-                for arco, inicio, velocidade, cor in self._aneis:
-                    self.itemconfigure(arco, start=(inicio + self._angulo * velocidade) % 360)
-                pulso = (math.sin(self._quadro / 8) + 1) / 2
+            if self._sol is not None and self.winfo_viewable():
+                self._fase = (self._fase + self.VELOCIDADES.get(self.atividade, 0.35)) % self.QUADROS
+                self.itemconfigure(self._sol, image=self._quadro(int(self._fase)))
+                self._passo += 1
+                pulso = (math.sin(self._passo / 6) + 1) / 2
                 cx, cy = self._centro
-                r = self._raio * (0.34 + 0.03 * pulso * fator / 2)
+                r = self._raio * (1.03 + 0.05 * pulso)
                 self.coords(self._halo, cx - r, cy - r, cx + r, cy + r)
-                self.itemconfigure(self._halo, outline=cor_ativa)
-                self.itemconfigure("raios", fill=cor_ativa)
-                self._quadro += 1
-            self.after(40, self._animar)
+                self.itemconfigure(self._halo, outline=self.CORES_ATIVIDADE.get(self.atividade, HUD_TRILHA))
+            self.after(self.INTERVALO_MS, self._animar)
         except tk.TclError:
             pass  # janela fechada
 
 
 # ------------------------------------------------------------ medidor circular
 class MedidorCircular(tk.Canvas):
-    """Arco de 0 a 100% com o valor no centro (como o '78%' da referência)."""
+    """Arco de 0 a 100% com o valor no centro."""
 
     def __init__(self, pai, rotulo, tamanho=86, **kwargs):
         super().__init__(pai, width=tamanho, height=tamanho + 16, bg=HUD_PAINEL, highlightthickness=0, **kwargs)
         t = tamanho
-        self.create_arc(8, 8, t - 8, t - 8, start=225, extent=-270, style="arc", outline=HUD_CIANO_ESCURO, width=6)
-        self._arco = self.create_arc(8, 8, t - 8, t - 8, start=225, extent=0, style="arc", outline=HUD_CIANO, width=6)
-        self._texto = self.create_text(t / 2, t / 2, text="--", fill=HUD_TEXTO, font=("Bahnschrift", 14))
+        self.create_arc(8, 8, t - 8, t - 8, start=225, extent=-270, style="arc", outline=HUD_TRILHA, width=7)
+        self._arco = self.create_arc(8, 8, t - 8, t - 8, start=225, extent=0, style="arc", outline=HUD_DESTAQUE, width=7)
+        self._texto = self.create_text(t / 2, t / 2, text="--", fill=HUD_TEXTO, font=("Segoe UI Semibold", 13))
         self.create_text(t / 2, t + 6, text=rotulo, fill=HUD_SUAVE, font=FONTE_HUD)
 
     def definir(self, percentual):
@@ -252,7 +236,7 @@ class MedidorCircular(tk.Canvas):
             self.itemconfigure(self._texto, text="--")
             return
         p = max(0.0, min(100.0, percentual))
-        cor = HUD_VERMELHO if p >= 90 else HUD_AMBAR if p >= 70 else HUD_CIANO
+        cor = HUD_VERMELHO if p >= 90 else HUD_AMBAR if p >= 70 else HUD_DESTAQUE
         self.itemconfigure(self._arco, extent=-270 * p / 100, outline=cor)
         self.itemconfigure(self._texto, text=f"{p:.0f}%")
 
@@ -261,7 +245,7 @@ class MedidorCircular(tk.Canvas):
 class GraficoBarras(tk.Canvas):
     """Barras verticais com os últimos valores (0 a `maximo`)."""
 
-    def __init__(self, pai, quantidade=24, maximo=100.0, altura=60, cor=HUD_CIANO, **kwargs):
+    def __init__(self, pai, quantidade=24, maximo=100.0, altura=60, cor=HUD_DESTAQUE, **kwargs):
         super().__init__(pai, height=altura, bg=HUD_PAINEL, highlightthickness=0, **kwargs)
         self.quantidade, self.maximo, self.cor = quantidade, maximo, cor
         self.valores = []
@@ -281,7 +265,7 @@ class GraficoBarras(tk.Canvas):
         if w < 10:
             return
         for y in (h * 0.25, h * 0.5, h * 0.75):
-            self.create_line(0, y, w, y, fill="#0C2230")
+            self.create_line(0, y, w, y, fill=HUD_BORDA)
         passo = w / self.quantidade
         maximo = self.maximo or max(self.valores or [1]) or 1
         deslocamento = self.quantidade - len(self.valores)
@@ -322,19 +306,19 @@ class RedeBiblioteca(tk.Canvas):
             ang = 2 * math.pi * i / len(itens) - math.pi / 2
             posicoes.append((cx + (w / 2 - 46) * math.cos(ang), cy + (h / 2 - 22) * math.sin(ang), nome, qtd))
         for i, (x, y, _, _) in enumerate(posicoes):
-            self.create_line(cx, cy, x, y, fill=HUD_CIANO_ESCURO)
+            self.create_line(cx, cy, x, y, fill=HUD_TRILHA)
             x2, y2, _, _ = posicoes[(i + 1) % len(posicoes)]
-            self.create_line(x, y, x2, y2, fill="#0C2C3C", dash=(2, 3))
-        self.create_oval(cx - 9, cy - 9, cx + 9, cy + 9, fill=HUD_CIANO, outline="", tags="centro")
+            self.create_line(x, y, x2, y2, fill=HUD_BORDA, dash=(2, 3))
+        self.create_oval(cx - 9, cy - 9, cx + 9, cy + 9, fill=HUD_DESTAQUE, outline="", tags="centro")
         for x, y, nome, qtd in posicoes:
             r = 4 + 8 * math.sqrt(qtd / maior)
-            self.create_oval(x - r, y - r, x + r, y + r, fill="#0B3A4E", outline=HUD_CIANO, width=2)
-            self.create_text(x, y + r + 8, text=f"{nome} {qtd}", fill=HUD_TEXTO, font=("Consolas", 8))
+            self.create_oval(x - r, y - r, x + r, y + r, fill=HUD_CARTAO, outline=HUD_DESTAQUE, width=2)
+            self.create_text(x, y + r + 8, text=f"{nome} {qtd}", fill=HUD_TEXTO, font=("Segoe UI", 8))
 
     def _pulsar(self):
         try:
             self._quadro += 1
-            cor = HUD_CIANO if self._quadro % 2 else "#9FF3FF"
+            cor = HUD_DESTAQUE if self._quadro % 2 else HUD_DESTAQUE_CLARO
             self.itemconfigure("centro", fill=cor)
             self.after(700, self._pulsar)
         except tk.TclError:

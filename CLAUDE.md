@@ -175,4 +175,4 @@ Ordem de tentativa (`ORDEM_IA_NUVEM`): **Claude → Gemini → Ollama**. Os clie
 - Muitos módulos têm efeitos colaterais ao serem importados (inicialização do Ollama, do ChromaDB, do `pygame.mixer` e criação de pastas). Os testes importam `main` e `memory` diretamente e usam `monkeypatch` nesses globais.
 - Os segredos ficam no `.env` e nos arquivos `*token.json`/`google_credentials.json` (todos no `.gitignore`). Nunca faça commit deles.
 - `beatriz.log` cresce bastante (dezenas de MB) e está no `.gitignore`.
-- Git só local (sem remoto). O trabalho de out/2026 está no branch `melhorias-beatriz`, em commits por assunto; o `main` ficou no commit anterior. Commit só quando o usuário pedir.
+- Git só local (sem remoto), com o histórico no `main`: o trabalho de out/2026 entrou em commits por assunto (branch `melhorias-beatriz`, juntado por fast-forward). Commit só quando o usuário pedir.

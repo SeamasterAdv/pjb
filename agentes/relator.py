@@ -12,6 +12,11 @@ NOMES_AGENTES = {
     "pesquisa": "Agente de Pesquisa",
     "documento": "Agente de Documentos",
     "apresentacao": "Agente de Apresentações",
+    "planilha": "Agente de Planilhas",
+    "estudos": "Agente de Estudos",
+    "aulas": "Agente Professor",
+    "resumo_dia": "Agente de Resumo do Dia",
+    "email": "Agente de E-mail",
     "critico": "Agente Crítico",
     "relator": "Agente Relator",
 }

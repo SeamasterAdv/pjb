@@ -2,11 +2,12 @@
 import json
 import logging
 import os
+import re
 
 from agentes.base import Agente, Avaliacao, Tarefa
 # O crítico confere o texto contra o mesmo trecho das fontes que o redator recebeu; com menos,
 # fatos verdadeiros do resto das fontes seriam apontados como inventados.
-from agentes.especialistas import LIMITE_CONTEXTO_WEB
+from agentes.especialistas import LIMITE_CONTEXTO_WEB, problemas_da_aula
 from agentes.geradores import _lista
 
 logger = logging.getLogger(__name__)
@@ -31,14 +32,59 @@ def _contar_palavras_docx(caminho):
     return sum(len(p.text.split()) for p in Document(caminho).paragraphs)
 
 
+def _verificar_planilha(caminho: str, pedido: str) -> list:
+    from openpyxl import load_workbook
+
+    livro = load_workbook(caminho)
+    abas = [livro[nome] for nome in livro.sheetnames if nome != "Sobre"]
+    resultado = [(f"Planilha com {len(abas)} aba(s) de dados", bool(abas))]
+    for aba in abas:
+        resultado.append((f"Aba '{aba.title}' com {aba.max_row - 1} linha(s) de dados", aba.max_row >= 3))
+    if re.search(r"gr[áa]fico", pedido, re.IGNORECASE):
+        resultado.append(("Gráfico pedido foi incluído", any(aba._charts for aba in abas)))
+    return resultado
+
+
+def _verificar_estudos(tarefa: Tarefa, conteudo: dict) -> list:
+    pedidos = {chave: tarefa.quantidade_estudo(chave) for chave in ("flashcards", "questoes")}
+    resultado = []
+    for chave, rotulo in (("flashcards", "flashcards"), ("questoes", "questões")):
+        feitos = len(conteudo.get(chave) or [])
+        # Aceita até 20% a menos: itens malformados são descartados pelo agente.
+        resultado.append((f"{feitos} {rotulo} (pedido: {pedidos[chave]})", feitos >= max(1, int(pedidos[chave] * 0.8))))
+    topicos = len(conteudo.get("topicos") or [])
+    if tarefa.materia and tarefa.fontes_no_claude:
+        # Resumo da matéria inteira, escrito pelo Claude: precisa cobrir mais que o básico.
+        resultado.append((f"Matéria em {topicos} tópicos (mínimo 5)", topicos >= 5))
+    else:
+        resultado.append(("Material tem tópicos explicados", topicos >= 2))
+    return resultado
+
+
+def _verificar_aulas(tarefa: Tarefa, conteudo: dict) -> list:
+    aulas = conteudo.get("aulas") or []
+    pedidas = tarefa.quantidades.get("aulas")
+    if pedidas:
+        resultado = [(f"{len(aulas)} aulas no curso (pedido: {pedidas})", len(aulas) == pedidas)]
+    else:
+        resultado = [(f"{len(aulas)} aulas no curso (mínimo 3)", len(aulas) >= 3)]
+    for aula in aulas:
+        problemas = problemas_da_aula(aula)
+        resultado.append((f"Aula {aula.get('numero')}: {'; '.join(problemas) or 'completa'}", not problemas))
+    return resultado
+
+
 def verificacoes_objetivas(tarefa: Tarefa) -> list:
     """Checagens que não dependem do LLM: arquivos, formatos e quantidades pedidas."""
     resultado = []
-    if tarefa.plano and tarefa.plano[-1] == "pesquisa" and not tarefa.formatos:
+    conteudo = tarefa.contexto.get("conteudo") or {}
+    if tarefa.tipo == "pesquisa" and not tarefa.formatos:
         resposta = tarefa.contexto.get("resposta", "")
         resultado.append(("A pesquisa produziu uma resposta", len(resposta.split()) >= 40))
         resultado.append(("A resposta se baseou em fontes da internet", bool(tarefa.contexto.get("web"))))
         return resultado
+    if tarefa.tipo == "email" and not tarefa.contexto.get("emails_lidos"):
+        return [("Não havia e-mails novos para resumir", True)]
 
     extensoes = {os.path.splitext(a)[1].lstrip(".").lower() for a in tarefa.arquivos}
     for formato in tarefa.formatos:
@@ -61,15 +107,29 @@ def verificacoes_objetivas(tarefa: Tarefa) -> list:
                     ))
                 else:
                     resultado.append((f"{slides} slides de conteúdo (mínimo 3)", slides >= 3))
-            elif arquivo.endswith(".docx"):
+            elif arquivo.endswith(".docx") and tarefa.tipo == "documento":
                 palavras = _contar_palavras_docx(arquivo)
                 resultado.append((f"Word com {palavras} palavras (mínimo 150)", palavras >= 150))
             elif arquivo.endswith(".pdf"):
                 paginas = _contar_paginas_pdf(arquivo)
                 resultado.append((f"PDF com {paginas} página(s)", paginas >= 1))
+            elif arquivo.endswith(".xlsx"):
+                resultado.extend(_verificar_planilha(arquivo, tarefa.pedido))
         except Exception as exc:
             resultado.append((f"{nome} abre sem erro ({exc})", False))
-    resultado.extend(verificar_profundidade(tarefa.contexto.get("conteudo") or {}))
+
+    if tarefa.tipo in ("documento", "apresentacao"):
+        resultado.extend(verificar_profundidade(conteudo))
+    elif tarefa.tipo == "estudos":
+        resultado.extend(_verificar_estudos(tarefa, conteudo))
+    elif tarefa.tipo == "aulas":
+        resultado.extend(_verificar_aulas(tarefa, conteudo))
+    elif tarefa.tipo == "resumo_dia":
+        palavras = len(tarefa.contexto.get("resposta", "").split())
+        resultado.append((f"Resumo falado com {palavras} palavras (mínimo 40)", palavras >= 40))
+    elif tarefa.tipo == "email":
+        lidos, resumidos = tarefa.contexto.get("emails_lidos", 0), conteudo.get("emails_resumidos", 0)
+        resultado.append((f"{resumidos} de {lidos} e-mail(s) resumidos", resumidos >= lidos))
     return resultado
 
 
@@ -89,10 +149,37 @@ def verificar_profundidade(conteudo: dict) -> list:
     return resultado
 
 
+def _enxugar(valor, profundidade: int = 0):
+    """Versão curta de qualquer conteúdo (listas com até 6 itens, textos com até 300 letras)."""
+    if isinstance(valor, dict):
+        return {chave: _enxugar(v, profundidade + 1) for chave, v in valor.items() if v not in (None, "", [], {})}
+    if isinstance(valor, list):
+        return [_enxugar(v, profundidade + 1) for v in valor[:6]] + ([f"... e mais {len(valor) - 6}"] if len(valor) > 6 else [])
+    if isinstance(valor, str):
+        return valor[:300]
+    return valor
+
+
 def _resumo_conteudo(tarefa: Tarefa) -> str:
     conteudo = tarefa.contexto.get("conteudo")
     if not conteudo:
         return tarefa.contexto.get("resposta", "")[:3000]
+    if tarefa.tipo == "aulas":
+        # Curso: o plano e o começo de cada aula (o texto inteiro passaria do que o crítico precisa).
+        enxuto = {
+            "curso": conteudo.get("titulo"), "topicos_importantes": conteudo.get("topicos_importantes"),
+            "aulas": [{"titulo": a.get("titulo"), "introducao": str(a.get("introducao") or "")[:200],
+                       "secoes": [s.get("titulo") for s in a.get("secoes") or [] if isinstance(s, dict)],
+                       "exercicios": len(a.get("exercicios") or []), "erro": a.get("erro")}
+                      for a in conteudo.get("aulas") or []],
+        }
+        return json.dumps(enxuto, ensure_ascii=False, default=str)[:6000]
+    if tarefa.tipo not in ("documento", "apresentacao"):
+        # Planilha, estudos, resumo do dia e e-mail: estrutura própria, enviada de forma enxuta.
+        resumo = {"conteudo": _enxugar(conteudo)}
+        if tarefa.contexto.get("resposta"):
+            resumo["texto_falado"] = tarefa.contexto["resposta"][:1500]
+        return json.dumps(resumo, ensure_ascii=False, default=str)[:6000]
     enxuto = {
         "titulo": conteudo.get("titulo"),
         "subtitulo": conteudo.get("subtitulo"),

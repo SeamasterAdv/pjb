@@ -269,7 +269,150 @@ def gerar_pptx(conteudo: dict, caminho: str) -> str:
     return caminho
 
 
-GERADORES = {"docx": gerar_docx, "pdf": gerar_pdf, "pptx": gerar_pptx}
+# ----------------------------------------------------------------- Excel
+FORMATOS_EXCEL = {
+    "moeda": 'R$ #,##0.00',
+    "numero": '#,##0.##',
+    "inteiro": '#,##0',
+    "percentual": '0.0%',
+    "data": 'dd/mm/yyyy',
+}
+
+
+def _numero(valor):
+    """'R$ 1.234,56' -> 1234.56; números passam direto; o resto volta como veio."""
+    if isinstance(valor, (int, float)) or valor is None:
+        return valor
+    texto = str(valor).strip().replace("R$", "").replace("%", "").replace(" ", "")
+    if re.fullmatch(r"-?\d{1,3}(\.\d{3})*(,\d+)?|-?\d+(,\d+)?", texto):
+        texto = texto.replace(".", "").replace(",", ".")
+    try:
+        return float(texto) if "." in texto else int(texto)
+    except ValueError:
+        return valor
+
+
+def _valor_celula(valor, tipo):
+    if isinstance(valor, str) and valor.startswith("="):
+        return valor  # fórmula do Excel
+    if tipo == "data" and isinstance(valor, str):
+        try:
+            return datetime.strptime(valor[:10], "%Y-%m-%d")
+        except ValueError:
+            return valor
+    if tipo in ("moeda", "numero", "inteiro", "percentual"):
+        numero = _numero(valor)
+        if tipo == "percentual" and isinstance(numero, (int, float)) and abs(numero) > 1:
+            numero = numero / 100  # "15" ou "15%" viram 15%
+        return numero
+    return valor
+
+
+def gerar_xlsx(conteudo: dict, caminho: str) -> str:
+    """Planilha com cabeçalho formatado, filtros, formatos por tipo, linha de total e gráfico.
+
+    Estrutura: {"titulo", "abas": [{"nome", "colunas": [...], "tipos": [...], "linhas": [[...]],
+    "total": bool, "grafico": {"tipo": "barras|linhas|pizza", "titulo", "categorias", "valores": [...]}}],
+    "observacoes", "fontes"}
+    """
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    cor = lambda rgb: "%02X%02X%02X" % rgb
+    livro = Workbook()
+    livro.remove(livro.active)
+    borda = Border(bottom=Side(style="thin", color="C9D3DC"))
+
+    for indice, aba in enumerate(conteudo.get("abas") or [], start=1):
+        colunas = _lista(aba.get("colunas"))
+        if not colunas:
+            continue
+        nome = re.sub(r"[\[\]:*?/\\]", "", str(aba.get("nome") or f"Planilha {indice}"))[:31] or f"Planilha {indice}"
+        folha = livro.create_sheet(nome)
+        tipos = (_lista(aba.get("tipos")) + ["texto"] * len(colunas))[:len(colunas)]
+        linhas = [linha for linha in (aba.get("linhas") or []) if isinstance(linha, list)]
+
+        folha.append(colunas)
+        for celula in folha[1]:
+            celula.font = Font(bold=True, color="FFFFFF")
+            celula.fill = PatternFill("solid", fgColor=cor(COR_PRIMARIA))
+            celula.alignment = Alignment(vertical="center", wrap_text=True)
+        for linha in linhas:
+            folha.append([_valor_celula(v, t) for v, t in zip(linha, tipos)])
+        ultima = len(linhas) + 1
+        for numero_coluna, tipo in enumerate(tipos, start=1):
+            for linha_excel in range(2, ultima + 1):
+                celula = folha.cell(row=linha_excel, column=numero_coluna)
+                celula.border = borda
+                if tipo in FORMATOS_EXCEL:
+                    celula.number_format = FORMATOS_EXCEL[tipo]
+
+        numericas = [i for i, t in enumerate(tipos, start=1) if t in ("moeda", "numero", "inteiro")]
+        if aba.get("total") and numericas and linhas:
+            total = ultima + 1
+            folha.cell(row=total, column=1, value="Total").font = Font(bold=True)
+            for numero_coluna in numericas:
+                letra = get_column_letter(numero_coluna)
+                celula = folha.cell(row=total, column=numero_coluna, value=f"=SUM({letra}2:{letra}{ultima})")
+                celula.font = Font(bold=True)
+                celula.number_format = FORMATOS_EXCEL[tipos[numero_coluna - 1]]
+                celula.fill = PatternFill("solid", fgColor="E6F5FA")
+
+        for numero_coluna, titulo in enumerate(colunas, start=1):
+            largura = max([len(str(titulo))] + [len(str(l[numero_coluna - 1])) for l in linhas if len(l) >= numero_coluna])
+            folha.column_dimensions[get_column_letter(numero_coluna)].width = min(max(10, largura + 3), 50)
+        folha.freeze_panes = "A2"
+        folha.auto_filter.ref = f"A1:{get_column_letter(len(colunas))}{ultima}"
+
+        grafico = aba.get("grafico") or {}
+        if grafico and linhas:
+            tipo_grafico = str(grafico.get("tipo", "barras")).lower()
+            classe = PieChart if "pizza" in tipo_grafico else LineChart if "linha" in tipo_grafico else BarChart
+            figura = classe()
+            figura.title = grafico.get("titulo") or nome
+            figura.height, figura.width = 8, 16
+            categorias = colunas.index(grafico["categorias"]) + 1 if grafico.get("categorias") in colunas else 1
+            valores = [colunas.index(v) + 1 for v in _lista(grafico.get("valores")) if v in colunas] or numericas[:1]
+            for numero_coluna in valores:
+                figura.add_data(Reference(folha, min_col=numero_coluna, min_row=1, max_row=ultima), titles_from_data=True)
+            figura.set_categories(Reference(folha, min_col=categorias, min_row=2, max_row=ultima))
+            folha.add_chart(figura, f"{get_column_letter(len(colunas) + 2)}2")
+
+    sobre = livro.create_sheet("Sobre")
+    sobre["A1"] = conteudo.get("titulo") or "Planilha"
+    sobre["A1"].font = Font(bold=True, size=16, color=cor(COR_PRIMARIA))
+    sobre["A2"] = _rodape_data()
+    sobre["A2"].font = Font(italic=True, color=cor(COR_SUAVE))
+    linha_sobre = 4
+    if conteudo.get("observacoes"):
+        sobre.cell(row=linha_sobre, column=1, value=str(conteudo["observacoes"])).alignment = Alignment(wrap_text=True)
+        linha_sobre += 2
+    for fonte in _lista(conteudo.get("fontes")):
+        sobre.cell(row=linha_sobre, column=1, value=fonte)
+        linha_sobre += 1
+    sobre.column_dimensions["A"].width = 100
+    if not livro.sheetnames[:-1]:  # nenhuma aba de dados válida
+        raise ValueError("A planilha não tem nenhuma aba com colunas.")
+    livro.save(caminho)
+    return caminho
+
+
+# --------------------------------------------------------------- flashcards
+def gerar_flashcards_anki(flashcards: list, caminho: str) -> str:
+    """Arquivo de texto separado por tabulação, que o Anki importa direto (Arquivo > Importar)."""
+    with open(caminho, "w", encoding="utf-8") as arquivo:
+        arquivo.write("#separator:tab\n#html:false\n")
+        for cartao in flashcards:
+            frente = str(cartao.get("frente", "")).replace("\t", " ").replace("\n", " ").strip()
+            verso = str(cartao.get("verso", "")).replace("\t", " ").replace("\n", " ").strip()
+            if frente and verso:
+                arquivo.write(f"{frente}\t{verso}\n")
+    return caminho
+
+
+GERADORES = {"docx": gerar_docx, "pdf": gerar_pdf, "pptx": gerar_pptx, "xlsx": gerar_xlsx}
 
 
 def gerar_arquivo(formato: str, conteudo: dict, pasta: str) -> str:

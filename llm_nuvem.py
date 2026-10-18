@@ -300,20 +300,51 @@ class ClienteClaudeCode(ProvedorNuvem):
         return texto
 
 
+# ------------------------------------------------------------------- escolha da IA
+NOMES_IA = {"claude": "Claude", "gemini": "Gemini"}
+# "pelo Gemini", "no Claude", "com o Gemini", "usando o Claude": a IA pedida na própria frase.
+# Inclui grafias comuns da transcrição de voz ("gêmini", "jemini", "clóde").
+RE_IA_PEDIDA = re.compile(
+    r"[\s,]*\b(?:pel[oa]|n[oa]|com|usando|via)\s+(?:[oa]\s+)?(gemini|g[eê]mini|jemini|claude|cl[oó]de)\b",
+    re.IGNORECASE,
+)
+
+
+def extrair_ia_pedida(texto: str):
+    """'pesquise pelo Gemini a reforma' -> ('pesquise a reforma', 'gemini'); sem IA pedida, (texto, None)."""
+    achado = RE_IA_PEDIDA.search(texto or "")
+    if not achado:
+        return texto, None
+    ia = "claude" if achado.group(1).lower().startswith("cl") else "gemini"
+    restante = (texto[:achado.start()] + " " + texto[achado.end():]).strip()
+    return re.sub(r"\s{2,}", " ", restante), ia
+
+
+def ordenar_por_preferencia(provedores, preferir: str = None) -> list:
+    """Põe a IA preferida ("claude" ou "gemini") na frente; as outras continuam de reserva, na ordem de antes."""
+    provedores = list(provedores)
+    if preferir:
+        provedores.sort(key=lambda provedor: getattr(provedor, "nome", "").lower() != preferir)
+    return provedores
+
+
 # ------------------------------------------------------------------- cadeia
 class LLMComReserva:
     """Tenta as IAs da nuvem em ordem e, se nenhuma puder responder, usa a reserva (Ollama).
 
     Guarda em `registro` quem respondeu cada chamada, para o relatório dizer qual IA trabalhou.
+    `preferir` ("claude" ou "gemini") põe essa IA na frente enquanto estiver definido (o
+    orquestrador define por tarefa, a partir de "pelo Gemini" no pedido).
     """
 
     def __init__(self, principal, reserva):
         self.principais = list(principal) if isinstance(principal, (list, tuple)) else [principal]
         self.reserva = reserva
         self.registro = []
+        self.preferir = None
 
     def chat(self, prompt, system_prompt=None, model=None, **kwargs):
-        for provedor in self.principais:
+        for provedor in ordenar_por_preferencia(self.principais, self.preferir):
             if not provedor.disponivel():
                 continue
             try:
@@ -349,13 +380,23 @@ def provedores_nuvem() -> list:
     return [p for p in ordem if p.ativo and p.configurado()]
 
 
-def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None):
-    """Resposta da primeira IA da nuvem que conseguir; None se nenhuma puder (o chamador usa o Ollama)."""
-    for provedor in provedores_nuvem():
+def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None, preferir: str = None, registro: list = None):
+    """Resposta da primeira IA da nuvem que conseguir; None se nenhuma puder (o chamador usa o Ollama).
+
+    `preferir` ("claude" ou "gemini") tenta essa IA primeiro; `registro` recebe o nome de quem respondeu.
+    """
+    provedores = ordenar_por_preferencia(provedores_nuvem(), preferir)
+    if preferir and not any(getattr(p, "nome", "").lower() == preferir for p in provedores):
+        logger.info("%s foi pedido, mas está desligado ou sem acesso; usando as outras IAs.", NOMES_IA.get(preferir, preferir))
+    for provedor in provedores:
         if not provedor.disponivel():
             continue
         try:
-            return provedor.chat(prompt, system_prompt=sistema_beatriz(contexto), opcoes=opcoes)
+            texto = provedor.chat(prompt, system_prompt=sistema_beatriz(contexto), opcoes=opcoes)
         except NuvemIndisponivel as exc:
             logger.warning("%s; tentando a próxima IA.", exc)
+            continue
+        if registro is not None:
+            registro.append(provedor.nome)
+        return texto
     return None

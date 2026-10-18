@@ -181,3 +181,183 @@ def test_acha_a_versao_mais_nova_do_claude_code_do_app(tmp_path, monkeypatch):
     monkeypatch.setattr(llm_nuvem.shutil, "which", lambda nome: None)
     monkeypatch.setattr(llm_nuvem.os.path, "expanduser", lambda caminho: str(tmp_path / "sem_home"))
     assert _versao(localizar_claude_code("")) == (2, 1, 295)
+
+
+# ------------------------------------------------------------------ IA escolhida na frase e resumo
+from agentes import planejar
+from llm_nuvem import extrair_ia_pedida, ordenar_por_preferencia
+
+
+class ClaudeFalso(GeminiFalso):
+    nome = "Claude"
+    modelo = "claude-teste"
+
+
+def test_reconhece_a_ia_pedida_e_tira_da_frase():
+    assert extrair_ia_pedida("pesquise pelo Gemini e me dê um resumo sobre a reforma tributária") == (
+        "pesquise e me dê um resumo sobre a reforma tributária", "gemini")
+    assert extrair_ia_pedida("procure no Claude o preço do dólar") == ("procure o preço do dólar", "claude")
+    assert extrair_ia_pedida("pesquise a reforma tributária com o gêmini") == ("pesquise a reforma tributária", "gemini")
+    assert extrair_ia_pedida("pesquise o preço do dólar") == ("pesquise o preço do dólar", None)
+    assert extrair_ia_pedida("pesquise pelo Cláudio Castro")[1] is None  # nome de pessoa não é o Claude
+
+
+def test_ia_preferida_vai_na_frente_e_as_outras_ficam_de_reserva():
+    claude, gemini = ClaudeFalso(), GeminiFalso()
+    assert ordenar_por_preferencia([claude, gemini], "gemini") == [gemini, claude]
+    assert ordenar_por_preferencia([claude, gemini], None) == [claude, gemini]
+    assert ordenar_por_preferencia([claude], "gemini") == [claude]  # Gemini desligado: segue sem ele
+
+
+def test_responder_na_nuvem_tenta_a_ia_pedida_primeiro(monkeypatch):
+    claude, gemini = ClaudeFalso(), GeminiFalso()
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda: [claude, gemini])
+    registro = []
+
+    llm_nuvem.responder_na_nuvem("Você é o Agente Relator da Beatriz.", preferir="gemini", registro=registro)
+
+    assert gemini.chamadas == 1 and claude.chamadas == 0
+    assert registro == ["Gemini"]
+
+
+def comando_de_pesquisa(monkeypatch, comando):
+    """Roda o comando falado e devolve como a pesquisa foi chamada, sem abrir navegador nem acessar a rede."""
+    chamadas = []
+    monkeypatch.setattr(main, "responder_com_pesquisa_web", lambda alvo, **kwargs: chamadas.append((alvo, kwargs)) or "ok")
+    executada, _ = main.tentar_executar_ferramenta(comando)
+    assert executada and len(chamadas) == 1
+    return chamadas[0]
+
+
+def test_frase_de_pesquisa_com_ia_e_resumo(monkeypatch):
+    # Como chega pela voz: o nome sai, e o pedido não vira tarefa dos agentes.
+    falado = "Beatriz, pesquise pelo Gemini e me dê um resumo sobre a reforma tributária"
+    comando = main.extrair_comando_ativado(falado, 100.0, main.EstadoAtivacao(), exigir=True)
+    assert planejar(comando) is None
+
+    alvo, opcoes = comando_de_pesquisa(monkeypatch, comando)
+    assert alvo == "a reforma tributária"
+    assert opcoes == {"salvar": False, "preferir": "gemini", "resumo": True}
+
+    alvo, opcoes = comando_de_pesquisa(monkeypatch, "pesquise a reforma tributária e resuma pelo Claude")
+    assert (alvo, opcoes["preferir"], opcoes["resumo"]) == ("a reforma tributária", "claude", True)
+
+    alvo, opcoes = comando_de_pesquisa(monkeypatch, "pesquise e me explique como funciona o Pix")
+    assert (alvo, opcoes["preferir"], opcoes["resumo"]) == ("como funciona o pix", None, True)
+
+
+def test_pesquisa_comum_continua_como_antes(monkeypatch):
+    alvo, opcoes = comando_de_pesquisa(monkeypatch, "pesquise o preço do dólar")
+    assert alvo == "o preço do dólar"
+    assert opcoes == {"salvar": False, "preferir": None, "resumo": False}
+
+    # Sem mais nada na frase, o Gemini é o assunto da pesquisa, não a IA escolhida.
+    alvo, opcoes = comando_de_pesquisa(monkeypatch, "pesquise pelo Gemini")
+    assert "gemini" in alvo and opcoes["preferir"] is None
+
+
+def fontes_falsas(monkeypatch):
+    monkeypatch.setattr(main, "abrir_navegador", lambda consulta: None)
+    monkeypatch.setattr(main, "buscar_manchetes", lambda consulta: [("Reforma tributária entra na fase de transição - G1", "", "Notícia publicada em Mon, 12 Oct 2026")])
+    monkeypatch.setattr(main, "pesquisar_web_autonoma", lambda consulta: "[Fonte: Agência Brasil]\nURL: https://agenciabrasil.ebc.com.br\nO IVA dual substitui cinco tributos.")
+    monkeypatch.setattr(main.llm_clients, "chat_beatriz", lambda *a, **k: (_ for _ in ()).throw(AssertionError("não deveria usar o Ollama")))
+
+
+class IAQueGuarda(GeminiFalso):
+    """Guarda o que recebeu e responde um texto fixo."""
+
+    def __init__(self, nome, resposta, no_limite=False):
+        super().__init__(no_limite=no_limite)
+        self.nome, self.resposta, self.recebido = nome, resposta, []
+
+    def chat(self, prompt, system_prompt=None, model=None, **kwargs):
+        self.chamadas += 1
+        if self.no_limite:
+            raise NuvemIndisponivel(f"{self.nome} recusou (429)")
+        self.recebido.append((prompt, system_prompt))
+        return self.resposta
+
+
+def test_resumo_pelo_gemini_usa_o_gemini_primeiro_e_o_prompt_de_resumo(monkeypatch):
+    resumo = ("Segundo a Agência Brasil, a reforma tributária troca cinco tributos por um IVA dual.\n\n"
+              "De acordo com o G1, a transição já começou e vai até 2033.")
+    claude = IAQueGuarda("Claude", "não deveria responder")
+    gemini = IAQueGuarda("Gemini", resumo)
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda: [claude, gemini])  # ordem padrão: Claude primeiro
+    fontes_falsas(monkeypatch)
+
+    _, resposta = main.tentar_executar_ferramenta("pesquise pelo Gemini e me dê um resumo sobre a reforma tributária")
+
+    assert resposta == resumo
+    assert gemini.chamadas == 1 and claude.chamadas == 0
+    prompt, sistema = gemini.recebido[0]
+    assert "resumo falado" in prompt and "dois parágrafos" in prompt
+    assert "Tema: a reforma tributária" in prompt
+    assert "IVA dual" in prompt and "fase de transição" in prompt  # só a pergunta e as fontes públicas
+    assert "Beatriz" in sistema
+    # Na fala, os parágrafos viram frases seguidas, sem quebras de linha.
+    assert "\n" not in main.limpar_texto_para_fala(resposta)
+
+
+def test_preco_do_dolar_segue_com_resposta_direta_e_ordem_padrao(monkeypatch):
+    claude = IAQueGuarda("Claude", "Segundo o G1, o dólar fechou a R$ 5,10.")
+    gemini = IAQueGuarda("Gemini", "não deveria responder")
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda: [claude, gemini])
+    fontes_falsas(monkeypatch)
+
+    _, resposta = main.tentar_executar_ferramenta("pesquise o preço do dólar")
+
+    assert resposta == "Segundo o G1, o dólar fechou a R$ 5,10."
+    assert claude.chamadas == 1 and gemini.chamadas == 0
+    prompt = claude.recebido[0][0]
+    assert "duas a quatro frases" in prompt and "Pergunta: o preço do dólar" in prompt
+
+
+def test_ia_pedida_no_limite_passa_para_a_outra_e_avisa(monkeypatch):
+    claude = IAQueGuarda("Claude", "A reforma unifica tributos, segundo a Agência Brasil.")
+    gemini = IAQueGuarda("Gemini", "", no_limite=True)
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda: [claude, gemini])
+    fontes_falsas(monkeypatch)
+
+    resposta = main.responder_com_pesquisa_web("a reforma tributária", preferir="gemini", resumo=True)
+
+    assert gemini.chamadas == 1 and claude.chamadas == 1
+    assert resposta.startswith("O Gemini não pôde responder agora; usei o Claude.")
+
+
+def test_pesquisa_completa_pelo_gemini():
+    tarefa = planejar("faça uma pesquisa completa pelo Gemini sobre a reforma tributária")
+    assert tarefa.plano == ["pesquisa"]
+    assert tarefa.tema == "a reforma tributária"
+    assert tarefa.ia_preferida == "gemini"
+    assert planejar("faça uma pesquisa completa sobre a reforma tributária").ia_preferida == ""
+
+
+def test_agentes_usam_a_ia_pedida_so_naquela_tarefa(tmp_path):
+    claude, gemini, local = ClaudeFalso(), GeminiFalso(), LLMFalso()
+    orq = Orquestrador(str(tmp_path), llm=local, abrir_ao_concluir=False, llm_nuvem=LLMComReserva([claude, gemini], local))
+
+    tarefa = executar(orq, "crie pelo Gemini uma apresentação com 6 slides sobre energia solar")
+    assert tarefa.status == "concluída" and tarefa.tema == "energia solar"
+    assert gemini.chamadas >= 3 and claude.chamadas == 0
+    assert "Gemini (gemini-teste)" in open(tarefa.relatorio, encoding="utf-8").read()
+
+    # A tarefa seguinte, sem pedir IA, volta para a ordem padrão (Claude primeiro).
+    chamadas_gemini = gemini.chamadas
+    executar(orq, "crie uma apresentação com 6 slides sobre energia eólica")
+    assert claude.chamadas >= 3 and gemini.chamadas == chamadas_gemini
+
+
+def test_tarefa_com_meus_documentos_pelo_gemini_continua_no_computador(tmp_path):
+    gemini, local = GeminiFalso(), LLMFalso()
+    orq = Orquestrador(str(tmp_path), llm=local, abrir_ao_concluir=False, llm_nuvem=LLMComReserva(gemini, local))
+    orq.agentes["biblioteca"].buscar = lambda consulta: "[Fonte: contrato.pdf | documento_local | p. 1 | c:/x]\nTrecho pessoal"
+
+    pronto = threading.Event()
+    tarefa = orq.enviar("monte uma apresentação com base nos meus documentos sobre meu contrato pelo Gemini",
+                        ao_concluir=lambda t: pronto.set())
+    assert "o Gemini fica de fora" in orq.mensagem_inicio(tarefa)
+    assert pronto.wait(30)
+
+    assert tarefa.status == "concluída"
+    assert gemini.chamadas == 0 and local.chamadas

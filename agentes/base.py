@@ -43,6 +43,14 @@ class Avaliacao:
     verificacoes: list = field(default_factory=list)  # (descrição, passou)
 
 
+class TarefaImpossivel(Exception):
+    """Falta algo do lado do usuário (ex.: Gmail não vinculado); a mensagem explica o que fazer."""
+
+
+# Etapas que lidam com dados pessoais: com qualquer uma delas, a tarefa roda inteira no Ollama.
+ETAPAS_PESSOAIS = ("biblioteca", "email", "resumo_dia")
+
+
 @dataclass
 class Tarefa:
     pedido: str
@@ -50,6 +58,11 @@ class Tarefa:
     formatos: list = field(default_factory=list)
     tema: str = ""
     quantidade_slides: int = 0
+    quantidades: dict = field(default_factory=dict)  # ex.: {"flashcards": 20, "questoes": 10}
+    ia_preferida: str = ""           # "claude" ou "gemini" quando o pedido diz "pelo Gemini"; vai primeiro na nuvem
+    materia: bool = False            # "resumo da matéria de X": material detalhado da matéria inteira, com as fontes do usuário
+    fontes_recentes: bool = False    # "resume as fontes que eu coloquei", sem assunto: as fontes adicionadas por último
+    fontes_no_claude: bool = False   # o orquestrador decide ao enviar: as fontes do usuário vão só para o Claude
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     status: str = "na fila"          # na fila, executando, revisando, relatando, concluída, falhou, cancelada
     etapa_atual: str = ""
@@ -68,6 +81,20 @@ class Tarefa:
     @property
     def avaliacao(self):
         return self.avaliacoes[-1] if self.avaliacoes else None
+
+    @property
+    def tipo(self) -> str:
+        """O agente que entrega o resultado: documento, apresentacao, planilha, estudos, resumo_dia, email ou pesquisa."""
+        return self.plano[-1] if self.plano else "pesquisa"
+
+    @property
+    def local_apenas(self) -> bool:
+        return any(etapa in self.plano for etapa in ETAPAS_PESSOAIS)
+
+    def quantidade_estudo(self, chave: str) -> int:
+        """Flashcards ou questões: o número do pedido; sem número, 12 e 6 (20 e 10 num resumo de matéria)."""
+        padrao = {"flashcards": 20, "questoes": 10} if self.materia else {"flashcards": 12, "questoes": 6}
+        return self.quantidades.get(chave) or padrao[chave]
 
     def resumo(self) -> dict:
         """Versão simples (só tipos básicos) para mostrar no painel e compartilhar entre processos."""
@@ -169,24 +196,25 @@ class Agente:
         self.llm = llm
         self.modelo = modelo
 
-    def _sistema(self) -> str:
+    def _sistema(self, instrucoes: str = None) -> str:
         return (
-            f"{self.instrucoes}\n\n"
+            f"{instrucoes or self.instrucoes}\n\n"
             f"Hoje é {datetime.now():%d/%m/%Y}. Escreva sempre em português do Brasil."
         )
 
-    def pedir_texto(self, prompt: str, max_tokens: int = 400) -> str:
-        return self.llm.chat(
-            prompt, system_prompt=self._sistema(), model=self.modelo,
+    def pedir_texto(self, prompt: str, max_tokens: int = 400, llm=None, sistema: str = None) -> str:
+        """`llm` troca a IA só nesta chamada (ex.: dados públicos podem ir para a nuvem)."""
+        return (llm or self.llm).chat(
+            prompt, system_prompt=sistema or self._sistema(), model=self.modelo,
             opcoes={**OPCOES_AGENTES, "num_predict": max_tokens},
         ).strip()
 
-    def pedir_json(self, prompt: str, max_tokens: int = 2500) -> dict:
+    def pedir_json(self, prompt: str, max_tokens: int = 2500, llm=None, sistema: str = None) -> dict:
         """Pede uma resposta em JSON; se vier inválida, tenta mais uma vez com temperatura zero."""
         ultimo_erro = None
         for temperatura in (OPCOES_AGENTES["temperature"], 0.0):
-            resposta = self.llm.chat(
-                prompt, system_prompt=self._sistema(), model=self.modelo, formato="json",
+            resposta = (llm or self.llm).chat(
+                prompt, system_prompt=sistema or self._sistema(), model=self.modelo, formato="json",
                 opcoes={**OPCOES_AGENTES, "temperature": temperatura, "num_predict": max_tokens},
             )
             try:

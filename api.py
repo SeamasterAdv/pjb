@@ -1,4 +1,4 @@
-"""API HTTP local da Beatriz para automatacoes, incluindo Google Agenda."""
+"""API HTTP local da Beatriz para automações, incluindo a agenda local (POST /agenda)."""
 import os
 
 from fastapi import FastAPI, Header, HTTPException
@@ -47,6 +47,8 @@ def agendar(
     )
     if resultado.startswith("Não consegui") or resultado.startswith("Não foi possível"):
         raise HTTPException(status_code=502, detail=resultado)
+    if resultado.endswith("?"):  # a agenda não entendeu a data ("Para quando eu marco...?"): nada foi marcado
+        raise HTTPException(status_code=422, detail=resultado)
     return {"sucesso": True, "mensagem": resultado}
 
 

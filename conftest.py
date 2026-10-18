@@ -19,6 +19,18 @@ def agenda_temporaria(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def sem_internet_para_as_leis(monkeypatch):
+    """A conferência da lei seca e o agente de leis nunca baixam o site do Planalto nos testes."""
+    import agente_leis
+
+    def offline(url):
+        raise OSError("sem internet nos testes")
+
+    monkeypatch.setattr(agente_leis.TextoDasLeis, "_baixar_da_internet", staticmethod(offline))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def impressora_intocada(monkeypatch):
     """Nenhum teste imprime, cancela ou pausa nada na fila do Windows de verdade."""
     import impressora

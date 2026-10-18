@@ -484,10 +484,11 @@ class Orquestrador:
                 "relator": AgenteRelator(**com_fontes),
             }
         self.publicar = publicar or (lambda resumo: None)
-        # As aulas levam vários minutos: o agente publica no painel cada aula que fica pronta.
-        for grupo in (self.agentes, self.agentes_fontes):
-            if hasattr(grupo.get("aulas"), "ao_progredir"):
-                grupo["aulas"].ao_progredir = self._publicar
+        # Aulas e fichas de estudo levam vários minutos: o agente publica no painel cada etapa que fica pronta.
+        for grupo in (self.agentes, self.agentes_fontes, getattr(self, "agentes_nuvem", {})):
+            for nome in ("aulas", "estudos"):
+                if hasattr(grupo.get(nome), "ao_progredir"):
+                    grupo[nome].ao_progredir = self._publicar
         self.abrir = abrir or getattr(os, "startfile", lambda caminho: None)
         self.max_revisoes = max_revisoes
         self.abrir_ao_concluir = abrir_ao_concluir
@@ -543,8 +544,9 @@ class Orquestrador:
             cartoes, questoes = tarefa.quantidade_estudo("flashcards"), tarefa.quantidade_estudo("questoes")
             if tarefa.materia:
                 return self._inicio_materia(tarefa, cartoes, questoes) + fim
-            return (f"Certo, vou preparar o material de estudo sobre {tarefa.tema}: resumo, {cartoes} flashcards "
-                    f"e {questoes} questões. Te aviso quando terminar.{fim}")
+            return (f"Certo, vou preparar a ficha de estudo sobre {tarefa.tema}: como cai na prova, cada tópico em "
+                    f"regra, exceções e lei seca, {cartoes} flashcards e um teste de estresse com {questoes} questões. "
+                    f"Te aviso quando terminar.{fim}")
         if tarefa.tipo == "planilha":
             entrega = "a planilha"
         elif "pptx" in tarefa.formatos:
@@ -598,10 +600,12 @@ class Orquestrador:
         if "pesquisa" in tarefa.plano:
             o_que += " e da internet"
         if tarefa.fontes_no_claude:
-            return (f"Certo, vou {o_que}, com o Claude: a matéria inteira em tópicos explicados, glossário, "
-                    f"{cartoes} flashcards e {questoes} questões comentadas. Leva alguns minutos; te aviso quando terminar.")
-        return (f"Certo, vou {o_que}, aqui no computador: resumo, {cartoes} flashcards e {questoes} questões. "
-                "Te aviso quando terminar.")
+            return (f"Certo, vou {o_que}, com o Claude, numa ficha tática: primeiro a análise de como a matéria cai na "
+                    f"prova, depois cada tópico explicado e desmontado em regra, exceções, prazos, lei seca conferida no "
+                    f"Planalto e STF/STJ, glossário, {cartoes} flashcards e um teste de estresse com {questoes} questões "
+                    "difíceis. Leva alguns minutos; te aviso quando terminar.")
+        return (f"Certo, vou {o_que}, aqui no computador, numa ficha tática: tópicos com regra e exceções, {cartoes} "
+                f"flashcards e um teste de estresse com {questoes} questões. Te aviso quando terminar.")
 
     # --------------------------------------------------------- execução
     def _publicar(self, tarefa: Tarefa):

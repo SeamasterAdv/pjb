@@ -43,7 +43,7 @@ class Norma:
 
 NORMAS = [
     Norma("cf", "a Constituição Federal", f"{PLANALTO}/constituicao/constituicao.htm",
-          r"\bconstituic\w*(?: federal| da republica| brasileira)?\b|\bcf\b|\bcarta magna\b"),
+          r"\bconstituic\w*(?: federal| da republica| brasileira)?\b|\bcf\b|\bcrfb\b|\bcarta magna\b"),
     Norma("cp", "o Código Penal", f"{PLANALTO}/decreto-lei/del2848compilado.htm", r"\bcodigo penal\b|\bcp\b", "2848"),
     Norma("cc", "o Código Civil", f"{PLANALTO}/leis/2002/l10406compilada.htm", r"\bcodigo civil\b|\bcc\b", "10406"),
     Norma("cpc", "o Código de Processo Civil", f"{PLANALTO}/_ato2015-2018/2015/lei/l13105.htm",
@@ -298,10 +298,12 @@ def ano_estimado(numero: int) -> int:
 def candidatos_planalto(numero: str, ano: str = "", tipo: str = "lei") -> list[str]:
     """Endereços prováveis da norma no Planalto, do mais para o menos provável."""
     n = int(numero)
+    if tipo == "decreto":  # os antigos ficam em decreto/antigos (o 20.910/1932, da prescrição contra a Fazenda)
+        return [f"{PLANALTO}/decreto/antigos/d{n}.htm", f"{PLANALTO}/decreto/d{n}.htm", f"{PLANALTO}/decreto/D{n}.htm"]
     if tipo == "decreto-lei":
         return [f"{PLANALTO}/decreto-lei/del{n}compilado.htm", f"{PLANALTO}/decreto-lei/del{n}.htm"]
-    if n < 10400:  # até 2001, numa pasta só
-        return [f"{PLANALTO}/leis/l{n}compilado.htm", f"{PLANALTO}/leis/l{n}.htm"]
+    if n < 10400:  # até 2001, numa pasta só (a 8.112 é "l8112cons.htm")
+        return [f"{PLANALTO}/leis/l{n}compilado.htm", f"{PLANALTO}/leis/l{n}cons.htm", f"{PLANALTO}/leis/l{n}.htm"]
     estimado = int(ano) if ano else ano_estimado(n)
     anos = [estimado] if ano else [estimado, estimado + 1, estimado - 1, estimado + 2, estimado - 2]
     urls = []
@@ -326,6 +328,27 @@ class PedidoLei:
     explicar: bool = False
 
 
+def _norma_pelo_numero(lei_numero: re.Match, normas=NORMAS) -> Norma:
+    """A norma de "lei 13.709" (do catálogo, se estiver nele; senão, uma achada pelo endereço provável)."""
+    numero = lei_numero.group(2).replace(".", "")
+    ano = lei_numero.group(3) or ""
+    palavra = lei_numero.group(1)
+    tipo = "decreto-lei" if "lei" in palavra and palavra.startswith("decreto") else "decreto" if palavra.startswith("decreto") else "lei"
+    nome = f"{ {'decreto-lei': 'o Decreto-Lei', 'decreto': 'o Decreto'}.get(tipo, 'a Lei') } {_numero_do_artigo(numero)}"
+    return next((n for n in normas if n.numero == numero), None) or Norma(
+        f"{tipo}_{numero}", nome + (f", de {ano}" if ano else ""), "", "", numero, ano, tipo)
+
+
+def norma_por_texto(texto: str, normas=NORMAS) -> Norma | None:
+    """A norma citada num texto qualquer ("CPC", "CF/88", "Lei 8.112/90"), ou None."""
+    _, t = preparar(texto or "")
+    norma = next((n for n in normas if re.search(n.apelidos, t)), None)
+    if norma:
+        return norma
+    achado = RE_LEI_NUMERO.search(t)
+    return _norma_pelo_numero(achado, normas) if achado else None
+
+
 def interpretar(texto: str, normas=NORMAS) -> PedidoLei | None:
     """O pedido sobre uma lei (texto já sem acentos), ou None se não for isso."""
     if RE_CRIAR.search(texto):
@@ -334,12 +357,7 @@ def interpretar(texto: str, normas=NORMAS) -> PedidoLei | None:
     norma = next((n for n in normas if re.search(n.apelidos, texto)), None)
     lei_numero = RE_LEI_NUMERO.search(texto)
     if norma is None and lei_numero:
-        numero = lei_numero.group(2).replace(".", "")
-        ano = lei_numero.group(3) or ""
-        tipo = "decreto-lei" if lei_numero.group(1).startswith("decreto") else "lei"
-        nome = f"{'o Decreto-Lei' if tipo == 'decreto-lei' else 'a Lei'} {_numero_do_artigo(numero)}"
-        norma = next((n for n in normas if n.numero == numero), None) or Norma(
-            f"{tipo}_{numero}", nome + (f", de {ano}" if ano else ""), "", "", numero, ano, tipo)
+        norma = _norma_pelo_numero(lei_numero, normas)
     if not artigo and norma is None:
         return None
     if not artigo and not (RE_LER.search(texto) or RE_EXPLICAR.search(texto)):

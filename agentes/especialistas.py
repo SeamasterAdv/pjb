@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from agentes import geradores
+from agentes import ficha_estudo, geradores
 from agentes.base import Agente, Tarefa, TarefaImpossivel, normalizar
 
 logger = logging.getLogger(__name__)
@@ -466,81 +466,261 @@ def documento_de_estudo(conteudo: dict, materia: bool = False) -> dict:
     }
 
 
+TOPICOS_POR_CHAMADA = 3  # fichas escritas em cada chamada (a matéria inteira não cabe numa resposta só)
+FICHAS_EM_PARALELO = 2
+LIMITE_FICHA_NO_PROMPT = {"nuvem": 60000, "local": 9000}  # a ficha enviada ao teste de estresse e ao fechamento
+
+ESQUEMA_TOPICO = (
+    '{"titulo": str, "incidencia": "alta", "media" ou "baixa", "como_cai": str, "explicacao": [str], '
+    '"natureza": str, "requisitos": [str], "regra": str, "excecoes": [str], '
+    '"prazos_e_efeitos": [{"item": str, "valor": str, "fundamento": str}], '
+    '"lei_seca": [{"norma": str, "artigo": str, "referencia": str, "palavra_chave": str, "pegadinha": str}], '
+    '"jurisprudencia": [{"referencia": str, "tese": str, "conferir": bool}], "palavras_de_conflito": [str], '
+    '"pegadinhas": [str], "exemplo": str, "pontos_chave": [str], "fonte": str}'
+)
+REGRAS_DA_FICHA = (
+    "Cada tópico é uma ficha tática em que cada frase responde a uma possível questão de prova:\n"
+    "- 'explicacao': ensine tudo, sem poupar espaço: de 2 a 5 parágrafos que explicam o instituto do zero, o porquê "
+    "e como aplicar, com a terminologia das fontes;\n"
+    "- 'natureza' e 'requisitos': o que é e o que precisa acontecer para ser válido;\n"
+    "- 'regra': a regra geral em UMA linha; 'excecoes': todas as exceções relevantes, uma por item (é delas que saem "
+    "as questões);\n"
+    "- 'prazos_e_efeitos': prazos (prescrição, decadência, recursos), efeitos no tempo (ex tunc ou ex nunc), quem é "
+    "competente e se cabe recurso, cada um com o fundamento;\n"
+    "- 'lei_seca': os artigos que o examinador copia trocando uma palavra. 'norma' é a sigla ou o nome (CF, CC, CPC, "
+    "CP, CPP, CLT, CDC, ECA, CTN, CTB, LGPD, 'Lei 8.112/1990'...), 'artigo' só o número ('37' ou '1.228'), "
+    "'referencia' como se cita ('art. 37, § 6º, CF'), 'palavra_chave' a palavra ou expressão que a banca troca e "
+    "'pegadinha' a troca que ela costuma fazer. Primeiro a lei: a maior parte da ficha sai do texto legal;\n"
+    "- 'jurisprudencia': só súmulas, temas de repercussão geral e repetitivos do STF e do STJ que resolvem lacunas "
+    "deste tópico; cite o número só se tiver certeza e marque 'conferir': true se houver qualquer dúvida;\n"
+    "- 'palavras_de_conflito': só as palavras restritivas ou qualificadoras deste tópico que mudam o sentido jurídico "
+    "('salvo', 'independentemente', 'presume-se', 'apenas', 'fica vedado', 'exclusivamente', 'desde que', 'sempre', "
+    "'nenhum'...), copiadas como aparecem; nunca conceitos, institutos ou nomes de teorias;\n"
+    "- 'como_cai': como a banca transforma o tópico em questão; 'incidencia': a sua estimativa do quanto cai;\n"
+    "- 'pegadinhas': confusões comuns; 'exemplo': um caso concreto; 'pontos_chave': de 3 a 6 frases para revisar; "
+    "'fonte': o arquivo de onde veio, como aparece em [Fonte: ...] (vazio se não veio das fontes);\n"
+    "- fora do direito, use os mesmos campos com o sentido equivalente (conceito e elementos, regra geral, exceções e "
+    "casos especiais, números, datas e fórmulas, texto-base literal, posições consolidadas) e deixe vazio o que não "
+    "se aplica;\n"
+    "- nada de narrativa, histórico ou 'gordura' acadêmica que não vira questão. Nunca invente artigos, números, "
+    "datas, autores ou súmulas."
+)
+REGRAS_DAS_QUESTOES = (
+    "Questões no estilo de prova (FGV/OAB quando for direito), com uma única alternativa correta, distratores "
+    "plausíveis e a letra correta variando; a 'explicacao' diz por que a correta está certa e onde estão as "
+    "pegadinhas das outras."
+)
+
+
 class AgenteEstudos(Agente):
     nome = "estudos"
-    papel = "Prepara resumo, flashcards e questões de prova."
+    papel = "Faz a análise crítica do assunto e monta a ficha tática de estudo, com flashcards e teste de estresse."
+    # Etapa 1: a análise crítica, antes de escrever (engenharia reversa da prova).
     instrucoes = (
-        "Você é o Agente de Estudos da Beatriz, um professor didático e rigoroso. "
-        "Responda SOMENTE com um objeto JSON neste formato:\n"
-        '{"titulo": str, "resumo": str, "topicos": [{"titulo": str, "explicacao": str, "pontos_chave": [str]}], '
-        '"flashcards": [{"frente": str, "verso": str}], '
-        '"questoes": [{"enunciado": str, "alternativas": [4 textos, sem as letras], '
-        '"correta": "A", "B", "C" ou "D", "explicacao": str}], "dicas": [str]}\n'
-        "Regras: explique do básico ao avançado, com exemplos; de 4 a 7 tópicos; a frente do flashcard é uma "
-        "pergunta curta e o verso, uma resposta objetiva; questões no estilo de prova, com uma única alternativa "
-        "correta e distratores plausíveis, variando a letra correta; a explicação diz por que a correta está certa; "
-        "quando houver trechos dos documentos do usuário, baseie-se neles."
+        "Você é o Agente de Estudos da Beatriz, um professor didático e rigoroso, focado em aprovação. Nesta etapa você "
+        "faz a ANÁLISE CRÍTICA do assunto antes de escrever o resumo, como engenharia reversa da prova: em vez de ler "
+        "do começo ao fim, mapeia como o assunto vira questão. Responda SOMENTE com um objeto JSON neste formato:\n"
+        '{"titulo": str, "area": "direito" ou "geral", "visao_geral": str, "como_a_banca_cobra": [str], '
+        '"topicos": [{"titulo": str, "incidencia": "alta", "media" ou "baixa", "foco": str}]}\n'
+        "Regras: divida o assunto em institutos que viram questão, na ordem em que faz sentido estudar; "
+        "'como_a_banca_cobra' traz de 4 a 8 padrões de cobrança (o que bancas como FGV e OAB costumam perguntar: prazos, "
+        "competência, cabimento de recurso, exceções, literalidade de artigos), pelo seu conhecimento das provas, sem "
+        "inventar estatísticas; 'incidencia' é a sua estimativa de quanto o tópico cai; 'foco' diz numa frase o que a "
+        "prova testa naquele tópico; 'visao_geral' explica em um parágrafo o que é o assunto e por que importa."
     )
-    # Resumo da matéria inteira, escrito pelo Claude a partir das fontes do usuário.
-    instrucoes_materia = (
-        "Você é o Agente de Estudos da Beatriz, um professor didático e rigoroso. Prepara o resumo completo de "
-        "uma matéria para o aluno estudar sozinho, no computador ou no celular, a partir das fontes dele. "
-        "Responda SOMENTE com um objeto JSON neste formato:\n"
-        '{"titulo": str, "resumo": str, "topicos": [{"titulo": str, "paragrafos": [str], "pontos_chave": [str], '
-        '"exemplo": str, "atencao": str, "fonte": str}], "glossario": [{"termo": str, "definicao": str}], '
-        '"flashcards": [{"frente": str, "verso": str}], '
-        '"questoes": [{"enunciado": str, "alternativas": [4 textos, sem as letras], '
-        '"correta": "A", "B", "C" ou "D", "explicacao": str}], "dicas": [str], "fora_das_fontes": [str]}\n'
-        "Regras: cubra a matéria inteira que está nas fontes, na ordem em que faz sentido estudar, do básico ao "
-        "avançado, em 6 a 14 tópicos; 'resumo' é a visão geral da matéria em um parágrafo; cada tópico tem de 2 a 4 "
-        "parágrafos de 3 a 6 frases que explicam o conceito e o porquê, com a terminologia das fontes; "
-        "'pontos_chave' são de 3 a 6 frases completas para revisar; 'exemplo' é um caso concreto; 'atencao' traz "
-        "confusões comuns e pegadinhas de prova (pode ser vazio); 'fonte' é o nome do arquivo de onde veio o "
-        "conteúdo, como aparece em [Fonte: ...] (vazio se não veio das fontes); glossário com 8 a 20 termos; "
-        "flashcards e questões cobrem todos os tópicos; questões no estilo de prova, com uma única alternativa "
-        "correta, distratores plausíveis e a letra correta variando; a explicação da questão diz por que a correta "
-        "está certa e as outras não. Baseie-se primeiro nas fontes do usuário; quando precisar completar com "
-        "conhecimento consolidado, complete e liste em 'fora_das_fontes' os assuntos que não vieram delas. Nunca "
-        "invente artigos de lei, datas, números, autores ou citações."
+    instrucoes_fichas = (
+        "Você é o Agente de Estudos da Beatriz, um professor didático e rigoroso, focado em aprovação. Escreva as FICHAS "
+        "TÁTICAS dos tópicos pedidos. Responda SOMENTE com um objeto JSON neste formato:\n"
+        '{"topicos": [' + ESQUEMA_TOPICO + '], "fora_das_fontes": [str]}\n' + REGRAS_DA_FICHA +
+        "\nBaseie-se primeiro nas fontes do usuário; o que completar com conhecimento consolidado, liste em "
+        "'fora_das_fontes'. Escreva só os tópicos pedidos, na ordem pedida, com os mesmos títulos."
     )
+    instrucoes_fechamento = (
+        "Você é o Agente de Estudos da Beatriz. A partir das fichas abaixo, prepare a revisão espaçada. Responda SOMENTE "
+        "com um objeto JSON neste formato:\n"
+        '{"flashcards": [{"frente": str, "verso": str}], "glossario": [{"termo": str, "definicao": str}]}\n'
+        "Regras: os flashcards cobrem todos os tópicos e priorizam o que mais cai (exceções, prazos, palavras-chave da "
+        "lei seca); a frente é uma pergunta curta de prova e o verso, a resposta direta com o fundamento; glossário com "
+        "os termos técnicos das fichas (de 8 a 20)."
+    )
+    instrucoes_estresse = (
+        "Você é o Agente de Estudos da Beatriz e faz o TESTE DE ESTRESSE de uma ficha de estudo: crie questões de ALTA "
+        "dificuldade sobre o assunto (literalidade de artigos com uma palavra trocada, exceções obscuras, parágrafos "
+        "únicos, prazos, jurisprudência recente) e, para cada uma, verifique se a informação para acertar está na "
+        "ficha. Responda SOMENTE com um objeto JSON neste formato:\n"
+        '{"questoes": [{"enunciado": str, "alternativas": [4 textos, sem as letras], "correta": "A", "B", "C" ou "D", '
+        '"explicacao": str, "topico": str, "estava_na_ficha": bool}], "lacunas": [{"topico": str, "tese": str}]}\n'
+        f"{REGRAS_DAS_QUESTOES} 'topico' (nas questões e nas lacunas) é exatamente um dos títulos da ficha, o mais "
+        "próximo do assunto, mesmo quando a ficha não tem a resposta. Para cada questão que a "
+        "ficha não responde ('estava_na_ficha': false), ponha em 'lacunas' a tese que faltou, escrita como uma frase "
+        "de ficha. Nunca invente artigos, números ou súmulas."
+    )
+
+    def __init__(self, paralelo: int = FICHAS_EM_PARALELO, conferir_lei=ficha_estudo.conferir_lei_seca, **kwargs):
+        super().__init__(**kwargs)
+        self.paralelo = paralelo
+        self.conferir_lei = conferir_lei  # busca no Planalto o texto dos artigos da lei seca
+        self.ao_progredir = None  # o orquestrador liga aqui a publicação do andamento no painel
+
+    def _avisar(self, tarefa: Tarefa, etapa: str):
+        tarefa.etapa_atual = etapa
+        if self.ao_progredir:
+            try:
+                self.ao_progredir(tarefa)
+            except Exception as exc:
+                logger.debug("Não foi possível publicar o andamento do material: %s", exc)
+
+    @staticmethod
+    def _base(tarefa: Tarefa, materia: bool) -> str:
+        """Começo igual nas chamadas que leem as fontes: fontes antes do pedido (se o texto passar do limite de
+        algum modelo, o pedido não se perde no corte)."""
+        if materia:
+            assunto = "a das fontes acima, que o usuário acabou de colocar" if tarefa.fontes_recentes else tarefa.tema
+            fontes = _bloco_contexto(tarefa) or "Sem fontes do usuário sobre o assunto: use conhecimento consolidado."
+            return f"{fontes}\n\n---\nPedido do usuário: {tarefa.pedido}\nMatéria: {assunto}\n"
+        fontes = _bloco_contexto(tarefa) or "Sem fontes externas: use conhecimento consolidado."
+        return f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n\n{fontes}\n"
+
+    def _analisar(self, tarefa: Tarefa, materia: bool) -> dict:
+        self._avisar(tarefa, "analisando como o assunto cai na prova")
+        escopo = ("Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em 6 a 16 "
+                  "tópicos." if materia else "Esta análise prepara a ficha de um assunto, em 4 a 8 tópicos.")
+        plano = self.pedir_json(f"{self._base(tarefa, materia)}{_bloco_correcao(tarefa)}", max_tokens=4000,
+                                sistema=self._sistema(f"{self.instrucoes} {escopo}"))
+        topicos = [t for t in plano.get("topicos") or [] if isinstance(t, dict) and t.get("titulo")][:16 if materia else 8]
+        if not topicos:
+            raise ValueError("a análise da matéria veio sem tópicos")
+        plano["topicos"] = topicos
+        return plano
+
+    def _escrever_fichas(self, tarefa: Tarefa, plano: dict, materia: bool) -> tuple[list, list]:
+        """Fichas de todos os tópicos do plano, TOPICOS_POR_CHAMADA por chamada e `paralelo` chamadas por vez."""
+        previstos = plano["topicos"]
+        resumo_plano = json.dumps({"titulo": plano.get("titulo"), "topicos": previstos}, ensure_ascii=False)
+        base = f"{self._base(tarefa, materia)}ANÁLISE CRÍTICA (plano da ficha):\n{resumo_plano}\n\n"
+        lotes = [previstos[i:i + TOPICOS_POR_CHAMADA] for i in range(0, len(previstos), TOPICOS_POR_CHAMADA)]
+        prontas, trava = [0], threading.Lock()
+
+        def escrever(lote):
+            if tarefa.cancelada:
+                return [], []
+            pedido = "Escreva agora as fichas destes tópicos:\n" + "\n".join(
+                f"- {t['titulo']} (incidência {t.get('incidencia', 'media')}; foco: {t.get('foco', '')})" for t in lote)
+            try:
+                resposta = self.pedir_json(base + pedido + _bloco_correcao(tarefa), max_tokens=12000,
+                                           sistema=self._sistema(self.instrucoes_fichas))
+            except Exception as exc:
+                logger.warning("Fichas de %s não foram escritas: %s", [t["titulo"] for t in lote], exc)
+                return [], []
+            fichas = _casar_topicos(lote, resposta.get("topicos") or [])
+            with trava:
+                prontas[0] += len(fichas)
+                self._avisar(tarefa, f"escrevendo as fichas ({prontas[0]} de {len(previstos)} prontas)")
+            return fichas, resposta.get("fora_das_fontes") or []
+
+        self._avisar(tarefa, f"escrevendo as fichas (0 de {len(previstos)} prontas)")
+        with ThreadPoolExecutor(max_workers=max(1, self.paralelo), thread_name_prefix="fichas") as executor:
+            resultados = list(executor.map(escrever, lotes))
+        fichas = [f for lote, _ in resultados for f in lote]
+        fora = list(dict.fromkeys(str(f) for _, extras in resultados for f in extras if f))
+        return fichas, fora
+
+    @staticmethod
+    def _ficha_no_prompt(ficha: dict, limite: int) -> str:
+        """As fichas em JSON (sem a explicação longa, se precisar caber no modelo local)."""
+        campos = ("titulo", "regra", "excecoes", "requisitos", "prazos_e_efeitos", "lei_seca", "jurisprudencia", "pegadinhas",
+                  "teste_de_estresse")
+        completo = json.dumps({"titulo": ficha.get("titulo"), "topicos": ficha.get("topicos")}, ensure_ascii=False)
+        if len(completo) <= limite:
+            return completo
+        enxuto = [{k: t.get(k) for k in campos if t.get(k)} for t in ficha.get("topicos") or []]
+        return json.dumps({"titulo": ficha.get("titulo"), "topicos": enxuto}, ensure_ascii=False)[:limite]
 
     def executar(self, tarefa: Tarefa) -> str:
         n_cartoes, n_questoes = tarefa.quantidade_estudo("flashcards"), tarefa.quantidade_estudo("questoes")
-        # O resumo completo da matéria só com o Claude: o modelo local não comporta as fontes inteiras.
-        materia = tarefa.materia and tarefa.fontes_no_claude
-        if materia:
-            assunto = ("a das fontes acima, que o usuário acabou de colocar" if tarefa.fontes_recentes else tarefa.tema)
-            # Fontes antes do pedido: se o texto passar do limite de algum modelo, o pedido não se perde no corte.
-            prompt = (
-                f"{_bloco_contexto(tarefa) or 'Sem fontes do usuário sobre o assunto: use conhecimento consolidado.'}\n\n---\n"
-                f"Pedido do usuário: {tarefa.pedido}\nMatéria: {assunto}\n"
-                f"Quantidade: exatamente {n_cartoes} flashcards e {n_questoes} questões.{_bloco_correcao(tarefa)}"
-            )
-            conteudo = self.pedir_json(prompt, max_tokens=16000, sistema=self._sistema(self.instrucoes_materia))
-        else:
-            prompt = (
-                f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n"
-                f"Quantidade: exatamente {n_cartoes} flashcards e {n_questoes} questões.\n\n"
-                f"{_bloco_contexto(tarefa) or 'Sem fontes externas: use conhecimento consolidado.'}{_bloco_correcao(tarefa)}"
-            )
-            conteudo = self.pedir_json(prompt, max_tokens=7000)
-        conteudo["flashcards"] = [
-            c for c in conteudo.get("flashcards") or [] if isinstance(c, dict) and c.get("frente") and c.get("verso")
-        ][:n_cartoes]
-        conteudo["questoes"] = [q for q in map(_questao_valida, conteudo.get("questoes") or []) if q][:n_questoes]
-        conteudo["fontes"] = list(dict.fromkeys(tarefa.contexto.get("fontes", [])))
-        tarefa.contexto["conteudo"] = conteudo
+        # A matéria inteira, com as fontes, só com o Claude: o modelo local não comporta as fontes inteiras.
+        materia = bool(tarefa.materia and tarefa.fontes_no_claude)
+        limite = LIMITE_FICHA_NO_PROMPT["nuvem" if materia else "local"]
 
-        documento = documento_de_estudo(conteudo, materia=materia)
+        # 1. Incidência: como o assunto vira questão. 2. Desconstrução: a ficha de cada tópico.
+        plano = self._analisar(tarefa, materia)
+        fichas, fora = self._escrever_fichas(tarefa, plano, materia)
+        ficha = ficha_estudo.normalizar_ficha({**plano, "topicos": fichas, "fora_das_fontes": fora})
+        if not ficha["topicos"]:
+            raise ValueError("nenhuma ficha de tópico foi escrita")
+
+        # Revisão espaçada: flashcards e glossário a partir das fichas.
+        self._avisar(tarefa, "preparando os flashcards")
+        fechamento = self.pedir_json(
+            f"FICHAS:\n{self._ficha_no_prompt(ficha, limite)}\n\nQuantidade: exatamente {n_cartoes} flashcards.",
+            max_tokens=6000, sistema=self._sistema(self.instrucoes_fechamento))
+        ficha["flashcards"] = [c for c in fechamento.get("flashcards") or []
+                               if isinstance(c, dict) and c.get("frente") and c.get("verso")][:n_cartoes]
+        glossario = [g for g in fechamento.get("glossario") or [] if isinstance(g, dict) and g.get("termo") and g.get("definicao")]
+        ficha["glossario"] = glossario or ficha["glossario"]
+
+        # 4. Teste de estresse: questões difíceis respondidas só com a ficha; o que faltou entra nela.
+        self._avisar(tarefa, "fazendo o teste de estresse")
+        estresse = self.pedir_json(
+            f"FICHA DE ESTUDO:\n{self._ficha_no_prompt(ficha, limite)}\n\nQuantidade: exatamente {n_questoes} questões.",
+            max_tokens=8000, sistema=self._sistema(self.instrucoes_estresse))
+        ficha["questoes"] = [q for q in map(_questao_valida, estresse.get("questoes") or []) if q][:n_questoes]
+        lacunas = ficha_estudo.aplicar_lacunas(ficha, estresse.get("lacunas"))
+
+        # 3. Leitura direcionada: o texto oficial de cada artigo da lei seca, conferido no Planalto.
+        conferencia = {}
+        if any(t["lei_seca"] for t in ficha["topicos"]) and self.conferir_lei:
+            self._avisar(tarefa, "conferindo a lei seca no Planalto")
+            try:
+                conferencia = self.conferir_lei(ficha) or {}
+            except Exception as exc:
+                logger.warning("Não deu para conferir a lei seca: %s", exc)
+
+        ficha["fontes"] = list(dict.fromkeys(tarefa.contexto.get("fontes", [])))
+        tarefa.contexto["conteudo"] = ficha
         formatos = [f for f in tarefa.formatos if f in ("pdf", "docx")] or ["pdf"]
-        arquivos = [geradores.gerar_arquivo(f, documento, tarefa.pasta) for f in formatos]
-        if conteudo["flashcards"]:
-            nome = geradores.nome_arquivo_seguro(documento["titulo"])
+        os.makedirs(tarefa.pasta, exist_ok=True)
+        # O conteúdo guardado permite refazer o PDF/Word (outro visual) sem escrever tudo de novo.
+        with open(os.path.join(tarefa.pasta, "ficha.json"), "w", encoding="utf-8") as arquivo:
+            json.dump(ficha, arquivo, ensure_ascii=False, indent=1)
+        nome = geradores.nome_arquivo_seguro(ficha.get("titulo") or tarefa.tema)
+        gerar = {"pdf": ficha_estudo.gerar_pdf_ficha, "docx": ficha_estudo.gerar_docx_ficha}
+        arquivos = [gerar[f](ficha, os.path.join(tarefa.pasta, f"{nome}.{f}")) for f in formatos]
+        if ficha["flashcards"]:
             arquivos.append(geradores.gerar_flashcards_anki(
-                conteudo["flashcards"], os.path.join(tarefa.pasta, f"{nome}_flashcards_anki.txt")))
+                ficha["flashcards"], os.path.join(tarefa.pasta, f"{nome}_flashcards_anki.txt")))
         tarefa.arquivos = arquivos
-        return (f"Preparou '{documento['titulo']}' com {len(conteudo.get('topicos') or [])} tópicos, "
-                f"{len(conteudo['flashcards'])} flashcards e {len(conteudo['questoes'])} questões.")
+
+        resumo = (f"Preparou '{ficha.get('titulo') or tarefa.tema}' com {len(ficha['topicos'])} tópicos, "
+                  f"{len(ficha['flashcards'])} flashcards e {len(ficha['questoes'])} questões.")
+        if conferencia.get("conferidos"):
+            resumo += f" Conferiu {conferencia['conferidos']} artigo(s) da lei seca no Planalto."
+        if conferencia.get("nao_encontrados"):
+            resumo += f" {conferencia['nao_encontrados']} artigo(s) citado(s) não existem na lei: estão marcados para conferir."
+        if lacunas:
+            resumo += f" O teste de estresse achou {lacunas} lacuna(s) e completou a ficha."
+        return resumo
+
+
+def _casar_topicos(pedidos: list, recebidos: list) -> list:
+    """As fichas devolvidas, na ordem pedida e com o título do plano (o modelo às vezes devolve a mais)."""
+    validos = [t for t in recebidos if isinstance(t, dict) and t.get("titulo")]
+    usados, saida = set(), []
+    for pedido in pedidos:
+        alvo = normalizar(pedido["titulo"])
+        escolhido = next((i for i, t in enumerate(validos) if i not in usados and normalizar(t["titulo"]) == alvo), None)
+        if escolhido is None:
+            escolhido = next((i for i, t in enumerate(validos) if i not in usados
+                              and (alvo in normalizar(t["titulo"]) or normalizar(t["titulo"]) in alvo)), None)
+        if escolhido is None and len(validos) == len(pedidos):
+            escolhido = pedidos.index(pedido) if pedidos.index(pedido) not in usados else None
+        if escolhido is None:
+            logger.warning("A ficha de '%s' não veio na resposta.", pedido["titulo"])
+            continue
+        usados.add(escolhido)
+        saida.append({**validos[escolhido], "titulo": pedido["titulo"],
+                      "incidencia": validos[escolhido].get("incidencia") or pedido.get("incidencia")})
+    return saida
 
 
 # ------------------------------------------------------------------- aulas

@@ -466,6 +466,7 @@ def documento_de_estudo(conteudo: dict, materia: bool = False) -> dict:
     }
 
 
+RE_ENTREGA_NO_PEDIDO = re.compile(r"\b(pdf|word|docx|whats\w*|zap|mand[ae]\w*|envi[ae]\w*|imprim\w*)\b")
 TOPICOS_POR_CHAMADA = 3  # fichas escritas em cada chamada (a matéria inteira não cabe numa resposta só)
 FICHAS_EM_PARALELO = 2
 LIMITE_FICHA_NO_PROMPT = {"nuvem": 60000, "local": 9000}  # a ficha enviada ao teste de estresse e ao fechamento
@@ -556,10 +557,12 @@ class AgenteEstudos(Agente):
         "de ficha. Nunca invente artigos, números ou súmulas."
     )
 
-    def __init__(self, paralelo: int = FICHAS_EM_PARALELO, conferir_lei=ficha_estudo.conferir_lei_seca, **kwargs):
+    def __init__(self, paralelo: int = FICHAS_EM_PARALELO, conferir_lei=ficha_estudo.conferir_lei_seca,
+                 buscar_lei=None, **kwargs):
         super().__init__(**kwargs)
         self.paralelo = paralelo
         self.conferir_lei = conferir_lei  # busca no Planalto o texto dos artigos da lei seca
+        self.buscar_lei = buscar_lei if buscar_lei is not None else _texto_oficial_citado  # "resumo do artigo 500 do CC"
         self.ao_progredir = None  # o orquestrador liga aqui a publicação do andamento no painel
 
     def _avisar(self, tarefa: Tarefa, etapa: str):
@@ -574,17 +577,24 @@ class AgenteEstudos(Agente):
     def _base(tarefa: Tarefa, materia: bool) -> str:
         """Começo igual nas chamadas que leem as fontes: fontes antes do pedido (se o texto passar do limite de
         algum modelo, o pedido não se perde no corte)."""
+        lei = tarefa.contexto.get("lei_citada")
+        bloco_lei = (f"TEXTO OFICIAL DE {lei[0].upper()} (Planalto; a ficha parte dele):\n{lei[1]}\n\n" if lei else "")
+        # "e em PDF manda pro meu WhatsApp": a Beatriz cuida disso depois; sem o aviso, a IA comentava na ficha.
+        entrega = ("(Formato do arquivo e envio, como PDF ou WhatsApp, a Beatriz resolve depois: não comente isso na ficha.)\n"
+                   if RE_ENTREGA_NO_PEDIDO.search(normalizar(tarefa.pedido)) else "")
         if materia:
             assunto = "a das fontes acima, que o usuário acabou de colocar" if tarefa.fontes_recentes else tarefa.tema
             fontes = _bloco_contexto(tarefa) or "Sem fontes do usuário sobre o assunto: use conhecimento consolidado."
-            return f"{fontes}\n\n---\nPedido do usuário: {tarefa.pedido}\nMatéria: {assunto}\n"
-        fontes = _bloco_contexto(tarefa) or "Sem fontes externas: use conhecimento consolidado."
-        return f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n\n{fontes}\n"
+            return f"{bloco_lei}{fontes}\n\n---\nPedido do usuário: {tarefa.pedido}\n{entrega}Matéria: {assunto}\n"
+        fontes = _bloco_contexto(tarefa) or ("" if lei else "Sem fontes externas: use conhecimento consolidado.")
+        return f"Pedido do usuário: {tarefa.pedido}\n{entrega}Tema: {tarefa.tema}\n\n{bloco_lei}{fontes}\n"
 
     def _analisar(self, tarefa: Tarefa, materia: bool) -> dict:
         self._avisar(tarefa, "analisando como o assunto cai na prova")
         escopo = ("Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em 6 a 16 "
-                  "tópicos." if materia else "Esta análise prepara a ficha de um assunto, em 4 a 8 tópicos.")
+                  "tópicos." if materia else
+                  "Esta análise prepara a ficha de um assunto, em 2 a 8 tópicos conforme o tamanho dele (um artigo de lei "
+                  "isolado pede de 2 a 4: o caput, os parágrafos e incisos que caem, e os institutos que ele usa).")
         plano = self.pedir_json(f"{self._base(tarefa, materia)}{_bloco_correcao(tarefa)}", max_tokens=4000,
                                 sistema=self._sistema(f"{self.instrucoes} {escopo}"))
         topicos = [t for t in plano.get("topicos") or [] if isinstance(t, dict) and t.get("titulo")][:16 if materia else 8]
@@ -643,6 +653,12 @@ class AgenteEstudos(Agente):
         limite = LIMITE_FICHA_NO_PROMPT["nuvem" if materia else "local"]
 
         # 1. Incidência: como o assunto vira questão. 2. Desconstrução: a ficha de cada tópico.
+        if self.buscar_lei and "lei_citada" not in tarefa.contexto:
+            try:  # o pedido cita um artigo ("resumo do artigo 500 do Código Civil"): o texto oficial entra no prompt
+                tarefa.contexto["lei_citada"] = self.buscar_lei(tarefa.pedido)
+            except Exception as exc:
+                logger.info("Sem o texto oficial do artigo pedido: %s", exc)
+                tarefa.contexto["lei_citada"] = None
         plano = self._analisar(tarefa, materia)
         fichas, fora = self._escrever_fichas(tarefa, plano, materia)
         ficha = ficha_estudo.normalizar_ficha({**plano, "topicos": fichas, "fora_das_fontes": fora})
@@ -700,6 +716,12 @@ class AgenteEstudos(Agente):
         if lacunas:
             resumo += f" O teste de estresse achou {lacunas} lacuna(s) e completou a ficha."
         return resumo
+
+
+def _texto_oficial_citado(frase: str):
+    from agente_leis import texto_oficial_citado
+
+    return texto_oficial_citado(frase)
 
 
 def _casar_topicos(pedidos: list, recebidos: list) -> list:

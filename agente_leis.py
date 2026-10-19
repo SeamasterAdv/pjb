@@ -163,6 +163,8 @@ def linhas_do_html(conteudo: bytes) -> list[str]:
     texto = re.sub(r"\s+", " ", texto)  # as quebras de linha do HTML caem no meio das frases
     texto = re.sub(r"(?i)<br\s*/?>|</p\s*>|</h\d\s*>|</div\s*>|</tr\s*>|</li\s*>|</table\s*>", "\n", texto)
     texto = html_util.unescape(re.sub(r"(?s)<[^>]+>", " ", texto))
+    # Páginas antigas escrevem o ordinal com um "o" sobrescrito à parte: "§ 1 o" / "Art. 2 o" -> "§ 1º".
+    texto = re.sub(r"((?:§|Art\.?)\s*\d+)\s+o\b", r"\1º", texto)
     return [linha for linha in (re.sub(r"\s+", " ", parte).strip() for parte in texto.split("\n")) if linha]
 
 
@@ -347,6 +349,23 @@ def norma_por_texto(texto: str, normas=NORMAS) -> Norma | None:
         return norma
     achado = RE_LEI_NUMERO.search(t)
     return _norma_pelo_numero(achado, normas) if achado else None
+
+
+def texto_oficial_citado(frase: str, textos=None) -> tuple[str, str] | None:
+    """('o artigo 500 do Código Civil', texto oficial) quando a frase cita um artigo de uma lei achável; senão None.
+
+    Usado pela ficha de estudo ("faz um resumo do artigo 500 do Código Civil"), para partir da lei de verdade.
+    """
+    _, t = preparar(frase or "")
+    artigo, norma = RE_ARTIGO.search(t), norma_por_texto(frase)
+    if not (artigo and norma):
+        return None
+    numero = _numero_do_artigo(ORDINAIS.get(artigo.group(1), artigo.group(1)), artigo.group(2) or "")
+    agente = AgenteLeis(textos=textos or TextoDasLeis(), explicador=lambda *_: "")
+    trecho = trecho_do_artigo(agente._linhas(norma), numero)
+    if not trecho:
+        return None
+    return f"o artigo {numero} {_de(norma.nome)}", "\n".join(sem_anotacoes(linha) for linha in trecho)
 
 
 def interpretar(texto: str, normas=NORMAS) -> PedidoLei | None:

@@ -194,6 +194,17 @@ def _resumo_conteudo(tarefa: Tarefa) -> str:
     return json.dumps({k: v for k, v in enxuto.items() if v}, ensure_ascii=False)[:4000]
 
 
+# Sem isto, o crítico reprovava a ficha ("o pedido era um resumo simples, mas está enviesado para concurso")
+# e o material inteiro era reescrito à toa: o formato foi pedido pelo usuário para todo resumo de estudo.
+FORMATO_COMBINADO_ESTUDOS = (
+    "Formato combinado com o usuário: todo resumo de estudo é uma ficha tática focada na prova (como a banca cobra, "
+    "incidência, natureza e requisitos, regra e exceções, prazos e efeitos, lei seca conferida no Planalto, STF/STJ, "
+    "pegadinhas e teste de estresse), mesmo quando o pedido diz só \"resumo\". Esse foco em prova e esse formato não "
+    "são problema, e os itens marcados para conferir são de propósito. Avalie a correção do conteúdo, se a regra e as "
+    "exceções estão certas e completas e se cada tópico ensina de verdade.\n\n"
+)
+
+
 class AgenteCritico(Agente):
     nome = "critico"
     papel = "Analisa o resultado e decide se o pedido foi cumprido."
@@ -222,6 +233,7 @@ class AgenteCritico(Agente):
         )
         prompt = (
             f"Pedido do usuário: {tarefa.pedido}\n\n"
+            f"{FORMATO_COMBINADO_ESTUDOS if tarefa.tipo == 'estudos' else ''}"
             f"Conteúdo entregue (resumido):\n{_resumo_conteudo(tarefa)}{conferencia}"
         )
         try:

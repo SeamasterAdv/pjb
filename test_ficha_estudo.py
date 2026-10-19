@@ -260,6 +260,74 @@ def test_ficha_de_assunto_sem_materia_tem_menos_topicos(tmp_path):
     assert "Sem fontes externas" in ia.etapas[0][1]
 
 
+@pytest.mark.parametrize("frase, tema, formato", [
+    ("Faz um resumo do artigo 500 do Código Civil e em PDF manda para o meu WhatsApp.", "artigo 500 do Código Civil", "pdf"),
+    ("Gera para mim um resumo em PDF do artigo 500 do código civil", "artigo 500 do código civil", "pdf"),
+    ("faz um resumo completo sobre a reforma tributária", "a reforma tributária", "pdf"),
+    ("quero um resumo da lei maria da penha", "lei maria da penha", "pdf"),
+    ("me faz um resumo detalhado em Word da súmula vinculante 13", "súmula vinculante 13", "docx"),
+    ("faz um resumo para a prova de história", "história", "pdf"),
+])
+def test_pedido_de_resumo_com_pista_de_estudo_vira_ficha(frase, tema, formato):
+    from agentes.orquestrador import planejar
+
+    tarefa = planejar(frase)
+    assert tarefa.plano[-1] == "estudos" and not tarefa.materia
+    assert (tarefa.tema, tarefa.formatos) == (tema, [formato])
+
+
+@pytest.mark.parametrize("frase", [
+    "faz um resumo sobre fotossíntese",  # resumo falado rápido (resumo_explicativo)
+    "faz um resumo sobre Reforma tributária: o que muda em 2027",  # sugestão da mascote sobre a notícia aberta
+    "resume essa matéria do G1", "resumo das notícias de hoje", "resume esse artigo do site",
+    "pesquise pelo Gemini e me dê um resumo sobre a reforma tributária",
+])
+def test_outros_resumos_nao_viram_ficha(frase):
+    from agentes.orquestrador import planejar
+
+    tarefa = planejar(frase)
+    assert tarefa is None or tarefa.plano[-1] != "estudos"
+
+
+def test_resumo_de_artigo_parte_do_texto_oficial(tmp_path):
+    from agente_leis import texto_oficial_citado
+
+    textos = TextoDasLeis(baixar=lambda url: PAGINA_CF)
+    rotulo, texto = texto_oficial_citado("faz um resumo do artigo 37 da Constituição em PDF", textos=textos)
+    assert rotulo == "o artigo 37 da Constituição Federal" and "nessa qualidade" in texto
+    assert texto_oficial_citado("faz um resumo sobre fotossíntese", textos=textos) is None
+
+    ia = IAEtapas(topicos=3, lacunas=False)
+    agente = AgenteEstudos(llm=ia, conferir_lei=None, buscar_lei=lambda frase: (rotulo, texto))
+    tarefa = Tarefa(pedido="faz um resumo do artigo 37 da Constituição em PDF", plano=["estudos"],
+                    tema="artigo 37 da Constituição", pasta=str(tmp_path))
+    agente.executar(tarefa)
+    analise = ia.etapas[0][1]
+    assert "TEXTO OFICIAL DE O ARTIGO 37 DA CONSTITUIÇÃO FEDERAL" in analise and "nessa qualidade" in analise
+    assert "Sem fontes externas" not in analise
+    assert "TEXTO OFICIAL" in ia.etapas[1][1]  # as fichas também partem da lei
+    assert "não comente isso na ficha" in analise  # "em PDF": a entrega fica com a Beatriz
+
+
+def test_critico_sabe_que_a_ficha_e_o_formato_combinado():
+    from agentes.critico import AgenteCritico
+
+    recebidos = []
+
+    class IA:
+        def chat(self, prompt, system_prompt=None, model=None, **kwargs):
+            recebidos.append(prompt)
+            return json.dumps({"nota": 8, "pontos_fortes": [], "problemas": [], "correcao": ""})
+
+    ficha = normalizar_ficha({"titulo": "Art. 500", "topicos": [topico("Venda ad mensuram"), topico("Prazo")]})
+    tarefa = Tarefa(pedido="faz um resumo do artigo 500 do Código Civil", plano=["estudos"], contexto={"conteudo": ficha})
+    AgenteCritico(llm=IA()).avaliar(tarefa)
+    assert "Formato combinado com o usuário" in recebidos[0]
+    documento = Tarefa(pedido="faz um PDF sobre clima", plano=["documento"], contexto={"conteudo": {"titulo": "Clima"}})
+    AgenteCritico(llm=IA()).avaliar(documento)
+    assert "Formato combinado" not in recebidos[1]
+
+
 def test_sem_topicos_na_analise_falha(tmp_path):
     class Vazia(IAEtapas):
         def chat(self, prompt, system_prompt=None, model=None, **kwargs):

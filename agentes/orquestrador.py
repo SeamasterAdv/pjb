@@ -136,6 +136,40 @@ ROTULOS_ETAPA = {
 }
 
 
+RE_UM_RESUMO = re.compile(r"\b(resum(o|os|ao|ir|e|a)|sintese|fichamento)\b")
+RE_PISTA_DE_ESTUDO = re.compile(
+    r"\b(pdf|word|docx|documento|arquivo|ficha|material|complet[oa]|detalhad\w*|elaborad\w*|aprofundad\w*|prova|oab|"
+    r"concursos?|vestibular|enem|estud\w*|revis\w*|artigos? \d+|art\.? ?\d+|leis?|codigo|constituic\w*|sumulas?|"
+    r"jurisprudencia|materia|capitulo|disciplina|conteudo|doutrina)\b"
+)
+RE_RESUMO_DE_OUTRA_COISA = re.compile(
+    r"\b(noticias?|manchetes?|jornal|reportage\w*|g1|uol|folha|estadao|site|link|navegador|pagina aberta|videos?|"
+    r"youtube|podcast|e-?mails?|conversa|ouviu|reuniao|agenda)\b"
+    r"|\b(ess[ae]|est[ae]|aquel[ae]|desse|deste|dessa|desta) (artigo|materia|texto|noticia|documento|pdf)\b"
+)
+
+
+def tema_do_resumo(pedido: str) -> str:
+    """'Faz um resumo do artigo 500 do Código Civil e em PDF manda pro zap' -> 'artigo 500 do Código Civil'."""
+    tema = re.sub(r"^\s*(?:beatriz|beatris|biatriz)[\s,]*", "", pedido, flags=re.IGNORECASE)
+    achado = RE_TEMA.search(tema)
+    if achado:
+        tema = achado.group(1)
+    else:
+        # Tudo até "resumo" (verbo, "pra mim", "um"), o formato e a preposição saem do começo.
+        tema = re.sub(r"^.*?\b(?:resum[oa]s?|resumão|síntese|sintese|fichamento)\b\s*", "", tema, count=1, flags=re.IGNORECASE)
+        tema = re.sub(r"^(?:(?:bem |mais )?(?:complet[oa]|detalhad[oa]|elaborad[oa]|aprofundad[oa])\s*)?"
+                      r"(?:(?:em|no|num|de) (?:pdf|word|docx|documento|arquivo)\s*)?"
+                      r"(?:d[eoa]s?|sobre|acerca d[eoa]s?|a respeito d[eoa]s?|para estudar|pra estudar)?\s+",
+                      "", tema, count=1, flags=re.IGNORECASE)
+        # "para a prova de história" -> "história"
+        tema = re.sub(r"^(?:para|pra) (?:a |minha |o )?(?:prova|oab|concurso|vestibular|enem)\w*\s*(?:d[eoa]s?\s+)?", "",
+                      tema, count=1, flags=re.IGNORECASE)
+    tema = RE_CORTE_TEMA.split(tema)[0]
+    tema = re.sub(r"(?:\s+(?:e|,|para|pra|no|em))+\s*$", "", tema.strip(" .,!?:;\"'"), flags=re.IGNORECASE)
+    return tema.strip(" .,!?:;\"'") or extrair_tema(pedido)
+
+
 def extrair_tema(pedido: str) -> str:
     achado = RE_TEMA.search(pedido)
     tema = achado.group(1) if achado else pedido
@@ -271,6 +305,15 @@ def _planejar(comando: str):
             quantidades=_quantidades_estudo(texto), materia=True, fontes_recentes=not tema,
         )
 
+    # "Faz um resumo do artigo 500 do Código Civil em PDF", "gera um resumo completo sobre X": a ficha tática
+    # de estudo. Sem pista de estudo nem de arquivo ("faz um resumo sobre X"), fica o resumo falado rápido
+    # (resumo_explicativo), que a mascote também usa para as notícias abertas no navegador.
+    if RE_UM_RESUMO.search(texto) and RE_PISTA_DE_ESTUDO.search(texto) and not RE_RESUMO_DE_OUTRA_COISA.search(texto):
+        return Tarefa(
+            pedido=pedido, plano=_etapas_de_contexto(texto) + ["estudos"],
+            formatos=["docx"] if RE_DOCX.search(texto) else ["pdf"], tema=tema_do_resumo(pedido),
+            quantidades=_quantidades_estudo(texto),
+        )
     if RE_ESTUDOS.search(texto) or (RE_ESTUDOS_FRACO.search(texto) and RE_CRIAR.search(texto)):
         return Tarefa(
             pedido=pedido, plano=_etapas_de_contexto(texto) + ["estudos"],

@@ -258,32 +258,16 @@ def navegar_e_consultar_site(url_ou_termo: str, pergunta: str = "") -> str:
 
 
 def analisar_tela(pergunta: str = "Descreva o que está na tela e identifique textos, imagens e botões relevantes.") -> str:
-    """Captura a tela atual e pede a um modelo visual uma descrição objetiva."""
+    """Captura o monitor da janela ativa, lê o texto (OCR do Windows) e responde com o modelo local (leitura_tela.py)."""
     try:
-        import pyautogui
         from llm_clients import llm_clients
+        from leitura_tela import AgenteTela, Pedido
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as arquivo:
-            caminho = arquivo.name
-        pyautogui.screenshot(caminho)
-        try:
-            return llm_clients.chat_com_imagem(
-                pergunta,
-                caminho,
-                contexto=(
-                    "Descreva somente o que estiver visível na imagem. "
-                    "Transcreva textos legíveis, identifique imagens e sinalize incertezas."
-                ),
-            )
-        finally:
-            if os.path.exists(caminho):
-                os.remove(caminho)
+        resposta = AgenteTela(llm=llm_clients)._olhar(Pedido(pergunta, escopo="tela"))
+        return f"{resposta.fala}\n\n{resposta.painel}" if resposta.painel else resposta.fala
     except Exception as exc:
         logger.warning("Falha ao analisar a tela: %s", exc)
-        return (
-            "Não consegui analisar a tela. Verifique se o Ollama está ativo, se o modelo "
-            "visual foi instalado e se a captura de tela está disponível: " + str(exc)
-        )
+        return "Não consegui analisar a tela. Verifique se o Ollama está ativo e se a captura de tela está disponível: " + str(exc)
 
 
 def _url_real_duckduckgo(href: str) -> str:
@@ -634,34 +618,110 @@ def abrir_whatsapp() -> str:
         return f"Erro ao abrir WhatsApp: {e}"
 
 
-def obter_previsao_tempo(cidade: str = "São Paulo") -> str:
-    api_key = os.getenv("OPENWEATHERMAP_API_KEY", "")
-    if not api_key:
-        return "Não há chave da API de previsão do tempo configurada no ambiente."
+CODIGOS_DO_TEMPO = {
+    0: "céu limpo", 1: "predominantemente limpo", 2: "parcialmente nublado", 3: "nublado",
+    45: "neblina", 48: "neblina", 51: "garoa fraca", 53: "garoa", 55: "garoa forte",
+    56: "garoa congelante", 57: "garoa congelante", 61: "chuva fraca", 63: "chuva", 65: "chuva forte",
+    66: "chuva congelante", 67: "chuva congelante", 71: "neve fraca", 73: "neve", 75: "neve forte",
+    77: "grãos de neve", 80: "pancadas de chuva fracas", 81: "pancadas de chuva", 82: "pancadas de chuva fortes",
+    85: "pancadas de neve", 86: "pancadas de neve fortes", 95: "tempestade", 96: "tempestade com granizo",
+    99: "tempestade com granizo forte",
+}
+_CACHE_CLIMA: dict = {}
 
+
+def _achar_cidade(nome: str) -> dict:
+    """Coordenadas da cidade pelo geocodificador do Open-Meteo (gratuito, sem chave); prefere o Brasil."""
+    resposta = requests.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": nome, "count": 5, "language": "pt", "format": "json"}, timeout=10,
+    )
+    resposta.raise_for_status()
+    achados = resposta.json().get("results") or []
+    if not achados:
+        raise LookupError(nome)
+    return next((c for c in achados if c.get("country_code") == "BR"), achados[0])
+
+
+def _consultar_clima(nome: str):
+    """(lugar, dados) do Open-Meteo para a cidade, guardados por 10 min."""
+    guardado = _CACHE_CLIMA.get(nome.lower())
+    if guardado and (datetime.now() - guardado[0]).total_seconds() < 600:
+        return guardado[1], guardado[2]
+    local = _achar_cidade(nome)
+    resposta = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": local["latitude"], "longitude": local["longitude"], "timezone": "auto", "forecast_days": 3,
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        },
+        timeout=10,
+    )
+    resposta.raise_for_status()
+    dados = resposta.json()
+    _CACHE_CLIMA[nome.lower()] = (datetime.now(), local, dados)
+    return local, dados
+
+
+def clima_em_numeros(cidade: str = "") -> dict | None:
+    """O tempo agora e nos próximos 3 dias em números (o mesmo cache da previsão falada), para o app do celular.
+    None se não deu para consultar."""
+    from config import LOCAL_DO_CLIMA
+
+    nome = (cidade or LOCAL_DO_CLIMA).strip()
     try:
-        cidade_limpa = (cidade or os.getenv("OPENWEATHERMAP_CITY", "São Paulo")).strip()
-        url = "https://api.openweathermap.org/data/2.5/weather"
-        params = {
-            "q": cidade_limpa,
-            "appid": api_key,
-            "units": "metric",
-            "lang": "pt_br",
+        local, dados = _consultar_clima(nome)
+        agora, diario = dados["current"], dados["daily"]
+        return {
+            "lugar": local.get("name", nome),
+            "temperatura": round(agora["temperature_2m"]),
+            "sensacao": round(agora["apparent_temperature"]),
+            "codigo": agora["weather_code"],
+            "descricao": CODIGOS_DO_TEMPO.get(agora["weather_code"], "tempo variável"),
+            "umidade": round(agora["relative_humidity_2m"]),
+            "vento": round(agora["wind_speed_10m"]),
+            "dias": [{"data": diario["time"][i], "codigo": diario["weather_code"][i],
+                      "minima": round(diario["temperature_2m_min"][i]), "maxima": round(diario["temperature_2m_max"][i]),
+                      "chuva": diario["precipitation_probability_max"][i]} for i in range(len(diario["time"]))],
         }
-        resposta = requests.get(url, params=params, timeout=10)
-        resposta.raise_for_status()
-        dados = resposta.json()
+    except Exception as exc:
+        logger.debug("Clima em números indisponível: %s", exc)
+        return None
 
-        if dados.get("cod") not in (200, "200"):
-            return f"Não consegui buscar a previsão para {cidade_limpa}."
 
-        temp = dados["main"]["temp"]
-        descricao = dados["weather"][0]["description"]
-        sensacao = dados["main"].get("feels_like")
-        cidade_nome = dados.get("name", cidade_limpa)
-        return f"No momento em {cidade_nome}, está {temp:.1f}°C, sensação térmica de {sensacao:.1f}°C e clima {descricao}."
+def obter_previsao_tempo(cidade: str = "", dia: str = "hoje") -> str:
+    """Tempo agora e previsão de hoje, amanhã ou depois de amanhã (Open-Meteo: sem chave, sem conta)."""
+    from config import LOCAL_DO_CLIMA
+
+    nome = (cidade or LOCAL_DO_CLIMA).strip()
+    deslocamento = {"hoje": 0, "amanha": 1, "depois": 2}.get(dia, 0)
+    try:
+        local, dados = _consultar_clima(nome)
+        lugar = local.get("name", nome)
+        if local.get("admin2") and local["admin2"] != lugar:
+            lugar += f", {local['admin2']}"
+        diario = dados["daily"]
+        descricao = CODIGOS_DO_TEMPO.get(diario["weather_code"][deslocamento], "tempo variável")
+        minima, maxima = diario["temperature_2m_min"][deslocamento], diario["temperature_2m_max"][deslocamento]
+        chuva = diario["precipitation_probability_max"][deslocamento]
+        previsao = f"mínima de {minima:.0f}°C, máxima de {maxima:.0f}°C"
+        if chuva is not None:
+            previsao += f" e {chuva:.0f}% de chance de chuva"
+        if deslocamento:
+            quando = "amanhã" if deslocamento == 1 else "depois de amanhã"
+            return f"Previsão para {quando} em {lugar}: {descricao}, {previsao}."
+
+        agora = dados["current"]
+        return (
+            f"Agora em {lugar}: {agora['temperature_2m']:.0f}°C, sensação de {agora['apparent_temperature']:.0f}°C, "
+            f"{CODIGOS_DO_TEMPO.get(agora['weather_code'], 'tempo variável')}, umidade de {agora['relative_humidity_2m']:.0f}% "
+            f"e vento de {agora['wind_speed_10m']:.0f} km/h. Hoje: {descricao}, {previsao}."
+        )
+    except LookupError:
+        return f"Não encontrei a cidade {nome} para ver a previsão."
     except Exception as e:
-        logger.warning("Erro ao consultar previsão do tempo: %s", exc_info=True)
+        logger.warning("Erro ao consultar previsão do tempo: %s", e, exc_info=True)
         return f"Não consegui consultar a previsão do tempo agora: {e}"
 
 

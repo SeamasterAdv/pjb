@@ -973,7 +973,7 @@ MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "a
 
 def coletar_dados_do_dia() -> dict:
     """Agenda, clima, e-mails não lidos e manchetes dos temas do usuário; o que não estiver configurado fica None."""
-    from config import OPENWEATHERMAP_API_KEY, OPENWEATHERMAP_CITY, TEMAS_RESUMO_DIA
+    from config import TEMAS_RESUMO_DIA
     from llm_clients import data_hora_atual_texto
 
     dados = {"data": data_hora_atual_texto(), "agenda": None, "clima": None, "emails": None, "noticias": {}}
@@ -985,12 +985,12 @@ def coletar_dados_do_dia() -> dict:
         dados["agenda"] = criar_agente_agenda().descrever_dia(date.today())
     except Exception as exc:
         logger.warning("Agenda indisponível para o resumo do dia: %s", exc)
-    if OPENWEATHERMAP_API_KEY:
-        try:
-            from tools import obter_previsao_tempo
-            dados["clima"] = obter_previsao_tempo(OPENWEATHERMAP_CITY)
-        except Exception as exc:
-            logger.warning("Clima indisponível para o resumo do dia: %s", exc)
+    try:
+        from tools import obter_previsao_tempo
+        clima = obter_previsao_tempo()
+        dados["clima"] = clima if clima.startswith("Agora em") else None  # erro vira "sem clima", não texto de erro
+    except Exception as exc:
+        logger.warning("Clima indisponível para o resumo do dia: %s", exc)
     try:
         from google_gmail import gmail_conectado, listar_emails
         if gmail_conectado():

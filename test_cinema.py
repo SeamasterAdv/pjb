@@ -152,3 +152,27 @@ def test_filmes_em_cartaz_hoje_nao_vira_a_data(monkeypatch):
     # "hoje" respondia a data e a hora antes de chegar no cinema.
     monkeypatch.setattr(main, "responder_pedido_de_cinema", lambda texto: "programação" if "cartaz" in texto else None)
     assert main.tentar_executar_ferramenta("quais filmes estão em cartaz hoje") == (True, "programação")
+
+
+def test_previsao_do_tempo_open_meteo(monkeypatch):
+    import tools
+
+    class Resp:
+        def __init__(self, dados): self.dados = dados
+        def raise_for_status(self): pass
+        def json(self): return self.dados
+
+    def falso_get(url, params=None, timeout=0):
+        if "geocoding" in url:
+            return Resp({"results": [{"name": "Curitiba", "latitude": -25.4, "longitude": -49.2, "country_code": "BR"}]})
+        return Resp({
+            "current": {"temperature_2m": 21.4, "apparent_temperature": 20.0, "relative_humidity_2m": 43, "weather_code": 1, "wind_speed_10m": 4},
+            "daily": {"weather_code": [3, 61, 0], "temperature_2m_max": [22, 19, 25], "temperature_2m_min": [9, 12, 10],
+                      "precipitation_probability_max": [2, 80, 0]},
+        })
+
+    monkeypatch.setattr(tools.requests, "get", falso_get)
+    tools._CACHE_CLIMA.clear()
+    assert "Agora em Curitiba: 21°C" in tools.obter_previsao_tempo("Curitiba")
+    amanha = tools.obter_previsao_tempo("Curitiba", "amanha")
+    assert "amanhã" in amanha and "chuva" in amanha and "80%" in amanha

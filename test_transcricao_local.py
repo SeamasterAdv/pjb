@@ -196,3 +196,18 @@ def test_escuta_termina_sem_erro_quando_o_programa_fecha(monkeypatch, caplog):
     voice._PARAR_ESCUTA.set()  # se ainda estiver rodando, para
     assert not escuta.is_alive()
     assert not [registro.getMessage() for registro in caplog.records if registro.levelno >= logging.ERROR]
+
+
+def test_voz_do_celular_so_vai_para_o_whisper_local(monkeypatch):
+    # A voz gravada no app do celular nunca vai para o Google, nem no modo "google" nem enquanto o modelo carrega.
+    _google_proibido(monkeypatch)
+    um_segundo = np.zeros(16000, dtype=np.float32)
+    modelo = _WhisperFalso(_segmento("abre a pasta da o a b", avg_logprob=-0.1))
+    for modo in ("auto", "google"):
+        _whisper_carregado(monkeypatch, modelo, modo)
+        texto, confianca = voice.transcrever_amostras(um_segundo)
+        assert "OAB" in texto and confianca == pytest.approx(math.exp(-0.1)), modo
+    assert modelo.chamadas[0][0] is um_segundo  # as amostras vão direto, sem conversão
+    monkeypatch.setattr(voice, "ESPERA_WHISPER_SEGUNDOS", 0.05)
+    _whisper_carregando(monkeypatch, "auto")
+    assert voice.transcrever_amostras(um_segundo) == ("", None)

@@ -1,7 +1,19 @@
 """Configuração comum dos testes: a agenda de verdade (banco_memoria/agenda.sqlite3) nunca é usada."""
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 
 import pytest
+
+# A biblioteca (ChromaDB) dos testes fica numa pasta temporária, definida antes de qualquer teste importar o memory.
+# O ChromaDB não aguenta dois processos gravando no mesmo banco: em out/2026 os testes abriram o banco de verdade
+# com a Beatriz aberta e o índice corrompeu (ela caía logo depois do login).
+os.environ.pop("BEATRIZ_BIBLIOTECA_REMOTA", None)  # rodando de dentro de uma Beatriz aberta: os testes têm o banco deles
+if not os.environ.get("BEATRIZ_BANCO_MEMORIA"):
+    os.environ["BEATRIZ_BANCO_MEMORIA"] = tempfile.mkdtemp(prefix="beatriz_banco_teste_")
+    atexit.register(shutil.rmtree, os.environ["BEATRIZ_BANCO_MEMORIA"], True)
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +39,81 @@ def sem_internet_para_as_leis(monkeypatch):
         raise OSError("sem internet nos testes")
 
     monkeypatch.setattr(agente_leis.TextoDasLeis, "_baixar_da_internet", staticmethod(offline))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def escuta_no_modo_conversa(monkeypatch):
+    """Os testes de escuta foram escritos para a janela de 40 s ("conversa"); o padrão do programa é "sempre"."""
+    import sys
+
+    if "main" in sys.modules:
+        monkeypatch.setitem(sys.modules["main"].ESCUTA, "modo", "conversa")
+        monkeypatch.setitem(sys.modules["main"].AMBIENTE, "outra_voz_em", 0.0)
+        monkeypatch.setitem(sys.modules["main"].AMBIENTE, "ultima_oferta", 0.0)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def biometria_isolada(tmp_path, monkeypatch):
+    """Os testes nunca leem as vozes cadastradas de verdade nem carregam o modelo ECAPA."""
+    import biometria_voz
+
+    bio = biometria_voz.BIOMETRIA
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou carregar o modelo de voz de verdade")
+
+    monkeypatch.setattr(bio, "caminho", str(tmp_path / "vozes_teste.json"))
+    monkeypatch.setattr(bio, "_perfis", {})
+    monkeypatch.setattr(bio, "_ultimo", None)
+    monkeypatch.setattr(bio, "_ligada", True)
+    monkeypatch.setattr(bio.codificador, "preparar", proibido)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def pastas_sem_varredura(monkeypatch):
+    """O aquecimento do índice (thread da abertura) não varre as pastas do PC nos testes."""
+    import agente_pastas
+
+    monkeypatch.setattr(agente_pastas.AgentePastas, "aquecer", lambda self: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def tela_intocada(monkeypatch):
+    """Nenhum teste fotografa a tela de verdade, lê o OCR do Windows ou chama o modelo de visão."""
+    import leitura_tela
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou usar a tela de verdade")
+
+    monkeypatch.setattr(leitura_tela, "capturar", proibido)
+    monkeypatch.setattr(leitura_tela, "ler_texto", proibido)
+    monkeypatch.setattr(leitura_tela, "janelas_visiveis", lambda: [])  # nenhuma janela: sem contexto de atividade
+    monkeypatch.setattr(leitura_tela.AgenteTela, "_ver_com_ollama", proibido)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def voz_escolhida_isolada(tmp_path, monkeypatch):
+    """Os testes nunca leem nem gravam a voz escolhida de verdade (banco_memoria/voz_escolhida.json)."""
+    import voice
+
+    monkeypatch.setattr(voice, "CAMINHO_VOZ_ESCOLHIDA", str(tmp_path / "voz_escolhida_teste.json"))
+    monkeypatch.setattr(voice, "_VOZ_ESCOLHIDA", {"perfil": voice.PERFIL_PADRAO, "modificado": None})
+    monkeypatch.setattr(voice, "_TEXTOS_PREPARADOS", set())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def aparelhos_isolados(tmp_path, monkeypatch):
+    """Os testes nunca leem nem gravam os celulares pareados de verdade (banco_memoria/app_celular.json)."""
+    if "main" in sys.modules:
+        import app_celular
+
+        monkeypatch.setattr(sys.modules["main"], "APARELHOS", app_celular.Aparelhos(str(tmp_path / "aparelhos_teste.json")))
     yield
 
 

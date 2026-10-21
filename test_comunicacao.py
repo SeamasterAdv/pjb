@@ -342,3 +342,15 @@ def test_fala_ignorada_nao_chega_ao_laco_principal(monkeypatch):
     assert main.estado_escuta() == "escutando"
     assert main.filtrar_fala_por_ativacao("que horas são") == "que horas são"
     assert main.estado_escuta() == "aguardando o nome"
+
+
+def test_frase_longa_comecada_dentro_da_janela_nao_pede_o_nome(monkeypatch):
+    estado = main.EstadoAtivacao()
+    main.abrir_janela_continuacao(estado, 100.0, "")  # janela até 108 s
+    monkeypatch.setattr(main, "JANELA_CONTINUACAO_SEGUNDOS", 8)
+    # começou a falar em 105 s e a transcrição só chegou em 115 s
+    assert main.extrair_comando_ativado("quero que você me explique com calma o que é isso", 105.0, estado,
+                                        exigir=True) == "quero que você me explique com calma o que é isso"
+    estado = main.EstadoAtivacao()
+    main.abrir_janela_continuacao(estado, 100.0, "")
+    assert main.extrair_comando_ativado("quero uma explicação", 115.0, estado, exigir=True) is None

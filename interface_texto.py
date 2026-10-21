@@ -13,6 +13,10 @@ import memory
 from agente_agenda import criar_agente_agenda
 from agente_impressora import criar_agente_impressora, texto_da_agenda
 from agente_leis import AgenteLeis
+from agente_pastas import AgentePastas
+from fontes import criar_agente_fontes
+from leitura_tela import AgenteTela
+from llm_clients import llm_clients
 from agentes import PainelCompartilhado, criar_orquestrador
 from cinema import responder_pedido_de_cinema
 from jeito_de_falar import frase
@@ -27,8 +31,6 @@ from config import (
     OLLAMA_HOST,
     OLLAMA_MODEL,
     OLLAMA_VISION_MODEL,
-    OPENWEATHERMAP_API_KEY,
-    OPENWEATHERMAP_CITY,
 )
 from memory import importar_fonte_local, notelooklm_responder
 from painel_hud import (
@@ -59,9 +61,8 @@ from painel_hud import (
 )
 from professora_idiomas import processar_comando_idiomas
 from voice import (
-    VELOCIDADE_VOZ,
-    VOZ_BEATRIZ,
     definir_microfone_ativo,
+    descricao_da_voz,
     falar_async,
     listar_microfones,
     listar_saidas_audio,
@@ -69,6 +70,7 @@ from voice import (
     microfone_disponivel,
     microfone_selecionado,
     ouvir,
+    responder_troca_de_voz,
     saida_audio_selecionada,
     selecionar_microfone,
     selecionar_saida_audio,
@@ -309,11 +311,17 @@ class JanelaComandos(tk.Tk):
         self.orquestrador = criar_orquestrador(publicar=PainelCompartilhado(self._dados_tarefas))
         self.agenda = criar_agente_agenda(llm=None)  # a mesma agenda local da voz (mesmo arquivo)
         self.leis = AgenteLeis()  # artigos de lei: texto oficial e explicação pelo Gemini
+        self.pastas = AgentePastas()  # "abre a pasta da OAB"
+        threading.Thread(target=self.pastas.aquecer, daemon=True).start()
+        self.tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa, não esta
         self.impressora = criar_agente_impressora(
             respostas_recentes=lambda: [self._ultima_resposta],
             texto_agenda=lambda t: texto_da_agenda(self.agenda, t),
             avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="status")),
         )
+        # Arquivos recebidos pelo WhatsApp (no processo principal; o registro é o mesmo arquivo): vira fonte, arquiva, imprime, escaneia.
+        self.fontes = criar_agente_fontes(avisar=lambda texto, canal: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")),
+                                          enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients)
 
         self.style = ttk.Style(self)
         try:
@@ -592,7 +600,7 @@ class JanelaComandos(tk.Tk):
         self.indicador_whatsapp = self._criar_linha_sistema(c, "WhatsApp", "desligado", COR_SUAVE)
         self.indicador_mic = self._criar_linha_sistema(c, "Microfone", "ativo", COR_VERDE)
         self.indicador_saida = self._criar_linha_sistema(c, "Saída", "padrão", COR_DESTAQUE)
-        self._criar_linha_sistema(c, "Voz", f"{VOZ_BEATRIZ.replace('pt-BR-', '').replace('Neural', '')} {VELOCIDADE_VOZ}", COR_DESTAQUE)
+        self.indicador_voz = self._criar_linha_sistema(c, "Voz", descricao_da_voz(), COR_DESTAQUE)
         self.indicador_camera = self._criar_linha_sistema(c, "Câmera", *self._camera_status)
         self.indicador_agenda = self._criar_linha_sistema(c, "Agenda", "verificando...", COR_AMBAR)
         gmail = os.path.exists(GMAIL_TOKEN_FILE)
@@ -842,10 +850,7 @@ class JanelaComandos(tk.Tk):
         """Lê, em segundo plano, biblioteca, memória e métricas gravadas pelo processo principal."""
         def coletar():
             dados = {"metricas": ler_metricas_analise()}
-            try:
-                dados["trechos"] = memory.colecao_docs.count()
-            except Exception:
-                dados["trechos"] = None
+            dados["trechos"] = memory.total_de_trechos()  # pelo processo principal: o painel não abre o banco
             dados["grupos"] = grupos_da_biblioteca(
                 memory.CAMINHO_MANIFESTO_MEMORIA,
                 {"documento_local": memory.PASTA_DOCUMENTOS, "obsidian": memory.VAULT_OBSIDIAN},
@@ -926,13 +931,11 @@ class JanelaComandos(tk.Tk):
                 conectada = True
             except Exception as exc:
                 conectada, agenda = False, f"Agenda indisponível: {exc}"
-            clima = ""
-            if OPENWEATHERMAP_API_KEY:
-                try:
-                    from tools import obter_previsao_tempo
-                    clima = obter_previsao_tempo(OPENWEATHERMAP_CITY)
-                except Exception as exc:
-                    clima = f"Clima indisponível: {exc}"
+            try:
+                from tools import obter_previsao_tempo
+                clima = obter_previsao_tempo()
+            except Exception as exc:
+                clima = f"Clima indisponível: {exc}"
             self.after(0, lambda: self._aplicar_agenda_e_clima(conectada, agenda, clima))
 
         threading.Thread(target=coletar, daemon=True).start()
@@ -1307,6 +1310,14 @@ class JanelaComandos(tk.Tk):
         if not comando:
             return
 
+        resposta_troca_voz = responder_troca_de_voz(comando)
+        if resposta_troca_voz:  # "usa a voz da Siri": vale aqui e na voz (a escolha fica num arquivo)
+            self._inicio_processamento = time.perf_counter()
+            if hasattr(self, "indicador_voz"):
+                self._definir_indicador(self.indicador_voz, descricao_da_voz(), COR_DESTAQUE)
+            self._finalizar_resposta(resposta_troca_voz)
+            return
+
         resposta_impressora = self.impressora.responder(comando)
         if resposta_impressora:  # imprimir, fila e estado da impressora: na hora, sem LLM
             self._inicio_processamento = time.perf_counter()
@@ -1342,6 +1353,19 @@ class JanelaComandos(tk.Tk):
 
         def responder():
             try:
+                resposta_fontes = self.fontes.responder(comando, "painel")
+                if resposta_fontes:  # arquivos recebidos e escaneamento
+                    self.after(0, lambda: self._finalizar_resposta(resposta_fontes))
+                    return
+                resposta_tela = self.tela.responder(comando)
+                if resposta_tela:  # leitura de tela: fala a resposta curta e mostra a completa
+                    texto_tela = f"{resposta_tela.fala}\n\n{resposta_tela.painel}" if resposta_tela.painel else resposta_tela.fala
+                    self.after(0, lambda: self._finalizar_resposta(texto_tela, fala=resposta_tela.fala))
+                    return
+                resposta_pasta = self.pastas.responder(comando)
+                if resposta_pasta:  # abre a pasta no Explorador e diz qual foi
+                    self.after(0, lambda: self._finalizar_resposta(resposta_pasta))
+                    return
                 resposta_lei = self.leis.responder(comando)
                 if resposta_lei:  # o texto oficial do artigo e, embaixo, a explicação da IA
                     partes, fala = [resposta_lei.painel or resposta_lei.leitura], resposta_lei.leitura
@@ -1403,7 +1427,8 @@ class JanelaComandos(tk.Tk):
         self.processar_texto(comando)
 
 
-def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None, fila_voz=None):
+def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None, fila_voz=None, niveis=None):
+    """`niveis` (a memória dos níveis da voz) é só do painel web; o clássico não desenha a voz."""
     app = JanelaComandos(microfone_evento=microfone_evento, audio_config=audio_config, fila_voz=fila_voz)
     if evento_pronto is not None:
         evento_pronto.set()

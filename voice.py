@@ -1,6 +1,7 @@
 # voice.py
 import os
 import asyncio
+import json
 import queue
 import threading
 import re
@@ -17,8 +18,13 @@ import pygame
 import edge_tts
 import speech_recognition as sr
 
-from config import (LIMITE_FRASE_SEGUNDOS, PAUSA_FIM_DE_FRASE, TOM_VOZ, TRANSCRICAO_VOZ, VELOCIDADE_VOZ,
-                    VOZ_BEATRIZ, WHISPER_MODELO_VOZ)
+from concurrent.futures import ThreadPoolExecutor
+
+import biometria_voz
+import niveis_voz
+import siglas
+from config import (CAMINHO_VOZ_ESCOLHIDA, WHISPER_THREADS, LIMITE_FRASE_SEGUNDOS, PAUSA_FIM_DE_FRASE, TOM_VOZ,
+                    TRANSCRICAO_VOZ, VELOCIDADE_VOZ, VOZ_BEATRIZ, WHISPER_MODELO_VOZ)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,24 @@ _MICROFONE_ATIVO = True
 _SAIDA_AUDIO_NOME = ""
 _LOCK_AUDIO = threading.Lock()
 
+# Quem desenha a voz (o painel): funções (quem, nivel, db, bandas), com quem = "beatriz" (o áudio que
+# está tocando) ou "voce" (o microfone). Sem ninguém aqui, nada é medido.
+_OUVINTES_DE_NIVEL = []
+
+
+def ao_medir_nivel(funcao):
+    """Passa a chamar `funcao(quem, nivel, db, bandas)` a cada medida da voz (veja niveis_voz)."""
+    if funcao not in _OUVINTES_DE_NIVEL:
+        _OUVINTES_DE_NIVEL.append(funcao)
+
+
+def _publicar_nivel(quem: str, medida):
+    for funcao in list(_OUVINTES_DE_NIVEL):
+        try:
+            funcao(quem, *medida)
+        except Exception as exc:
+            logger.debug("Nível da voz não publicado: %s", exc)
+
 # Se a voz online falhar (ex.: o serviço da Microsoft recusar com 403), usa a voz
 # offline do Windows por um tempo antes de tentar a online de novo.
 PAUSA_VOZ_ONLINE_SEGUNDOS = 600
@@ -54,10 +78,135 @@ _SCRIPT_VOZ_WINDOWS = (
 )
 
 
+# ------------------------------------------------------------------ vozes
+# A voz da Siri é da Apple e não existe fora dos aparelhos dela. A "siri" daqui é a voz online
+# que mais se parece com o jeito dela (calma e neutra): o usuário a escolheu ouvindo as amostras
+# de documentos_gerados/amostras_voz (5_siri_francisca_neutra.mp3).
+PERFIS_DE_VOZ = {
+    "thalita": {"nome": "da Thalita", "voz": VOZ_BEATRIZ, "velocidade": VELOCIDADE_VOZ, "tom": TOM_VOZ},
+    "siri": {"nome": "parecida com a da Siri", "voz": "pt-BR-FranciscaNeural", "velocidade": "+5%", "tom": "+0Hz"},
+}
+PERFIL_PADRAO = "thalita"
+_VOZ_ESCOLHIDA = {"perfil": PERFIL_PADRAO, "modificado": None}  # "modificado": quando o arquivo da escolha mudou
+_TEXTOS_PREPARADOS = set()  # as frases de preparar_frases, refeitas na voz nova quando ela muda
+
+
+def perfil_de_voz() -> str:
+    """O perfil de voz em uso. Relê o arquivo da escolha quando ele muda, porque a troca pode ter
+    sido feita no outro processo (o painel fala no dele)."""
+    try:
+        modificado = os.path.getmtime(CAMINHO_VOZ_ESCOLHIDA)
+    except OSError:
+        modificado = None
+    if modificado != _VOZ_ESCOLHIDA["modificado"]:
+        perfil = PERFIL_PADRAO
+        if modificado is not None:
+            try:
+                with open(CAMINHO_VOZ_ESCOLHIDA, encoding="utf-8") as arquivo:
+                    perfil = json.load(arquivo).get("perfil", PERFIL_PADRAO)
+            except (OSError, ValueError, AttributeError) as exc:
+                logger.warning("Não consegui ler a voz escolhida: %s", exc)
+        _aplicar_perfil(perfil, modificado)
+    return _VOZ_ESCOLHIDA["perfil"]
+
+
+def _aplicar_perfil(perfil: str, modificado):
+    anterior = _VOZ_ESCOLHIDA["perfil"]
+    _VOZ_ESCOLHIDA.update(perfil=perfil if perfil in PERFIS_DE_VOZ else PERFIL_PADRAO, modificado=modificado)
+    if _VOZ_ESCOLHIDA["perfil"] != anterior:
+        preparar_frases(list(_TEXTOS_PREPARADOS))
+
+
+def descricao_da_voz() -> str:
+    """A voz em uso, curta, para o painel ("Thalita +15%", "Siri: Francisca +5%")."""
+    perfil = perfil_de_voz()
+    dados = PERFIS_DE_VOZ[perfil]
+    voz = f"{dados['voz'].replace('pt-BR-', '').replace('Neural', '')} {dados['velocidade']}"
+    return voz if perfil == PERFIL_PADRAO else f"{perfil.capitalize()}: {voz}"
+
+
+def trocar_voz(perfil: str) -> bool:
+    """Passa a falar com outro perfil de PERFIS_DE_VOZ e guarda a escolha."""
+    if perfil not in PERFIS_DE_VOZ:
+        return False
+    try:
+        os.makedirs(os.path.dirname(CAMINHO_VOZ_ESCOLHIDA), exist_ok=True)
+        temporario = CAMINHO_VOZ_ESCOLHIDA + ".tmp"
+        with open(temporario, "w", encoding="utf-8") as arquivo:
+            json.dump({"perfil": perfil}, arquivo)
+        os.replace(temporario, CAMINHO_VOZ_ESCOLHIDA)
+        _aplicar_perfil(perfil, os.path.getmtime(CAMINHO_VOZ_ESCOLHIDA))
+    except OSError as exc:
+        logger.warning("Não consegui guardar a voz escolhida: %s", exc)
+        return False
+    return True
+
+
+RE_VOZ = re.compile(r"\bvoz(es)?\b")
+# Assuntos de outras funções: a biometria ("cadastra minha voz") e mensagens de áudio.
+RE_OUTRA_VOZ = re.compile(r"\bminha voz\b|\bmensage\w* de voz\b|\baudio\b|\breconhec\w*|\bcadastr\w*|\bbiometria\b")
+RE_QUAIS_VOZES = re.compile(r"\b(quais|que) (sao as )?vozes\b|\bque voz (e essa|voce (esta|ta) usando)\b"
+                            r"|\bqual (e )?(a )?(sua )?voz\b")
+# Com o nome da voz, qualquer um destes verbos troca ("usa a voz da Siri", "consegue falar com a voz da Siri?").
+RE_TROCAR_VOZ = re.compile(r"\b(us[aeo]r?|mud\w*|troc\w*|coloc\w*|poe|bota|volt\w*|pass\w*|quero|prefiro|fal[ae]r?"
+                           r"|ativ\w*|escolh\w*|consegue|pode)\b")
+# Sem o nome, só um pedido claro de troca ("pode abaixar a voz" não é).
+RE_TROCAR_SEM_NOME = re.compile(r"\b(troc\w*|mud\w*) (de |a |sua |essa |tua )?voz\b|\boutra voz\b")
+RE_VOLTAR_A_VOZ = re.compile(r"\bvolt\w* (a |pra |para |para a |pra a )?(sua |tua )?voz\b")
+RE_DEIXAR_DE_USAR = re.compile(r"\b(para|pare|parar|chega) de (usar|falar)\b|\bnao (usa|use|usar|quero)\b|\bsem a voz\b")
+NOMES_DOS_PERFIS = {
+    "siri": (r"siri", r"ciri"),
+    "thalita": (r"thalita", r"talita", r"normal", r"de sempre", r"de antes", r"antiga", r"padrao", r"original"),
+}
+
+
+def _perfil_citado(c: str) -> str | None:
+    """A voz citada na frase; se citar duas ("tira a da Siri e volta pra normal"), a última."""
+    achados = [(achado.start(), perfil) for perfil, nomes in NOMES_DOS_PERFIS.items() for nome in nomes
+               for achado in re.finditer(rf"\b{nome}\b", c)]
+    return max(achados)[1] if achados else None
+
+
+def responder_troca_de_voz(texto: str) -> str | None:
+    """"Usa a voz da Siri", "volta pra voz da Thalita", "troca de voz", "quais vozes você tem?".
+
+    Devolve a resposta (já falada na voz nova) ou None, se o pedido não for sobre a voz dela.
+    """
+    c = " ".join(_palavras(texto))
+    if not RE_VOZ.search(c) or RE_OUTRA_VOZ.search(c):
+        return None
+    pedido = _perfil_citado(c)
+    atual = perfil_de_voz()
+    if RE_QUAIS_VOZES.search(c) and not pedido:
+        return ("Tenho duas vozes: a da Thalita, que é a de sempre, e uma parecida com a da Siri. "
+                f"Agora tô com a voz {PERFIS_DE_VOZ[atual]['nome']}. Pra trocar, é só dizer “usa a voz da Siri” "
+                "ou “volta pra voz da Thalita”.")
+    if pedido is None:
+        if RE_VOLTAR_A_VOZ.search(c):
+            pedido = PERFIL_PADRAO  # "volta a sua voz"
+        elif RE_TROCAR_SEM_NOME.search(c):
+            pedido = next(perfil for perfil in PERFIS_DE_VOZ if perfil != atual)  # "troca de voz": com duas, a outra
+        else:
+            return None
+    elif not RE_TROCAR_VOZ.search(c):
+        return None
+    elif RE_DEIXAR_DE_USAR.search(c):
+        pedido = PERFIL_PADRAO if pedido != PERFIL_PADRAO else "siri"  # "para de usar a voz da Siri"
+    if pedido == atual:
+        return f"Já tô com a voz {PERFIS_DE_VOZ[atual]['nome']}!"
+    if not trocar_voz(pedido):
+        return "Não consegui trocar a voz agora, tenta de novo daqui a pouco."
+    if pedido == "siri":
+        return ("Prontinho, agora tô com uma voz parecida com a da Siri! "
+                "Se quiser a de antes, é só dizer “volta pra voz da Thalita”.")
+    return "Voltei pra minha voz de sempre, a da Thalita! Pra trocar de novo, diga “usa a voz da Siri”."
+
+
 async def gerar_audio(texto, arquivo):
     if not texto:
         return
-    communicate = edge_tts.Communicate(texto, VOZ_BEATRIZ, rate=VELOCIDADE_VOZ, pitch=TOM_VOZ)
+    perfil = PERFIS_DE_VOZ[perfil_de_voz()]
+    communicate = edge_tts.Communicate(texto, perfil["voz"], rate=perfil["velocidade"], pitch=perfil["tom"])
     await communicate.save(arquivo)
 
 
@@ -75,7 +224,7 @@ def _gerar_audio_windows(texto: str, arquivo: str):
 
 
 def _gerar_arquivo_fala(texto: str) -> str:
-    """Gera o áudio com a voz online (Thalita) e recorre à voz do Windows se ela falhar."""
+    """Gera o áudio com a voz online escolhida e recorre à voz do Windows se ela falhar."""
     global _VOZ_ONLINE_FALHOU_EM
     if time.time() - _VOZ_ONLINE_FALHOU_EM > PAUSA_VOZ_ONLINE_SEGUNDOS:
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as arquivo_temporario:
@@ -98,6 +247,12 @@ def _gerar_arquivo_fala(texto: str) -> str:
         _remover_arquivo(arquivo)
         raise
     return arquivo
+
+
+def gerar_arquivo_de_fala(texto: str) -> str:
+    """O áudio do texto na voz escolhida (mp3; wav se cair na voz do Windows), num arquivo temporário que fica com quem
+    pediu. Usado pelo app do celular para falar a resposta lá."""
+    return _gerar_arquivo_fala(texto)
 
 
 def _remover_arquivo(caminho):
@@ -154,7 +309,7 @@ _TOCANDO_DESDE = None  # início do trecho que está tocando agora
 _INTERVALOS_FALA = deque(maxlen=50)  # (início, fim) dos trechos já tocados
 _FIM_ULTIMA_FALA = 0.0
 _TEXTOS_FALADOS = deque(maxlen=20)  # (quando, texto) para reconhecer o eco da própria voz
-_FRASES_PRONTAS = {}  # texto -> arquivo de áudio guardado (frases curtas e frequentes)
+_FRASES_PRONTAS = {}  # (perfil de voz, texto) -> arquivo de áudio guardado (frases curtas e frequentes)
 
 
 def _arquivo_pronto(caminho: str) -> Future:
@@ -172,9 +327,10 @@ def _enfileirar(blocos, evento_fim=None):
         if _REPRODUTOR is None or not _REPRODUTOR.is_alive():
             _REPRODUTOR = threading.Thread(target=_reproduzir_fila, name="reprodutor-voz", daemon=True)
             _REPRODUTOR.start()
+    perfil = perfil_de_voz()
     for posicao, bloco in enumerate(blocos):
         fim = evento_fim if posicao == len(blocos) - 1 else None
-        pronto = _FRASES_PRONTAS.get(bloco)
+        pronto = _FRASES_PRONTAS.get((perfil, bloco))
         if pronto and os.path.exists(pronto):
             _FILA_FALA.put((geracao, _arquivo_pronto(pronto), False, bloco, fim))
         else:
@@ -208,8 +364,20 @@ def _reproduzir_fila():
                 evento_fim.set()
 
 
+def _envelope_da_fala(arquivo: str) -> list:
+    """As medidas do trecho, para o painel acompanhar a fala (~30 ms por trecho); [] sem painel."""
+    if not _OUVINTES_DE_NIVEL:
+        return []
+    try:
+        return niveis_voz.envelope_do_arquivo(arquivo)
+    except Exception as exc:
+        logger.debug("Sem o envelope da fala: %s", exc)
+        return []
+
+
 def _tocar(arquivo: str):
     global _TOCANDO_DESDE, _FIM_ULTIMA_FALA
+    envelope = _envelope_da_fala(arquivo)
     with _LOCK_AUDIO:
         _TOCANDO_DESDE = time.time()
         try:
@@ -217,7 +385,10 @@ def _tocar(arquivo: str):
             pygame.mixer.music.play()
             relogio = pygame.time.Clock()
             while pygame.mixer.music.get_busy():
-                relogio.tick(20)
+                if envelope:  # a medida do ponto em que o áudio está, para a esfera vibrar junto
+                    posicao = int(pygame.mixer.music.get_pos() / 1000 / niveis_voz.PASSO_DA_FALA)
+                    _publicar_nivel("beatriz", envelope[min(max(posicao, 0), len(envelope) - 1)])
+                relogio.tick(30 if envelope else 20)
             pygame.mixer.music.unload()
         finally:
             fim = time.time()
@@ -279,15 +450,23 @@ def parece_eco(texto: str, segundos: float = 60.0) -> bool:
 
 
 def preparar_frases(frases):
-    """Gera de antemão o áudio de frases curtas e frequentes ("Pode falar."), para tocarem na hora."""
+    """Gera de antemão o áudio de frases curtas e frequentes ("Pode falar."), para tocarem na hora.
+
+    Quando a voz muda, elas são geradas de novo na voz nova (as da outra voz ficam guardadas).
+    """
+    perfil = perfil_de_voz()
+
     def gerar(frase):
         try:
-            _FRASES_PRONTAS[frase] = _gerar_arquivo_fala(frase)
+            _FRASES_PRONTAS[(perfil, frase)] = _gerar_arquivo_fala(frase)
         except Exception as exc:
             logger.debug("Não foi possível preparar a frase %r: %s", frase, exc)
 
     for frase in frases:
-        if frase and frase not in _FRASES_PRONTAS:
+        if not frase:
+            continue
+        _TEXTOS_PREPARADOS.add(frase)
+        if (perfil, frase) not in _FRASES_PRONTAS:
             _SINTESE.submit(gerar, frase)
 
 
@@ -575,7 +754,7 @@ def _criar_whisper():
 
     # Mais de 8 threads quase não acelera (8: 1,12 s por frase; 4: 1,20 s).
     return WhisperModel(WHISPER_MODELO_VOZ, device="cpu", compute_type="int8",
-                        cpu_threads=min(8, os.cpu_count() or 4))
+                        cpu_threads=min(WHISPER_THREADS, os.cpu_count() or 4))
 
 
 class _WhisperLocal:
@@ -619,12 +798,19 @@ _WHISPER = _WhisperLocal()
 
 
 def preparar_transcricao():
-    """Começa a carregar o Whisper em segundo plano, se a transcrição local estiver em uso."""
+    """Começa a carregar o Whisper (e o modelo da voz, se há alguém cadastrado) em segundo plano."""
     if TRANSCRICAO_VOZ != "google":
         _WHISPER.preparar()
+    biometria_voz.BIOMETRIA.preparar()
 
 
 def _transcrever(audio):
+    """(texto, confiança de 0 a 1) da frase, com as siglas no lugar ("o a b" -> "OAB"); ("", None) se não entendeu."""
+    texto, confianca = _transcrever_bruto(audio)
+    return siglas.corrigir_siglas(texto), confianca
+
+
+def _transcrever_bruto(audio):
     """(texto, confiança de 0 a 1) da frase; ("", None) se não deu para entender.
 
     Usa o Whisper local ou o Google, conforme TRANSCRICAO_VOZ. No modo "auto", o Google só
@@ -651,15 +837,32 @@ def _audio_para_whisper(audio):
     return np.frombuffer(bruto, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def transcrever_amostras(amostras) -> tuple[str, float | None]:
+    """Transcreve um áudio já em 16 kHz mono float32 (a voz gravada no app do celular). Só pelo Whisper local, mesmo no
+    modo "auto": é a sua voz de fora de casa, e não vai para o Google nem enquanto o modelo carrega."""
+    if TRANSCRICAO_VOZ == "google":
+        logger.info("O áudio do celular é transcrito só pelo Whisper local, mesmo com TRANSCRICAO_VOZ=google.")
+    modelo = _WHISPER.obter(espera=ESPERA_WHISPER_SEGUNDOS)
+    if modelo is None:
+        return "", None
+    texto, confianca = _whisper_nas_amostras(modelo, amostras)
+    return siglas.corrigir_siglas(texto), confianca
+
+
 def _transcrever_whisper(modelo, audio):
+    return _whisper_nas_amostras(modelo, _audio_para_whisper(audio))
+
+
+def _whisper_nas_amostras(modelo, amostras):
     """A confiança é a probabilidade média dos tokens (exp de avg_logprob): ~0,9 numa frase
     clara, ~0,6 numa duvidosa, a mesma escala da confiança do Google."""
     segmentos, _ = modelo.transcribe(
-        _audio_para_whisper(audio),
+        amostras,
         language="pt",
         vad_filter=True,  # corta o silêncio antes, onde o Whisper mais inventa frases
         condition_on_previous_text=False,
         without_timestamps=True,
+        hotwords=siglas.vocabulario_de_voz(),  # OAB, STF... (sem isto "OAB" saía "OBE")
     )
     textos, logprobs = [], []
     for segmento in segmentos:  # o gerador só transcreve ao ser percorrido
@@ -762,6 +965,36 @@ def escuta_continua_ativa() -> bool:
     return _ESCUTA is not None and _ESCUTA.is_alive()
 
 
+class _FluxoMedido:
+    """Repassa as leituras do microfone e mede o nível delas para o painel (até ~25 vezes por segundo)."""
+
+    INTERVALO = 0.04
+    AMORTECER_ECO = 0.35  # enquanto ela fala, o microfone capta a própria voz dela: a montanha quase não mexe
+
+    def __init__(self, fluxo, taxa: int, largura: int):
+        self._fluxo, self._taxa, self._largura = fluxo, taxa, largura
+        self._ultima = 0.0
+
+    def read(self, tamanho):
+        dados = self._fluxo.read(tamanho)
+        agora = time.monotonic()
+        if _OUVINTES_DE_NIVEL and self._largura == 2 and agora - self._ultima >= self.INTERVALO:
+            self._ultima = agora
+            try:
+                import numpy as np
+
+                nivel, db, bandas = niveis_voz.medir(np.frombuffer(dados, dtype=np.int16) / 32768.0, self._taxa)
+                if _TOCANDO_DESDE is not None:
+                    nivel, bandas = nivel * self.AMORTECER_ECO, [b * self.AMORTECER_ECO for b in bandas]
+                _publicar_nivel("voce", (nivel, db, bandas))
+            except Exception as exc:
+                logger.debug("Nível do microfone não medido: %s", exc)
+        return dados
+
+    def __getattr__(self, nome):
+        return getattr(self._fluxo, nome)
+
+
 def _laco_escuta(ao_ouvir, pode_escutar):
     reconhecedor = _novo_reconhecedor()
     sem_microfone_avisado = False
@@ -784,6 +1017,8 @@ def _laco_escuta(ao_ouvir, pode_escutar):
         try:
             with sr.Microphone(device_index=indice) as fonte:
                 logger.info("Escutando pelo microfone: %s", _MICROFONE_NOME)
+                if getattr(fonte, "stream", None) is not None:  # mede o que passa, para a montanha do painel
+                    fonte.stream = _FluxoMedido(fonte.stream, fonte.SAMPLE_RATE, fonte.SAMPLE_WIDTH)
                 reconhecedor.adjust_for_ambient_noise(fonte, duration=0.5)
                 while liberada() and indice == _MICROFONE_INDICE:
                     try:
@@ -808,12 +1043,40 @@ def _laco_escuta(ao_ouvir, pode_escutar):
             time.sleep(1)
 
 
+_IDENTIFICACAO = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quem-fala")
+
+
 def _entregar_frase(audio, inicio, fim, ao_ouvir):
+    bio = biometria_voz.BIOMETRIA
+    if bio.cadastrando():
+        # Cadastrando a voz: a frase não é pedido, só amostra (menos o que ela mesma falou).
+        if not falou_durante(inicio, fim):
+            try:
+                bio.receber_amostra(_audio_para_whisper(audio))
+            except Exception as exc:
+                logger.warning("Amostra de voz descartada: %s", exc)
+        return
+    # A voz é identificada ao mesmo tempo que o Whisper transcreve (o ONNX não disputa a CPU: 4 threads, e o Whisper tem 12).
+    identificacao = None
+    if bio.ativa:
+        try:
+            identificacao = _IDENTIFICACAO.submit(bio.identificar, _audio_para_whisper(audio))
+        except Exception as exc:
+            logger.warning("Não consegui identificar quem falou: %s", exc)
     texto, confianca = _transcrever(audio)
     if not texto:
         return
     print(f"Você: {texto}")
+    falante = None
+    if identificacao is not None:
+        try:
+            falante = identificacao.result(timeout=10)
+        except Exception as exc:
+            logger.warning("Não consegui identificar quem falou: %s", exc)
     try:
-        ao_ouvir(texto, inicio, fim, confianca)
+        if falante is None:
+            ao_ouvir(texto, inicio, fim, confianca)
+        else:
+            ao_ouvir(texto, inicio, fim, confianca, falante=falante)
     except Exception as exc:
         logger.error("Erro ao entregar a frase ouvida: %s", exc)

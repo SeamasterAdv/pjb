@@ -217,6 +217,19 @@ CAMINHO_APP_CELULAR = os.getenv("CAMINHO_APP_CELULAR", os.path.join(NOTELOOKLM_P
 # os produtos dele. Para desligar: USAR_GEMINI=false
 USAR_GEMINI = os.getenv("USAR_GEMINI", "true").strip().lower() in {"1", "true", "yes", "on"}
 GEMINI_MODELO = os.getenv("GEMINI_MODELO", "gemini-3.8-flash")
+# O plano gratuito tem uma cota por dia para cada modelo (20 pedidos no gemini-3.8-flash em out/2026): quando a de um acaba,
+# o próximo desta lista responde, e o esgotado espera a cota voltar. GEMINI_MODELO vai na frente. Os da família 2.5 não
+# atendem mais contas novas (404). Medido com uma frase: 3.6-flash 2,1 s, 3.5-flash 2,0 s, 3.5-flash-lite 0,9 s, 3.1-flash-lite 5 s.
+GEMINI_MODELOS = list(dict.fromkeys([GEMINI_MODELO] + [m.strip() for m in os.getenv(
+    "GEMINI_MODELOS", "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,"
+                      "gemini-3.1-flash-lite").split(",") if m.strip()]))
+# Raciocínio do Gemini 3 nas respostas rápidas (pesquisa, resumo explicativo, leis, leitura de arquivo): `low` responde em
+# ~4 s; no padrão do modelo, uma frase levava de 25 a 55 s (medido em out/2026). As tarefas dos agentes ficam no padrão.
+# Vazio: o padrão do modelo em tudo. Outros: medium, high.
+GEMINI_PENSAMENTO = os.getenv("GEMINI_PENSAMENTO", "low").strip().lower()
+# Quanto as respostas rápidas esperam o Gemini (segundos, mais 1 a cada 4.000 caracteres do pedido; o Google exige 10 ou
+# mais): o plano gratuito ora responde em 4 s, ora fica 30 a 50 s na fila. Passou disso, quem responde é o Claude.
+GEMINI_ESPERA_RAPIDA = max(10, int(os.getenv("GEMINI_ESPERA_RAPIDA", "15")))
 
 # Claude pela assinatura (Pro/Max), sem cobrança à parte: a Beatriz chama o Claude Code
 # (`claude -p`) que já vem com o app desktop, usando o login da sua conta. Gasta os limites

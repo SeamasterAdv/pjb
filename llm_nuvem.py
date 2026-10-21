@@ -17,14 +17,17 @@ import subprocess
 import tempfile
 import threading
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from config import (
     CLAUDE_CODE_CAMINHO,
     CLAUDE_ESFORCO,
     CLAUDE_MODELO,
     GEMINI_API_KEY,
+    GEMINI_ESPERA_RAPIDA,
     GEMINI_MODELO,
+    GEMINI_MODELOS,
+    GEMINI_PENSAMENTO,
     NOTELOOKLM_PATH,
     ORDEM_IA_AGENTES,
     ORDEM_IA_NUVEM,
@@ -128,13 +131,23 @@ class ProvedorNuvem:
 
 # ------------------------------------------------------------------- Gemini
 class ClienteGemini(ProvedorNuvem):
+    """O Gemini do plano gratuito, com uma lista de modelos (GEMINI_MODELOS).
+
+    Cada modelo tem a sua cota por dia (20 pedidos no gemini-3.8-flash em out/2026): quando a de um acaba, o próximo da lista
+    responde na mesma chamada, e o esgotado fica em pausa até a cota dele voltar. A chave recusada e a rede fora do ar
+    param o Gemini inteiro. `modelo` é o último que respondeu (o relatório das tarefas diz qual foi).
+    """
+
     nome = "Gemini"
 
-    def __init__(self, chave=GEMINI_API_KEY, modelo=GEMINI_MODELO, ativo=USAR_GEMINI,
-                 arquivo_uso=os.path.join(PASTA_USO, "uso_gemini.json")):
+    def __init__(self, chave=GEMINI_API_KEY, modelo=None, ativo=USAR_GEMINI,
+                 arquivo_uso=os.path.join(PASTA_USO, "uso_gemini.json"), modelos=None):
         super().__init__(ativo, arquivo_uso)
         self.chave = (chave or "").strip()
-        self.modelo = modelo
+        lista = modelos or ([modelo] if modelo else GEMINI_MODELOS)
+        self.modelos = list(dict.fromkeys(m for m in lista if m)) or [GEMINI_MODELO]
+        self.modelo = self.modelos[0]
+        self._pausa_do_modelo = {}  # modelo -> (até quando, rótulo para o painel)
         self._cliente = None
 
     def configurado(self) -> bool:
@@ -143,17 +156,77 @@ class ClienteGemini(ProvedorNuvem):
     def _texto_sem_acesso(self) -> str:
         return "sem chave"
 
-    def _registrar_falha(self, exc):
+    def modelos_livres(self) -> list:
+        agora = time.time()
+        return [m for m in self.modelos if self._pausa_do_modelo.get(m, (0.0, ""))[0] <= agora]
+
+    def disponivel(self) -> bool:
+        return super().disponivel() and bool(self.modelos_livres())
+
+    def status(self):
+        texto, estado = super().status()
+        if estado != "ativo":
+            return texto, estado
+        livres = self.modelos_livres()
+        if not livres:
+            ate, rotulo = min(self._pausa_do_modelo.values())
+            return f"{rotulo} · {max(1, round((ate - time.time()) / 60))} min", "pausado"
+        if livres[0] != self.modelos[0]:
+            texto += f" · {livres[0].replace('gemini-', '')}"  # o principal está sem cota: mostra o que responde agora
+        return texto, estado
+
+    def _pausar_modelo(self, modelo: str, segundos: float, motivo: str, rotulo: str):
+        self._pausa_do_modelo[modelo] = (time.time() + segundos, rotulo)
+        logger.warning("%s em pausa por %.0f s: %s.", modelo, segundos, motivo)
+
+    @staticmethod
+    def _espera_pedida(exc) -> tuple:
+        """(segundos, se é a cota do dia) que o Google manda esperar num 429; (0, False) se ele não disser."""
+        erro = getattr(exc, "details", None)
+        detalhes = ((erro.get("error") or {}).get("details") or []) if isinstance(erro, dict) else []
+        segundos, do_dia = 0.0, False
+        for item in (d for d in detalhes if isinstance(d, dict)):
+            achado = re.fullmatch(r"(\d+(?:\.\d+)?)s", str(item.get("retryDelay", "")))
+            if achado:
+                segundos = float(achado.group(1))
+            do_dia = do_dia or any("PerDay" in str(v.get("quotaId", "")) for v in item.get("violations") or [] if isinstance(v, dict))
+        return segundos, do_dia
+
+    def _registrar_falha(self, exc, modelo: str = None) -> bool:
+        """Pausa o modelo (cota, modelo fora do ar, sobrecarga) ou o Gemini inteiro (chave, rede).
+
+        Devolve True quando vale tentar o próximo modelo da lista na mesma chamada.
+        """
+        modelo = modelo or self.modelo
         codigo = getattr(exc, "code", None)
+        espera, do_dia = self._espera_pedida(exc) if codigo == 429 else (0.0, False)
+        if codigo == 429 and do_dia and espera:
+            # Cota do dia esgotada: espera ela voltar em vez de bater de novo a cada hora; os outros modelos têm a sua.
+            self._pausar_modelo(modelo, min(espera, 24 * 3600), "cota diária do plano gratuito esgotada", "cota do dia esgotada")
+            return True
         if codigo == 429:
-            self._pausar_por_limite(60, PAUSA_MAXIMA_SEGUNDOS, "limite do plano gratuito")
-        elif codigo in (401, 403):
+            # Limite por minuto (ou sem detalhes): passa logo, e os outros modelos têm cota própria.
+            self._pausar_modelo(modelo, max(60.0, min(espera, PAUSA_MAXIMA_SEGUNDOS)), "limite do plano gratuito",
+                                "limite atingido")
+            return True
+        if codigo == 404:
+            self._pausar_modelo(modelo, 24 * 3600, "modelo indisponível; confira GEMINI_MODELOS no .env", "modelo indisponível")
+            return True
+        if codigo == 504:
+            # Passou do prazo (a fila do plano gratuito às vezes leva 30 a 50 s): este modelo descansa, e a resposta vai para
+            # a próxima IA em vez de esperar os outros modelos.
+            self._pausar_modelo(modelo, PAUSA_SOBRECARGA_SEGUNDOS, "demorou demais para responder", "lento")
+            return False
+        if codigo is not None and codigo >= 500:
+            # "Alta demanda" (503): é daquele modelo; o próximo pode estar livre.
+            self._pausar_modelo(modelo, PAUSA_SOBRECARGA_SEGUNDOS, "servidor do Google sobrecarregado", "sobrecarregado")
+            return True
+        if codigo in (401, 403):
             self._pausar(PAUSA_MAXIMA_SEGUNDOS, "chave recusada; confira a GEMINI_API_KEY no .env", "chave recusada")
-        elif codigo == 404:
-            self._pausar(PAUSA_MAXIMA_SEGUNDOS, f"modelo {self.modelo} indisponível; confira GEMINI_MODELO no .env", "modelo indisponível")
-        elif codigo is None or codigo >= 500:
-            # "Alta demanda" (503) ou tempo esgotado: é passageiro, mas o resto da tarefa não deve esperar.
-            self._pausar(PAUSA_SOBRECARGA_SEGUNDOS, "servidor do Google sobrecarregado ou sem resposta", "sobrecarregado")
+        elif codigo is None:
+            # Rede fora do ar ou tempo esgotado: vale para todos os modelos, e o resto da tarefa não deve esperar.
+            self._pausar(PAUSA_SOBRECARGA_SEGUNDOS, "servidor do Google sem resposta", "sem resposta")
+        return False
 
     def _obter_cliente(self):
         if self._cliente is None:
@@ -173,26 +246,41 @@ class ClienteGemini(ProvedorNuvem):
         from google.genai import errors, types
 
         opcoes = opcoes or {}
-        configuracao = types.GenerateContentConfig(
-            system_instruction=system_prompt or None,
-            temperature=opcoes.get("temperature"),
-            # Folga para o raciocínio interno do modelo, que também conta como saída.
-            max_output_tokens=max(8192, int(opcoes.get("num_predict") or 0) * 3),
-            response_mime_type="application/json" if formato == "json" else None,
-        )
-        try:
-            resposta = self._obter_cliente().models.generate_content(model=self.modelo, contents=prompt, config=configuracao)
-        except errors.APIError as exc:
-            self._registrar_falha(exc)
-            raise NuvemIndisponivel(f"Gemini recusou ({exc.code})") from exc
-        except Exception as exc:  # rede fora do ar, tempo esgotado
-            self._registrar_falha(exc)
-            raise NuvemIndisponivel(f"Gemini sem resposta: {exc}") from exc
-        texto = (resposta.text or "").strip()
-        if not texto:
-            raise NuvemIndisponivel("Gemini devolveu uma resposta vazia")
-        self._sucesso()
-        return texto
+        # `espera` (segundos, nas respostas rápidas): prazo para o Google, sem nova tentativa; estourou, vem um 504.
+        prazo = (types.HttpOptions(timeout=int(opcoes["espera"] * 1000), retry_options=types.HttpRetryOptions(attempts=1))
+                 if opcoes.get("espera") else None)
+        recusas = []
+        for modelo in self.modelos_livres():
+            # `pensamento` (low, medium, high) só existe no Gemini 3: os modelos anteriores recusariam a chamada.
+            nivel = opcoes.get("pensamento") if modelo.startswith("gemini-3") else None
+            configuracao = types.GenerateContentConfig(
+                system_instruction=system_prompt or None,
+                temperature=opcoes.get("temperature"),
+                # Folga para o raciocínio interno do modelo, que também conta como saída.
+                max_output_tokens=max(8192, int(opcoes.get("num_predict") or 0) * 3),
+                response_mime_type="application/json" if formato == "json" else None,
+                thinking_config=types.ThinkingConfig(thinking_level=nivel) if nivel else None,
+                http_options=prazo,
+            )
+            try:
+                resposta = self._obter_cliente().models.generate_content(model=modelo, contents=prompt, config=configuracao)
+            except errors.APIError as exc:
+                recusas.append(f"{modelo} ({exc.code})")
+                if self._registrar_falha(exc, modelo):
+                    continue  # cota ou sobrecarga só deste modelo: o próximo da lista tenta
+                raise NuvemIndisponivel(f"Gemini recusou ({exc.code})") from exc
+            except Exception as exc:  # rede fora do ar, tempo esgotado
+                self._registrar_falha(exc, modelo)
+                raise NuvemIndisponivel(f"Gemini sem resposta: {exc}") from exc
+            texto = (resposta.text or "").strip()
+            if not texto:
+                raise NuvemIndisponivel("Gemini devolveu uma resposta vazia")
+            if recusas:
+                logger.info("Gemini respondeu pelo %s (sem cota agora: %s).", modelo, ", ".join(recusas))
+            self.modelo = modelo
+            self._sucesso()
+            return texto
+        raise NuvemIndisponivel(f"Gemini sem modelo com cota agora ({', '.join(recusas) or 'todos em pausa'})")
 
 
 # ------------------------------------------------------------------- Claude
@@ -212,9 +300,36 @@ def localizar_claude_code(caminho_configurado: str = CLAUDE_CODE_CAMINHO) -> str
     instalado = os.path.join(os.path.expanduser("~"), ".local", "bin", "claude.exe")
     if os.path.isfile(instalado):
         return instalado
-    # O app desktop do Claude baixa uma cópia por versão; usa a mais nova.
+    # O app desktop do Claude baixa uma cópia por versão; usa a mais nova. As versões novas do app guardam em
+    # %LOCALAPPDATA%\Claude-Data\<perfil>\claude-code; as antigas, em %APPDATA%\Claude\claude-code.
     do_app = glob.glob(os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code", "*", "*", "claude.exe"))
+    do_app += glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Claude-Data", "*", "claude-code", "*", "*", "claude.exe"))
     return max(do_app, key=_versao) if do_app else ""
+
+
+RE_HORA_QUE_RENOVA = re.compile(r"\bresets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b", re.IGNORECASE)
+RE_MOMENTO_QUE_RENOVA = re.compile(r"\|(\d{10})\b")
+
+
+def segundos_ate_renovar(mensagem: str, agora: datetime = None):
+    """Quanto falta para o limite do plano voltar, pelo que o Claude Code disse; None se ele não disser (ou já passou).
+
+    "You've hit your session limit · resets 2am (America/Sao_Paulo)" -> até as 2h (do relógio do PC, que está no mesmo fuso);
+    o formato antigo, "Claude AI usage limit reached|1760000000", traz o momento em segundos desde 1970.
+    """
+    agora = agora or datetime.now()
+    achado = RE_HORA_QUE_RENOVA.search(mensagem or "")
+    if achado:
+        hora = int(achado.group(1)) % 12 + (12 if achado.group(3).lower() == "pm" else 0)
+        alvo = agora.replace(hour=hora, minute=int(achado.group(2) or 0), second=0, microsecond=0)
+        if alvo <= agora:
+            alvo += timedelta(days=1)
+        return (alvo - agora).total_seconds()
+    achado = RE_MOMENTO_QUE_RENOVA.search(mensagem or "")
+    if achado:
+        falta = int(achado.group(1)) - agora.timestamp()
+        return falta if 0 < falta <= 7 * 86400 else None
+    return None
 
 
 class ClienteClaudeCode(ProvedorNuvem):
@@ -260,7 +375,13 @@ class ClienteClaudeCode(ProvedorNuvem):
     def _registrar_falha(self, mensagem: str):
         texto = (mensagem or "").lower()
         if "limit" in texto or "limite" in texto:
-            # Os limites do plano renovam em algumas horas: começa com 15 min e dobra até 3 h.
+            espera = segundos_ate_renovar(mensagem)
+            if espera is not None:
+                # "You've hit your session limit · resets 2am": espera até a hora dita (é o mesmo plano do Claude Code).
+                self._pausar(espera + 60, "limite de uso do plano atingido; volta na hora que o Claude informou",
+                             "limite atingido")
+                return
+            # Sem a hora: os limites do plano renovam em algumas horas; começa com 15 min e dobra até 3 h.
             self._pausar_por_limite(900, 3 * PAUSA_MAXIMA_SEGUNDOS, "limite de uso do plano atingido")
         elif "login" in texto or "auth" in texto or "api key" in texto or "token" in texto:
             self._pausar(PAUSA_MAXIMA_SEGUNDOS, "Claude Code sem login; abra o app do Claude e entre na conta", "faça login")
@@ -399,6 +520,12 @@ def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None, preferir: s
     `exclusivo` (com `preferir`) tenta só essa IA, sem passar o conteúdo para a outra: para o que a pessoa só aceita mandar a uma delas.
     """
     provedores = ordenar_por_preferencia(provedores_nuvem(funcao), preferir)
+    # Resposta rápida: o Gemini 3 pensa pouco (~4 s em vez de 25 a 55 s) e tem um prazo, depois do qual a próxima IA
+    # responde. O Claude ignora estas opções.
+    rapidas = {"espera": GEMINI_ESPERA_RAPIDA + len(prompt or "") // 4000}
+    if GEMINI_PENSAMENTO:
+        rapidas["pensamento"] = GEMINI_PENSAMENTO
+    opcoes = {**rapidas, **(opcoes or {})}
     if exclusivo and preferir:
         provedores = [p for p in provedores if getattr(p, "nome", "").lower() == preferir]
     if preferir and not any(getattr(p, "nome", "").lower() == preferir for p in provedores):

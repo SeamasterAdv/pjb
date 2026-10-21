@@ -42,16 +42,168 @@ def test_sem_chave_o_gemini_fica_fora():
     assert cliente.status() == ("sem chave", "sem_chave")
 
 
-def test_limite_do_plano_gratuito_pausa_cada_vez_mais(tmp_path):
-    cliente = ClienteGemini(chave="x", arquivo_uso=str(tmp_path / "uso.json"))
-    erro = type("Erro429", (), {"code": 429})()
-    cliente._registrar_falha(erro)
-    primeira = cliente._pausado_ate - time.time()
-    cliente._registrar_falha(erro)
-    segunda = cliente._pausado_ate - time.time()
-    assert not cliente.disponivel()
-    assert 50 < primeira <= 60 and 110 < segunda <= 120
+def test_limite_por_minuto_pausa_so_o_modelo(tmp_path):
+    cliente = ClienteGemini(chave="x", modelo="gemini-3.8-flash", arquivo_uso=str(tmp_path / "uso.json"))
+    assert cliente._registrar_falha(type("Erro429", (), {"code": 429})()) is True  # vale tentar o próximo modelo
+    ate, rotulo = cliente._pausa_do_modelo["gemini-3.8-flash"]
+    assert 50 < ate - time.time() <= 60 and rotulo == "limite atingido"
+    assert not cliente.disponivel() and cliente._pausado_ate == 0  # o Gemini inteiro não parou
     assert cliente.status()[1] == "pausado"
+
+
+DETALHES_COTA_DO_DIA = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+        {"quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+         "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "16951s"}]}}
+
+
+def test_cota_do_dia_esgotada_pausa_o_modelo_ate_ela_voltar(tmp_path):
+    cliente = ClienteGemini(chave="x", modelo="gemini-3.8-flash", arquivo_uso=str(tmp_path / "uso.json"))
+    cliente._registrar_falha(type("Erro429", (), {"code": 429, "details": DETALHES_COTA_DO_DIA})())
+    assert 16900 < cliente._pausa_do_modelo["gemini-3.8-flash"][0] - time.time() <= 16951
+    texto, estado = cliente.status()
+    assert estado == "pausado" and texto.startswith("cota do dia esgotada")
+
+
+class GoogleFalso:
+    """O `genai.Client` falso: cada modelo responde, ou dá o erro que o teste mandar."""
+
+    def __init__(self, erros=None):
+        self.erros, self.pedidos = erros or {}, []
+        self.models = self
+
+    def generate_content(self, model, contents, config):
+        self.pedidos.append(model)
+        erro = self.erros.get(model)
+        if erro is not None:
+            raise erro
+        return types.SimpleNamespace(text=f"Resposta do {model}.")
+
+
+def gemini_com(tmp_path, erros, modelos=("gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite")):
+    cliente = ClienteGemini(chave="x", ativo=True, modelos=list(modelos), arquivo_uso=str(tmp_path / "uso.json"))
+    cliente._cliente = GoogleFalso(erros)
+    return cliente
+
+
+def test_cota_de_um_modelo_acabou_o_proximo_responde(tmp_path):
+    from google.genai import errors
+
+    cliente = gemini_com(tmp_path, {"gemini-3.8-flash": errors.ClientError(429, DETALHES_COTA_DO_DIA)})
+    llm = LLMComReserva([cliente], LLMFalso())
+
+    assert llm.chat("oi", system_prompt="Você é a Beatriz.") == "Resposta do gemini-3.5-flash."
+    assert llm.registro == ["Gemini (gemini-3.5-flash)"]  # o relatório diz qual modelo respondeu
+    assert cliente.modelos_livres() == ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    texto, estado = cliente.status()
+    assert estado == "ativo" and texto.endswith("· 3.5-flash")  # o painel mostra que o principal está sem cota
+
+    # Na chamada seguinte o esgotado nem é tentado.
+    cliente._cliente.pedidos.clear()
+    cliente.chat("de novo")
+    assert cliente._cliente.pedidos == ["gemini-3.5-flash"]
+
+
+def test_sobrecarga_tambem_passa_para_o_proximo_modelo(tmp_path):
+    from google.genai import errors
+
+    cliente = gemini_com(tmp_path, {"gemini-3.8-flash": errors.ServerError(503, {"error": {"code": 503}}),
+                                    "gemini-3.5-flash": errors.ClientError(404, {"error": {"code": 404}})})
+    assert cliente.chat("oi") == "Resposta do gemini-3.5-flash-lite."
+    assert cliente._pausa_do_modelo["gemini-3.8-flash"][1] == "sobrecarregado"
+    assert cliente._pausa_do_modelo["gemini-3.5-flash"][1] == "modelo indisponível"
+
+
+def test_todos_sem_cota_o_gemini_fica_em_pausa_e_a_reserva_responde(tmp_path):
+    from google.genai import errors
+
+    cota = errors.ClientError(429, DETALHES_COTA_DO_DIA)
+    cliente = gemini_com(tmp_path, {m: cota for m in ("gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite")})
+    llm = LLMComReserva([cliente], LLMFalso())
+
+    assert "agentes" in llm.chat("oi", system_prompt="Você é o Agente Relator da Beatriz.", model="qwen2.5:14b")
+    assert llm.registro == ["Ollama (qwen2.5:14b)"]
+    assert not cliente.disponivel() and cliente.status()[0].startswith("cota do dia esgotada")
+
+
+def test_chave_recusada_ou_sem_rede_param_o_gemini_inteiro(tmp_path):
+    from google.genai import errors
+
+    cliente = gemini_com(tmp_path, {"gemini-3.8-flash": errors.ClientError(403, {"error": {"code": 403}})})
+    try:
+        cliente.chat("oi")
+    except NuvemIndisponivel:
+        pass
+    assert cliente._cliente.pedidos == ["gemini-3.8-flash"] and cliente.status()[0].startswith("chave recusada")
+
+    sem_rede = gemini_com(tmp_path, {"gemini-3.8-flash": ConnectionError("sem internet")})
+    try:
+        sem_rede.chat("oi")
+    except NuvemIndisponivel:
+        pass
+    assert sem_rede._cliente.pedidos == ["gemini-3.8-flash"] and not sem_rede.disponivel()
+
+
+def test_lista_de_modelos_do_config_tem_o_principal_na_frente():
+    import config
+
+    assert config.GEMINI_MODELOS[0] == config.GEMINI_MODELO
+    assert len(config.GEMINI_MODELOS) == len(set(config.GEMINI_MODELOS)) >= 2
+    assert ClienteGemini(chave="x").modelos == config.GEMINI_MODELOS
+
+
+def test_gemini_3_pensa_pouco_nas_respostas_rapidas(monkeypatch):
+    claude, gemini = ClaudeFalso(), GeminiFalso()
+    recebido = []
+    gemini.chat = lambda prompt, system_prompt=None, opcoes=None, **k: recebido.append(opcoes) or "ok"
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda funcao=None: [gemini, claude])
+    monkeypatch.setattr(llm_nuvem, "GEMINI_PENSAMENTO", "low")
+    monkeypatch.setattr(llm_nuvem, "GEMINI_ESPERA_RAPIDA", 15)
+    llm_nuvem.responder_na_nuvem("Qual a capital do Peru?", opcoes={"temperature": 0.3})
+    assert recebido == [{"pensamento": "low", "espera": 15, "temperature": 0.3}]
+    llm_nuvem.responder_na_nuvem("x" * 40000)  # um arquivo grande ganha mais tempo: 1 s a cada 4.000 caracteres
+    assert recebido[-1]["espera"] == 25
+
+
+def test_gemini_que_passa_do_prazo_cede_a_vez_para_o_claude(tmp_path):
+    from google.genai import errors
+
+    prazos = []
+
+    class Google(GoogleFalso):
+        def generate_content(self, model, contents, config):
+            prazos.append((config.http_options.timeout, config.http_options.retry_options.attempts))
+            return super().generate_content(model, contents, config)
+
+    cliente = gemini_com(tmp_path, {"gemini-3.8-flash": errors.ServerError(504, {"error": {"code": 504}})})
+    cliente._cliente = Google(cliente._cliente.erros)
+    claude = ClaudeFalso()
+    llm = LLMComReserva([cliente, claude], LLMFalso())
+
+    resposta = llm.chat("oi", system_prompt="Você é o Agente Relator da Beatriz.", opcoes={"espera": 15})
+
+    assert "agentes" in resposta and llm.registro == ["Claude (claude-teste)"]  # sem esperar os outros modelos do Gemini
+    assert cliente._cliente.pedidos == ["gemini-3.8-flash"] and prazos == [(15000, 1)]  # o prazo vai sem nova tentativa
+    assert cliente._pausa_do_modelo["gemini-3.8-flash"][1] == "lento"
+    assert cliente.disponivel() and cliente.modelos_livres()[0] == "gemini-3.5-flash"  # a próxima pergunta vai ao seguinte
+
+
+def test_nivel_de_pensamento_so_vai_para_o_gemini_3(monkeypatch, tmp_path):
+    import types as tipos
+
+    enviados = []
+
+    class Modelos:
+        def generate_content(self, model, contents, config):
+            enviados.append(config.thinking_config)
+            return tipos.SimpleNamespace(text="ok")
+
+    for modelo, esperado in (("gemini-3.8-flash", "low"), ("gemini-2.5-flash", None)):
+        cliente = ClienteGemini(chave="x", modelo=modelo, ativo=True, arquivo_uso=str(tmp_path / f"{modelo}.json"))
+        cliente._cliente = tipos.SimpleNamespace(models=Modelos())
+        cliente.chat("oi", opcoes={"pensamento": "low"})
+        assert (enviados[-1].thinking_level.value.lower() if enviados[-1] else None) == esperado
 
 
 def test_reserva_no_ollama_quando_o_gemini_falha():
@@ -164,6 +316,29 @@ def test_claude_no_limite_do_plano_pausa_e_passa_para_o_gemini(tmp_path):
     assert 800 < claude._pausado_ate - time.time() <= 900
 
 
+def test_claude_no_limite_da_sessao_espera_ate_a_hora_que_volta(tmp_path):
+    from datetime import datetime
+
+    from llm_nuvem import segundos_ate_renovar
+
+    meia_noite_e_meia = datetime(2026, 10, 21, 0, 30)
+    assert segundos_ate_renovar("You've hit your session limit · resets 2am (America/Sao_Paulo)", meia_noite_e_meia) == 90 * 60
+    assert segundos_ate_renovar("limit reached · resets 1:15pm", meia_noite_e_meia) == (12 * 60 + 45) * 60
+    assert segundos_ate_renovar("resets 12am", meia_noite_e_meia) == 23.5 * 3600  # já passou hoje: é amanhã
+    assert segundos_ate_renovar("Claude AI usage limit reached|1760000000") is None  # momento que já passou
+    assert segundos_ate_renovar("Claude AI usage limit reached") is None
+
+    claude = cliente_claude(tmp_path, ExecutorFalso("You've hit your session limit · resets 2am (America/Sao_Paulo)",
+                                                    erro=True, codigo=1))
+    try:
+        claude.chat("oi")
+    except NuvemIndisponivel:
+        pass
+    esperado = segundos_ate_renovar("resets 2am") + 60
+    assert abs((claude._pausado_ate - time.time()) - esperado) < 5
+    assert claude.status()[1] == "pausado"
+
+
 def test_claude_sem_login_avisa_no_painel(tmp_path):
     claude = cliente_claude(tmp_path, ExecutorFalso("Invalid API key · Please run /login", erro=True, codigo=1))
     try:
@@ -179,9 +354,18 @@ def test_acha_a_versao_mais_nova_do_claude_code_do_app(tmp_path, monkeypatch):
         pasta.mkdir(parents=True)
         (pasta / "claude.exe").write_bytes(b"")
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(llm_nuvem.shutil, "which", lambda nome: None)
     monkeypatch.setattr(llm_nuvem.os.path, "expanduser", lambda caminho: str(tmp_path / "sem_home"))
     assert _versao(localizar_claude_code("")) == (2, 1, 295)
+
+    # As versões novas do app desktop guardam o Claude Code em %LOCALAPPDATA%\Claude-Data\<perfil>\claude-code.
+    for versao in ("2.1.299", "2.1.304"):
+        pasta = tmp_path / "local" / "Claude-Data" / "claude_perfil" / "claude-code" / versao / "f05"
+        pasta.mkdir(parents=True)
+        (pasta / "claude.exe").write_bytes(b"")
+    achado = localizar_claude_code("")
+    assert _versao(achado) == (2, 1, 304) and "Claude-Data" in achado
 
 
 # ------------------------------------------------------------------ IA escolhida na frase e resumo

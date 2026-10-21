@@ -20,3 +20,7 @@ auditoria_memoria.jsonl
 
 # Documentos e relatórios produzidos pelos agentes
 documentos_gerados/
+
+# Arquivos recebidos pelo WhatsApp / escaneados e os arquivados (dados pessoais)
+documentos_recebidos/
+documentos_arquivados/

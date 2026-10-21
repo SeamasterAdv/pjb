@@ -5,16 +5,30 @@ from collections import deque
 from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# O mediapipe (~70 MB e ~1 s de import) só entra quando o detector de gestos é criado, não a cada abertura do programa.
+# Cada teste de câmera leva ~1,6 s e acende a luz dela; a abertura chamava a detecção 4 ou 5 vezes, então a resposta vale 1 min.
+VALIDADE_DA_CAMERA = 60.0
+_CAMERA_DETECTADA = {"em": 0.0, "valor": None}
+_CAMERA_ABRE = {}  # índice -> (quando, abriu?)
+
 
 def detectar_camera_disponivel(indices=None):
-    """Procura automaticamente uma câmera disponível em vários índices do sistema."""
+    """Procura automaticamente uma câmera disponível em vários índices do sistema (resposta guardada por 1 min)."""
     if indices is None:
-        indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        agora = time.time()
+        if _CAMERA_DETECTADA["em"] and agora - _CAMERA_DETECTADA["em"] < VALIDADE_DA_CAMERA:
+            return _CAMERA_DETECTADA["valor"]
+        valor = _procurar_camera([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        _CAMERA_DETECTADA.update(em=time.time(), valor=valor)
+        return valor
+    return _procurar_camera(indices)
+
+
+def _procurar_camera(indices):
 
     for camera_index in indices:
         try:
@@ -43,13 +57,17 @@ def detectar_camera_disponivel(indices=None):
 def webcam_disponivel(camera_index: int = None) -> bool:
     """Retorna True quando alguma webcam consegue abrir sem falha."""
     if camera_index is not None:
+        guardado = _CAMERA_ABRE.get(camera_index)
+        if guardado and time.time() - guardado[0] < VALIDADE_DA_CAMERA:
+            return guardado[1]
         try:
             cap = cv2.VideoCapture(camera_index)
             ok = cap.isOpened()
             cap.release()
-            return ok
         except Exception:
-            return False
+            ok = False
+        _CAMERA_ABRE[camera_index] = (time.time(), ok)
+        return ok
     return detectar_camera_disponivel() is not None
 
 
@@ -66,6 +84,8 @@ class GestosMaoDetector:
     """
 
     def __init__(self, camera_index: int = 0, max_hands: int = 1, min_confidence: float = 0.7):
+        import mediapipe as mp  # tardio: só quem usa gestos paga o import
+
         self.camera_index = camera_index
         self.max_hands = max_hands
         self.min_confidence = min_confidence

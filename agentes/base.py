@@ -8,10 +8,13 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from config import OLLAMA_NUM_CTX
+
 logger = logging.getLogger(__name__)
 
-# Contexto maior que o padrão do Ollama: os agentes recebem fontes e trechos longos.
-OPCOES_AGENTES = {"temperature": 0.4, "num_ctx": 8192}
+# Os agentes recebem fontes e trechos longos. O num_ctx é o mesmo de todas as chamadas (config.OLLAMA_NUM_CTX): um valor
+# diferente faria o Ollama recarregar o modelo a cada tarefa e a cada conversa depois dela.
+OPCOES_AGENTES = {"temperature": 0.4, "num_ctx": OLLAMA_NUM_CTX}
 
 
 def normalizar(texto: str) -> str:

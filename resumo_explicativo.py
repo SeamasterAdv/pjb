@@ -19,7 +19,7 @@ from datetime import datetime
 
 import requests
 
-from config import PASTA_DOCUMENTOS_GERADOS
+from config import OLLAMA_NUM_CTX, PASTA_DOCUMENTOS_GERADOS
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,7 @@ def gerar_resumo(tema: str, preferir: str = None) -> Resumo:
     if not texto:
         # O Ollama corta o que passa do contexto padrão; as fontes pedem um contexto maior.
         texto = llm_clients.chat_beatriz(prompt, contexto=contexto, usar_historico=False,
-                                         opcoes={"temperature": 0.3, "num_ctx": 8192})
+                                         opcoes={"temperature": 0.3, "num_ctx": OLLAMA_NUM_CTX})
 
     secoes = separar_secoes(texto)
     if not secoes:  # a IA não seguiu o formato: o texto inteiro vira o resumo

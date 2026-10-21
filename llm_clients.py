@@ -8,7 +8,8 @@ from datetime import datetime
 
 import ollama
 
-from config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_VISION_MODEL, PERSONALIDADE_BEATRIZ
+from config import (OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_VISION_MODEL,
+                    PERSONALIDADE_BEATRIZ)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,9 @@ class LLMClients:
     def aquecer(self):
         """Carrega o modelo na memória antes da primeira pergunta (senão ela espera ~3 s a mais)."""
         try:
-            self.ollama_client.generate(model=self.model, prompt="", keep_alive=OLLAMA_KEEP_ALIVE)
+            # Com o mesmo num_ctx das conversas: com outro, a primeira pergunta recarregaria o modelo de novo.
+            self.ollama_client.generate(model=self.model, prompt="", keep_alive=OLLAMA_KEEP_ALIVE,
+                                        options={"num_ctx": OLLAMA_NUM_CTX})
             logger.info("Modelo %s carregado no Ollama.", self.model)
         except Exception as exc:
             logger.warning("Não foi possível pré-carregar o modelo: %s", exc)
@@ -146,8 +149,8 @@ class LLMClients:
         messages.append({"role": "user", "content": prompt})
 
         argumentos = {"model": model or self.model, "messages": messages, "keep_alive": OLLAMA_KEEP_ALIVE}
-        if opcoes:
-            argumentos["options"] = opcoes
+        # Todo pedido leva o mesmo num_ctx: se ele mudasse entre duas chamadas, o Ollama recarregaria o modelo (8 a 10 s).
+        argumentos["options"] = {"num_ctx": OLLAMA_NUM_CTX, **(opcoes or {})}
         if formato:
             argumentos["format"] = formato
         return argumentos

@@ -8,11 +8,25 @@
       "port": 8765
     },
     {
+      "name": "app-celular-demonstracao",
+      "runtimeExecutable": ".venv312/Scripts/python.exe",
+      "runtimeArgs": ["app_celular.py", "--demo", "8772"],
+      "port": 8772,
+      "url": "http://127.0.0.1:8772"
+    },
+    {
       "name": "laboratorio-mascote",
       "runtimeExecutable": ".venv312/Scripts/python.exe",
       "runtimeArgs": ["-m", "http.server", "8771", "--bind", "127.0.0.1"],
       "port": 8771,
       "url": "http://127.0.0.1:8771"
+    },
+    {
+      "name": "laboratorio-visual",
+      "runtimeExecutable": ".venv312/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8773", "--bind", "127.0.0.1"],
+      "port": 8773,
+      "url": "http://127.0.0.1:8773"
     }
   ]
 }

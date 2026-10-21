@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Beatriz</title>
 <link rel="stylesheet" href="estilo.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.min.js" } }
+</script>
 </head>
-<body>
-<canvas id="particulas" aria-hidden="true"></canvas>
-
+<body data-estado="repouso">
 <header class="topo">
   <div class="marca">
-    <img src="logo.png" alt="">
-    <div><span class="nome">BEATRIZ</span><span class="sub" id="sub-marca">Sistema iniciando…</span></div>
+    <span class="nome">B.E.A.T.R.I.Z</span>
+    <span class="sub" id="sub-marca">sistema iniciando…</span>
   </div>
   <div class="chips">
     <span class="chip" id="chip-llm"><i class="ponto"></i><span>LLM</span></span>
@@ -20,32 +21,62 @@
     <span class="chip" id="chip-modo"><span>modo padrão</span></span>
   </div>
   <div class="acoes-topo">
-    <button class="botao-sistema" id="btn-agenda">[ Agenda ]</button>
-    <button class="botao-sistema" id="btn-status">[ Status ]</button>
-    <button class="botao-sistema" id="btn-registro">[ Registro ]</button>
+    <button class="botao-sistema" id="btn-agenda">agenda</button>
+    <button class="botao-sistema" id="btn-biblioteca">biblioteca</button>
+    <button class="botao-sistema" id="btn-status">status</button>
+    <button class="botao-sistema" id="btn-registro">registro</button>
     <div class="relogio"><span id="hora">--:--</span><span id="data"></span></div>
   </div>
 </header>
 
 <main class="palco">
-  <section class="ceu" id="ceu" aria-label="Missões em andamento">
-    <div class="titulo-ceu">[ MISSÕES ]</div>
-    <p class="ceu-vazio" id="ceu-vazio">Nenhuma missão no céu.<br>Peça um documento, uma planilha ou uma pesquisa completa.</p>
-  </section>
+  <div class="coluna-esquerda">
+    <section class="quadro missoes" id="ceu" aria-label="Missões em andamento">
+      <div class="titulo-quadro">◢ missões <span class="conta" id="missoes-conta"></span></div>
+      <p class="ceu-vazio" id="ceu-vazio">Nenhuma missão em andamento.<br>Peça um documento, uma planilha ou uma pesquisa completa.</p>
+      <ol class="lista-missoes" id="lista-missoes"></ol>
+    </section>
+    <section class="quadro telemetria" aria-label="Telemetria">
+      <div class="titulo-quadro">◢ telemetria</div>
+      <dl class="leituras">
+        <dt>voz.beatriz</dt><dd id="tl-voz-dela" class="barrinha"></dd>
+        <dt>voz.você</dt><dd id="tl-voz-minha" class="barrinha"></dd>
+        <dt>cpu</dt><dd id="tl-cpu">--</dd>
+        <dt>memória</dt><dd id="tl-ram">--</dd>
+        <dt>interações</dt><dd id="tl-interacoes">--</dd>
+        <dt>tempo médio</dt><dd id="tl-tempo">--</dd>
+        <dt>biblioteca</dt><dd id="tl-biblioteca">--</dd>
+        <dt>nuvem</dt><dd id="tl-nuvem">--</dd>
+      </dl>
+    </section>
+  </div>
 
   <section class="centro">
-    <div class="nucleo estado-repouso" id="nucleo"></div>
-
+    <div class="esfera" id="esfera" aria-hidden="true"></div>
+    <div class="rotulo-estado"><span class="marca-estado">◢</span> <span id="rotulo-estado">em espera</span></div>
     <div class="legendas" aria-live="polite">
       <p class="legenda voce" id="legenda-voce"></p>
       <p class="legenda beatriz" id="legenda-beatriz"></p>
     </div>
+    <section class="quadro quadro-montanha" aria-label="Sua voz captada">
+      <div class="titulo-quadro">◢ sinal de entrada · sua voz
+        <span class="leitura"><span id="montanha-espectro" class="espectro"></span><b id="montanha-db">-∞</b> dB</span></div>
+      <div class="grafico">
+        <div class="eixo-y" aria-hidden="true"><span>0</span><span>-12</span><span>-24</span><span>-36</span><span>-48</span></div>
+        <div class="area-montanha">
+          <div class="montanha" id="montanha" aria-hidden="true"></div>
+        </div>
+        <div class="eixo-x" aria-hidden="true">
+          <span>5k</span><span>2k</span><span>1k</span><span>500</span><span>250</span><span>120 Hz</span><span>250</span><span>500</span><span>1k</span><span>2k</span><span>5k</span>
+        </div>
+      </div>
+    </section>
   </section>
 
   <section class="notificacoes" id="notificacoes" aria-live="polite"></section>
 
-  <aside class="lado-agenda" id="lado-agenda" aria-label="Agenda e calendário">
-    <div class="titulo-ceu">[ AGENDA ]</div>
+  <aside class="quadro lado-agenda" id="lado-agenda" aria-label="Agenda e calendário">
+    <div class="titulo-quadro">◢ agenda</div>
     <div class="mini-cal-cab">
       <button class="seta" id="mc-anterior" aria-label="Mês anterior">‹</button>
       <span id="mc-titulo"></span>
@@ -53,7 +84,7 @@
     </div>
     <div class="mini-cal" id="mini-cal" role="grid"></div>
     <div class="dia-tela">
-      <div class="dia-tela-titulo" id="dt-titulo">HOJE</div>
+      <div class="dia-tela-titulo" id="dt-titulo">hoje</div>
       <ul class="dia-tela-itens" id="dt-itens"></ul>
     </div>
     <p class="lado-agenda-rodape" id="lado-rodape"></p>
@@ -62,21 +93,21 @@
 </main>
 
 <aside class="registro" id="registro" aria-label="Registro da conversa">
-  <div class="cabecalho-janela">[ REGISTRO ]<button class="fechar" data-fechar="registro" aria-label="Fechar">×</button></div>
+  <div class="cabecalho-janela">◢ registro<button class="fechar" data-fechar="registro" aria-label="Fechar">×</button></div>
   <div class="atalhos" id="atalhos"></div>
   <div class="mensagens" id="mensagens"></div>
 </aside>
 
 <div class="fundo-modal" id="fundo-status" hidden>
   <div class="janela-sistema janela-status" id="janela-status" role="dialog" aria-label="Status da Beatriz">
-    <div class="cabecalho-janela">[ STATUS ]<button class="fechar" data-fechar="status" aria-label="Fechar">×</button></div>
+    <div class="cabecalho-janela">◢ status<button class="fechar" data-fechar="status" aria-label="Fechar">×</button></div>
     <div id="conteudo-status"></div>
   </div>
 </div>
 
 <div class="fundo-modal" id="fundo-agenda" hidden>
   <div class="janela-sistema janela-agenda" id="janela-agenda" role="dialog" aria-label="Agenda">
-    <div class="cabecalho-janela">[ AGENDA ]<button class="fechar" data-fechar="agenda" aria-label="Fechar">×</button></div>
+    <div class="cabecalho-janela">◢ agenda<button class="fechar" data-fechar="agenda" aria-label="Fechar">×</button></div>
     <div class="agenda-topo">
       <div class="agenda-nav">
         <button class="pequeno aba-agenda ativo" data-vista="semana">semana</button>
@@ -106,7 +137,36 @@
   </div>
 </div>
 
+<!-- Biblioteca de fontes: organizar à mão. Arraste um arquivo para uma pasta da árvore para mover. -->
+<div class="fundo-modal" id="fundo-biblioteca" hidden>
+  <div class="janela-sistema janela-biblioteca" id="janela-biblioteca" role="dialog" aria-label="Biblioteca de fontes">
+    <div class="cabecalho-janela">◢ biblioteca<button class="fechar" data-fechar="biblioteca" aria-label="Fechar">×</button></div>
+    <div class="biblio-barra">
+      <input id="bb-busca" placeholder="Buscar pelo nome…" autocomplete="off" aria-label="Buscar arquivo">
+      <button class="pequeno" id="bb-adicionar">+ adicionar arquivos</button>
+      <button class="pequeno" id="bb-nova-pasta">+ nova pasta</button>
+      <span class="biblio-resumo" id="bb-resumo"></span>
+    </div>
+    <div class="biblio-corpo">
+      <ul class="biblio-arvore" id="bb-arvore" aria-label="Pastas"></ul>
+      <div class="biblio-arquivos">
+        <div class="biblio-titulo"><span id="bb-titulo"></span><button class="pequeno" id="bb-apagar-pasta" hidden>apagar pasta vazia</button></div>
+        <div class="biblio-rolagem">
+          <table class="biblio-tabela">
+            <colgroup><col><col class="c-tamanho"><col class="c-data"><col class="c-estado"><col class="c-acoes"></colgroup>
+            <thead><tr><th>Nome</th><th>Tamanho</th><th>Modificado</th><th>Na biblioteca</th><th></th></tr></thead>
+            <tbody id="bb-linhas"></tbody>
+          </table>
+        </div>
+        <p class="biblio-dica">Arraste um arquivo para uma pasta à esquerda para movê-lo. Apagar manda para a Lixeira do Windows.</p>
+      </div>
+    </div>
+    <p class="agenda-resposta" id="bb-resposta" aria-live="polite"></p>
+  </div>
+</div>
+
 <footer class="comando">
+  <span class="prompt" aria-hidden="true">›_</span>
   <button class="mic ativo" id="btn-mic" title="Microfone ligado (clique para pausar)" aria-label="Microfone">
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none"/></svg>
   </button>
@@ -114,10 +174,10 @@
   <button class="icone" id="btn-anexar" title="Anexar arquivos à biblioteca" aria-label="Anexar arquivos">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5 12.5 19a5 5 0 0 1-7-7l8-8a3.3 3.3 0 0 1 4.7 4.7l-8 8a1.7 1.7 0 0 1-2.4-2.4l7.3-7.3" fill="none"/></svg>
   </button>
-  <button class="enviar" id="btn-enviar">Enviar</button>
+  <button class="enviar" id="btn-enviar">enviar</button>
 </footer>
 
-<script src="nucleo.js"></script>
 <script src="app.js"></script>
+<script type="module" src="painel_visual.js"></script>
 </body>
 </html>

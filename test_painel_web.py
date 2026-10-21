@@ -157,3 +157,33 @@ def test_aceitar_sugestao_vira_pedido_e_abre_o_painel():
     mascote.api._abrir_painel = mascote._mostrar_painel
     assert mascote.api.aceitar_sugestao("faz um resumo sobre a reforma tributária")
     assert pedidos == ["faz um resumo sobre a reforma tributária"] and aberturas == [1]
+
+
+def test_janela_da_biblioteca_mexe_nas_fontes_e_pede_nova_leitura(monkeypatch, tmp_path):
+    """A janela muda os arquivos neste processo e pede a nova leitura do índice ao principal (o único que grava no banco)."""
+    from biblioteca_fontes import BibliotecaDeFontes
+
+    fontes = tmp_path / "fontes"
+    (fontes / "direito").mkdir(parents=True)
+    (fontes / "estudos").mkdir()
+    (fontes / "direito" / "lei.pdf").write_bytes(b"%PDF")
+    compartilhado = {"painel": {"indexacao": {"status": "carregando"}}}
+    api = pw.ApiPainel(None, compartilhado, None)
+    api._biblioteca = BibliotecaDeFontes(raizes={"docs": ("Documentos", str(fontes))}, pessoais=[],
+                                         ao_mudar=api._pedir_leitura_da_biblioteca, estado_do_indice=lambda: {},
+                                         lixeira=lambda caminho: None, fora_da_biblioteca=str(tmp_path / "fora"))
+    dados = api.biblioteca()
+    assert dados["total"] == 1 and dados["leitura"] == "carregando"
+
+    resposta = api.biblioteca_mover("docs/direito/lei.pdf", "docs/estudos")
+    assert resposta["ok"] and (fontes / "estudos" / "lei.pdf").exists()
+    assert compartilhado.get("reindexar_biblioteca")
+    assert api.biblioteca_renomear("docs/../fora.txt", "x")["ok"] is False
+
+    abertos = []
+    monkeypatch.setattr(pw.os, "startfile", lambda caminho: abertos.append(("abrir", caminho)), raising=False)
+    monkeypatch.setattr("subprocess.Popen", lambda argumentos: abertos.append(("pasta", argumentos[-1])))
+    assert api.biblioteca_abrir("docs/estudos/lei.pdf")["ok"]
+    assert api.biblioteca_abrir("docs/estudos/lei.pdf", True)["ok"]
+    assert [a[0] for a in abertos] == ["abrir", "pasta"] and all(a[1].endswith("lei.pdf") for a in abertos)
+    assert api.biblioteca_abrir("docs/estudos/nao_existe.pdf")["ok"] is False

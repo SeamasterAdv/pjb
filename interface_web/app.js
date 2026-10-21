@@ -1,4 +1,5 @@
-/* Painel da Beatriz no estilo "Sistema sobre a sombra".
+/* Painel da Beatriz: preto e branco, a esfera em rede no centro (voz dela) e a montanha de pontos
+ * embaixo (sua voz), desenhadas pelo painel_visual.js; o branco vira dourado quando uma missão é cumprida.
  *
  * Fala com o Python pela ponte do pywebview (window.pywebview.api): busca os eventos novos a cada
  * 250 ms e o estado geral a cada 1,5 s. Aberto fora do pywebview (num navegador comum), entra no
@@ -51,40 +52,6 @@ function gravarPreferencia(chave, valor) {
   try { localStorage.setItem("beatriz." + chave, JSON.stringify(valor)); } catch (erro) { /* sem armazenamento */ }
 }
 
-/* ------------------------------------------------------------------ partículas de sombra */
-function iniciarParticulas() {
-  const tela = $("#particulas"), ctx = tela.getContext("2d");
-  const cores = ["154,123,208", "199,174,240", "63,169,255", "90,66,133", "53,228,255"];
-  let particulas = [];
-  function ajustar() {
-    tela.width = innerWidth * devicePixelRatio; tela.height = innerHeight * devicePixelRatio;
-    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    particulas = Array.from({ length: Math.round(innerWidth / 18) }, () => nova(true));
-  }
-  function nova(espalhada) {
-    const ouro = Math.random() < .06;
-    return {
-      x: Math.random() * innerWidth, y: espalhada ? Math.random() * innerHeight : innerHeight + 10,
-      r: Math.random() * 1.8 + .4, vy: Math.random() * .35 + .08, vx: (Math.random() - .5) * .15,
-      a: Math.random() * .5 + .15, cor: ouro ? "255,210,94" : cores[Math.floor(Math.random() * cores.length)],
-    };
-  }
-  function quadro() {
-    if (!document.hidden) {
-      ctx.clearRect(0, 0, innerWidth, innerHeight);
-      for (const p of particulas) {
-        p.y -= p.vy; p.x += p.vx;
-        if (p.y < -10) Object.assign(p, nova(false));
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${p.cor},${p.a})`; ctx.fill();
-      }
-    }
-    requestAnimationFrame(quadro);
-  }
-  addEventListener("resize", ajustar);
-  ajustar(); quadro();
-}
-
 /* ------------------------------------------------------------------ relógio */
 function iniciarRelogio() {
   const dias = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
@@ -96,13 +63,22 @@ function iniciarRelogio() {
   atualizar(); setInterval(atualizar, 1000);
 }
 
-/* ------------------------------------------------------------------ o núcleo */
-let voltarAoRepouso = null;
+/* ------------------------------------------------------------------ o estado (esfera, montanha e o dourado) */
+const ROTULOS_DO_ESTADO = { repouso: "em espera", ouvindo: "ouvindo", pensando: "processando",
+                            falando: "respondendo", vitoria: "missão cumprida" };
+const DURACAO_VITORIA = 5000; // o branco fica dourado por esse tempo e volta devagar
+let voltarAoRepouso = null, fimDoDourado = null;
 function definirEstado(estado, duracaoMs) {
-  estadoDoNucleo($("#nucleo"), estado);
-  document.body.dataset.estado = estado;
+  $("#rotulo-estado").textContent = ROTULOS_DO_ESTADO[estado] || estado;
+  document.body.dataset.estado = estado; // o painel_visual.js acompanha por aqui
   clearTimeout(voltarAoRepouso);
   if (duracaoMs) voltarAoRepouso = setTimeout(() => definirEstado("repouso"), duracaoMs);
+}
+// Missão cumprida: tudo o que é branco fica dourado (independe do estado: ela pode falar em dourado).
+function celebrar() {
+  document.body.dataset.vitoria = "1"; // o estilo e o painel_visual.js acompanham por aqui
+  clearTimeout(fimDoDourado);
+  fimDoDourado = setTimeout(() => { delete document.body.dataset.vitoria; }, DURACAO_VITORIA);
 }
 function duracaoDaFala(texto) { return Math.min(45000, Math.max(1800, (texto.length / CARACTERES_POR_SEGUNDO) * 1000 + 1500)); }
 
@@ -135,7 +111,7 @@ function janelaSistema(titulo, texto, opcoes = {}) {
   const janela = document.createElement("div");
   janela.className = "janela-sistema" + (opcoes.vitoria ? " vitoria" : "");
   janela.innerHTML = `<div class="cabecalho-janela"></div><div class="texto"></div>`;
-  janela.querySelector(".cabecalho-janela").textContent = `[ ${titulo.toUpperCase()} ]`;
+  janela.querySelector(".cabecalho-janela").textContent = `◢ ${titulo}`;
   if (opcoes.acao) {
     const area = document.createElement("div"), botao = document.createElement("button");
     area.className = "acao"; botao.textContent = opcoes.acao.rotulo; botao.onclick = opcoes.acao.aoClicar;
@@ -241,6 +217,8 @@ function tratarEvento(ev) {
       legenda("voce", texto); registrar("voce", texto); definirEstado("pensando"); break;
     case "pensando":
       definirEstado("pensando"); break;
+    case "ouvindo": // a pessoa começou a falar (a montanha acompanha a voz)
+      definirEstado("ouvindo", ev.duracao || 2500); break;
     case "ouvido":
       legenda("voce", texto); registrar("voce", texto, ev.motivo);
       definirEstado(ev.pensando ? "pensando" : "ouvindo", ev.pensando ? 0 : 2500); break;
@@ -261,7 +239,7 @@ function tratarEvento(ev) {
         vitoria: true, duracao: 12000,
         acao: ev.arquivo ? { rotulo: "Abrir o Word", aoClicar: () => api.abrir(ev.arquivo) } : null,
       });
-      definirEstado("vitoria", 1800); break;
+      celebrar(); break;
     case "filmes":
       ultimoCartao = { texto, fala: texto }; cartaoFilmes(ev); abrirRegistro(); break;
     case "missao":
@@ -286,33 +264,34 @@ function tratarEvento(ev) {
   }
 }
 
-/* ------------------------------------------------------------------ lanternas (missões dos agentes) */
+/* ------------------------------------------------------------------ missões dos agentes */
 const CLASSES_STATUS = { "na fila": "fila", "executando": "executando", "revisando": "revisando", "relatando": "relatando",
   "concluída": "concluida", "falhou": "falhou", "cancelada": "falhou", "não realizada": "falhou" };
-const ALTURA_STATUS = { fila: 6, executando: 30, revisando: 48, relatando: 62, concluida: 80, falhou: 2 };
-const lanternas = new Map();
+const PROGRESSO_STATUS = { fila: 0.05, executando: 0.35, revisando: 0.6, relatando: 0.85, concluida: 1, falhou: 1 };
 
-function atualizarLanternas(tarefas) {
-  const ceu = $("#ceu"), vistos = new Set(), primeiraVez = tarefasConhecidas === null;
+function barraDeTexto(valor, largura) {
+  const cheio = Math.round(Math.max(0, Math.min(1, valor)) * largura);
+  return "█".repeat(cheio) + "·".repeat(largura - cheio);
+}
+
+function atualizarMissoes(tarefas) {
+  const lista = $("#lista-missoes"), primeiraVez = tarefasConhecidas === null;
   tarefasConhecidas = tarefasConhecidas || {};
-  tarefas.slice(0, 6).forEach((tarefa, indice) => {
-    vistos.add(tarefa.id);
-    let lanterna = lanternas.get(tarefa.id);
-    if (!lanterna) {
-      lanterna = document.createElement("div");
-      lanterna.innerHTML = `<div class="bulbo"></div><div class="rotulo"><span></span><small></small></div>`;
-      lanterna.style.bottom = "0%";
-      ceu.appendChild(lanterna); lanternas.set(tarefa.id, lanterna);
-    }
+  lista.innerHTML = "";
+  for (const tarefa of tarefas.slice(0, 6)) {
     const classe = CLASSES_STATUS[tarefa.status] || "fila";
-    lanterna.className = `lanterna ${classe}`;
-    lanterna.style.left = `${22 + (indice % 2) * 46}px`;
-    lanterna.style.animationDelay = `${indice * -.7}s`;
-    requestAnimationFrame(() => { lanterna.style.bottom = `${ALTURA_STATUS[classe] + (indice % 3) * 3}%`; });
-    lanterna.title = `${tarefa.pedido}\n${tarefa.status}${tarefa.etapa ? " · " + tarefa.etapa : ""}`;
-    lanterna.querySelector(".rotulo span").textContent = tarefa.pedido;
-    lanterna.querySelector(".rotulo small").textContent = tarefa.etapa ? `${tarefa.status} · ${tarefa.etapa}` : tarefa.status;
-    lanterna.onclick = () => tarefa.pasta && api.abrir(tarefa.pasta);
+    const item = document.createElement("li");
+    item.className = `missao ${classe}`;
+    item.title = `${tarefa.pedido}\n${tarefa.status}${tarefa.etapa ? " · " + tarefa.etapa : ""}`;
+    item.innerHTML = `<span class="codigo"></span><span class="pedido"></span><span class="etapa"></span><span class="progresso"></span>`;
+    item.querySelector(".codigo").textContent = "#" + String(tarefa.id).slice(-4).toUpperCase();
+    item.querySelector(".pedido").textContent = tarefa.pedido;
+    item.querySelector(".etapa").textContent = tarefa.etapa ? `${tarefa.status} · ${tarefa.etapa}` : tarefa.status;
+    const progresso = PROGRESSO_STATUS[classe];
+    item.querySelector(".progresso").textContent =
+      `${barraDeTexto(progresso, 16)} ${classe === "falhou" ? "falhou" : Math.round(progresso * 100) + "%"}`;
+    if (tarefa.pasta) item.onclick = () => api.abrir(tarefa.pasta);
+    lista.appendChild(item);
 
     const anterior = tarefasConhecidas[tarefa.id];
     if (!primeiraVez && anterior === undefined && classe !== "concluida") janelaSistema("Nova missão", tarefa.pedido);
@@ -321,12 +300,12 @@ function atualizarLanternas(tarefas) {
         vitoria: true, duracao: 12000,
         acao: tarefa.pasta ? { rotulo: "Abrir a pasta", aoClicar: () => api.abrir(tarefa.pasta) } : null,
       });
-      definirEstado("vitoria", 1800);
+      celebrar();
     }
     tarefasConhecidas[tarefa.id] = tarefa.status;
-  });
-  for (const [id, lanterna] of lanternas) if (!vistos.has(id)) { lanterna.remove(); lanternas.delete(id); }
-  $("#ceu-vazio").hidden = lanternas.size > 0;
+  }
+  $("#ceu-vazio").hidden = tarefas.length > 0;
+  $("#missoes-conta").textContent = tarefas.length ? String(tarefas.length).padStart(2, "0") : "";
 }
 
 /* ------------------------------------------------------------------ estado geral e Status */
@@ -342,13 +321,25 @@ function aplicarEstado(e) {
   pontoLlm.className = "ponto " + (llm.online ? (llm.modelo_ok ? "verde" : "ambar") : "vermelho");
   $("#chip-llm span").textContent = llm.online ? (llm.modelo_ok ? e.modelo : `${e.modelo} ausente`) : "LLM offline";
   const escuta = (e.painel && e.painel.escuta) || (e.microfone_ativo ? "escutando" : "microfone pausado");
-  $("#chip-escuta .ponto").className = "ponto " + (!e.microfone_ativo ? "" : escuta === "escutando" ? "azul" : "verde");
+  $("#chip-escuta .ponto").className = "ponto " + (!e.microfone_ativo ? "" : escuta.startsWith("escutando") ? "azul" : "verde");
   $("#chip-escuta span").textContent = e.microfone_ativo ? escuta : "microfone pausado";
   $("#chip-modo span").textContent = `modo ${(e.painel && e.painel.modo) || e.modo || "padrão"}`;
-  $("#sub-marca").textContent = "Sistema ativo · Guardiã do Sol";
+  $("#sub-marca").textContent = "sistema ativo";
   $("#btn-mic").classList.toggle("ativo", !!e.microfone_ativo);
-  atualizarLanternas(e.tarefas || []);
+  atualizarMissoes(e.tarefas || []);
+  atualizarTelemetria(e);
   if (!$("#fundo-status").hidden) renderizarStatus();
+}
+
+function atualizarTelemetria(e) {
+  const r = e.recursos || {}, m = e.metricas || {}, b = e.biblioteca || {};
+  const porcento = (v) => `${barraDeTexto(v / 100, 12)} ${String(Math.round(v)).padStart(2, "0")}%`;
+  $("#tl-cpu").textContent = r.cpu != null ? porcento(r.cpu) : "--";
+  $("#tl-ram").textContent = r.ram != null ? porcento(r.ram) : "--";
+  $("#tl-interacoes").textContent = m.interacoes ?? "--";
+  $("#tl-tempo").textContent = m.tempo_medio != null ? `${m.tempo_medio.toFixed(1)} s` : "--";
+  $("#tl-biblioteca").textContent = b.fontes != null ? `${b.fontes} fontes · ${b.trechos} trechos` : "--";
+  $("#tl-nuvem").textContent = (e.nuvem || []).map((n) => `${n.nome.toLowerCase()} ${n.estado === "ativo" ? "●" : "○"}`).join("  ") || "--";
 }
 
 function linhaStatus(rotulo, valor, classe) {
@@ -363,7 +354,7 @@ function renderizarStatus() {
   const m = e.metricas || {}, b = e.biblioteca || {}, r = e.recursos || {}, idx = (e.painel && e.painel.indexacao) || {};
   const modoAtual = (e.painel && e.painel.modo) || e.modo;
   let html = `
-    <div class="identidade">Beatriz · Guardiã do Sol · assistente pessoal</div>
+    <div class="identidade">Beatriz · assistente pessoal</div>
     <div class="trio"><div><b>${m.interacoes ?? "--"}</b><span>INTERAÇÕES</span></div>
       <div><b>${m.tempo_medio != null ? m.tempo_medio.toFixed(1) + " s" : "--"}</b><span>TEMPO MÉDIO</span></div>
       <div><b>${m.sucesso != null ? Math.round(m.sucesso) + "%" : "--"}</b><span>SUCESSO</span></div></div>
@@ -672,6 +663,146 @@ function ligarAgenda() {
   setInterval(carregarAgendaDaTela, 10000); // a voz e o WhatsApp também mudam a agenda
 }
 
+/* ------------------------------------------------------------------ biblioteca de fontes (janela) */
+// Organizar à mão os arquivos que a Beatriz lê. As regras (que pastas, o que pode) ficam em biblioteca_fontes.py;
+// aqui só se escolhe a pasta, a ação e se mostra a resposta.
+const bib = { dados: null, pasta: null, relogio: null };
+const SIGLAS_TIPO = { pdf: "PDF", apresentacao: "PPT", documento: "DOC", planilha: "XLS", imagem: "IMG", nota: "TXT", pagina: "WEB" };
+const semAcentos = (texto) => texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const novo = (tag, classe, texto) => { const el = document.createElement(tag); if (classe) el.className = classe; if (texto !== undefined) el.textContent = texto; return el; };
+
+async function abrirBiblioteca(abrir = true) {
+  $("#fundo-biblioteca").hidden = !abrir;
+  $("#btn-biblioteca").classList.toggle("ativo", abrir);
+  clearInterval(bib.relogio);
+  if (!abrir) return;
+  await carregarBibliotecaJanela();
+  bib.relogio = setInterval(carregarBibliotecaJanela, 6000); // "ainda não lida" vira "lida" quando a varredura termina
+  $("#bb-busca").focus();
+}
+
+async function carregarBibliotecaJanela() {
+  try { bib.dados = await api.biblioteca(); } catch (erro) { return; }
+  if (!bib.pasta || !bib.dados.pastas.some((p) => p.id === bib.pasta)) {
+    bib.pasta = (bib.dados.pastas.find((p) => p.arquivos.length) || bib.dados.pastas[0] || {}).id || null;
+  }
+  renderizarBiblioteca();
+}
+
+function renderizarBiblioteca() {
+  const dados = bib.dados;
+  if (!dados) return;
+  const leitura = dados.leitura === "carregando" ? " · lendo as fontes…" : "";
+  $("#bb-resumo").textContent = `${dados.total} arquivos · ${dados.lidas} lidos pela Beatriz${leitura}`;
+  const arvore = $("#bb-arvore");
+  arvore.innerHTML = "";
+  for (const pasta of dados.pastas) {
+    const item = novo("li", `biblio-pasta${pasta.id === bib.pasta ? " ativa" : ""}${pasta.raiz ? " raiz" : ""}`);
+    item.style.paddingLeft = `${8 + pasta.profundidade * 16}px`;
+    item.append(novo("span", "biblio-pasta-nome", pasta.nome), novo("span", "biblio-pasta-conta", String(pasta.arquivos.length)));
+    item.title = pasta.caminho;
+    item.onclick = () => { bib.pasta = pasta.id; $("#bb-busca").value = ""; renderizarBiblioteca(); };
+    // soltar um arquivo arrastado aqui = mover
+    item.addEventListener("dragover", (e) => { e.preventDefault(); item.classList.add("alvo"); });
+    item.addEventListener("dragleave", () => item.classList.remove("alvo"));
+    item.addEventListener("drop", (e) => {
+      e.preventDefault();
+      item.classList.remove("alvo");
+      const arquivo = e.dataTransfer.getData("text/beatriz-arquivo");
+      if (arquivo) acaoBiblioteca(api.biblioteca_mover(arquivo, pasta.id));
+    });
+    arvore.appendChild(item);
+  }
+  const busca = semAcentos($("#bb-busca").value.trim());
+  const atual = dados.pastas.find((p) => p.id === bib.pasta);
+  const arquivos = busca
+    ? dados.pastas.flatMap((p) => p.arquivos.filter((a) => semAcentos(a.nome).includes(busca)).map((a) => ({ ...a, pasta: p.caminho })))
+    : (atual ? atual.arquivos : []);
+  $("#bb-titulo").textContent = busca ? `Busca: “${$("#bb-busca").value.trim()}”` : (atual ? atual.caminho : "");
+  $("#bb-apagar-pasta").hidden = busca || !atual || atual.raiz || atual.arquivos.length > 0
+    || dados.pastas.some((p) => p.id.startsWith(`${atual.id}/`));
+  $("#bb-nova-pasta").disabled = !atual || !atual.pode_criar_pasta;
+  const linhas = $("#bb-linhas");
+  linhas.innerHTML = "";
+  for (const arquivo of arquivos) linhas.appendChild(linhaDaBiblioteca(arquivo, busca));
+  if (!arquivos.length) {
+    const tr = novo("tr", "vazia");
+    const td = novo("td", "", busca ? "Nenhum arquivo com esse nome." : atual && atual.raiz ? "Os arquivos estão nas pastas de dentro." : "Pasta vazia. Use “+ adicionar arquivos”.");
+    td.colSpan = 5;
+    tr.appendChild(td);
+    linhas.appendChild(tr);
+  }
+}
+
+function linhaDaBiblioteca(arquivo, busca) {
+  const tr = novo("tr");
+  tr.draggable = true;
+  tr.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/beatriz-arquivo", arquivo.id); e.dataTransfer.effectAllowed = "move"; });
+  const nome = novo("td");
+  const rotulo = novo("div", "biblio-nome");
+  rotulo.append(novo("span", `biblio-tipo ${arquivo.tipo}`, SIGLAS_TIPO[arquivo.tipo] || "ARQ"), novo("span", "", arquivo.nome));
+  if (busca && arquivo.pasta) rotulo.appendChild(novo("small", "", arquivo.pasta));
+  nome.appendChild(rotulo);
+  nome.title = "Clique duas vezes para abrir";
+  nome.ondblclick = () => api.biblioteca_abrir(arquivo.id, false);
+  const tamanho = arquivo.tamanho > 1048576 ? `${(arquivo.tamanho / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(arquivo.tamanho / 1024))} KB`;
+  const data = new Date(arquivo.modificado * 1000).toLocaleDateString("pt-BR");
+  const estado = novo("td", `biblio-estado ${semAcentos(arquivo.estado).replace(/\s+/g, "-")}`, arquivo.estado);
+  const celulaAcoes = novo("td");
+  const acoes = novo("div", "biblio-acoes");
+  celulaAcoes.appendChild(acoes);
+  const botao = (texto, titulo, acao, classe = "") => {
+    const b = novo("button", `pequeno ${classe}`, texto);
+    b.title = titulo;
+    b.onclick = acao;
+    acoes.appendChild(b);
+  };
+  botao("abrir", "Abrir no programa do arquivo", () => api.biblioteca_abrir(arquivo.id, false));
+  botao("pasta", "Mostrar no Explorador", () => api.biblioteca_abrir(arquivo.id, true));
+  botao("renomear", "Renomear", () => {
+    const base = arquivo.nome.replace(/\.[^.]+$/, "");
+    const nomeNovo = prompt(`Novo nome para “${arquivo.nome}”:`, base);
+    if (nomeNovo && nomeNovo.trim() && nomeNovo.trim() !== base) acaoBiblioteca(api.biblioteca_renomear(arquivo.id, nomeNovo.trim()));
+  });
+  const mover = novo("select", "biblio-mover");
+  mover.title = "Mover para outra pasta";
+  mover.add(new Option("mover para…", ""));
+  for (const p of bib.dados.pastas) mover.add(new Option(`${"  ".repeat(p.profundidade)}${p.nome}`, p.id));
+  mover.onchange = () => { if (mover.value) acaoBiblioteca(api.biblioteca_mover(arquivo.id, mover.value)); };
+  acoes.appendChild(mover);
+  botao("tirar", "Tirar da biblioteca (vai para documentos_arquivados › fora_da_biblioteca)", () => {
+    if (confirm(`Tirar “${arquivo.nome}” da biblioteca? Ele continua no PC, em documentos_arquivados › fora_da_biblioteca.`)) {
+      acaoBiblioteca(api.biblioteca_tirar(arquivo.id));
+    }
+  });
+  botao("apagar", "Mandar para a Lixeira do Windows", () => {
+    if (confirm(`Apagar “${arquivo.nome}”? Ele vai para a Lixeira do Windows (dá para restaurar de lá).`)) acaoBiblioteca(api.biblioteca_apagar(arquivo.id));
+  }, "perigo");
+  tr.append(nome, novo("td", "", tamanho), novo("td", "", data), estado, celulaAcoes);
+  return tr;
+}
+
+async function acaoBiblioteca(promessa) {
+  const resposta = await promessa;
+  if (resposta && resposta.mensagem) {
+    digitar($("#bb-resposta"), resposta.mensagem);
+    sons.tocar(resposta.ok ? "ping" : "erro");
+  }
+  await carregarBibliotecaJanela();
+}
+
+function ligarBiblioteca() {
+  $("#btn-biblioteca").onclick = () => abrirBiblioteca($("#fundo-biblioteca").hidden);
+  $("#fundo-biblioteca").addEventListener("click", (e) => { if (e.target.id === "fundo-biblioteca") abrirBiblioteca(false); });
+  $("#bb-busca").addEventListener("input", renderizarBiblioteca);
+  $("#bb-adicionar").onclick = () => { if (bib.pasta) acaoBiblioteca(api.biblioteca_adicionar(bib.pasta)); };
+  $("#bb-nova-pasta").onclick = () => {
+    const nome = bib.pasta && prompt("Nome da nova pasta:");
+    if (nome && nome.trim()) acaoBiblioteca(api.biblioteca_criar_pasta(bib.pasta, nome.trim()));
+  };
+  $("#bb-apagar-pasta").onclick = () => { if (bib.pasta) acaoBiblioteca(api.biblioteca_apagar_pasta(bib.pasta)); };
+}
+
 /* ------------------------------------------------------------------ comandos */
 async function enviar(texto) {
   texto = (texto || "").trim();
@@ -702,11 +833,13 @@ function ligarControles(inicio) {
   $("#btn-registro").onclick = () => abrirRegistro(!$("#registro").classList.contains("aberto"));
   $("#btn-status").onclick = () => abrirStatus($("#fundo-status").hidden);
   $("#fundo-status").addEventListener("click", (e) => { if (e.target.id === "fundo-status") abrirStatus(false); });
-  const fechar = { status: () => abrirStatus(false), agenda: () => abrirAgenda(false), registro: () => abrirRegistro(false) };
+  const fechar = { status: () => abrirStatus(false), agenda: () => abrirAgenda(false), registro: () => abrirRegistro(false),
+                   biblioteca: () => abrirBiblioteca(false) };
   document.querySelectorAll("[data-fechar]").forEach((b) => b.onclick = fechar[b.dataset.fechar]);
   ligarAgenda();
+  ligarBiblioteca();
   addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { abrirStatus(false); abrirAgenda(false); abrirRegistro(false); }
+    if (e.key === "Escape") { abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); }
     if (e.key === "k" && e.ctrlKey) { entrada.focus(); e.preventDefault(); }
   });
   const atalhos = $("#atalhos");
@@ -731,17 +864,42 @@ async function comecar(ponte) {
     setTimeout(buscarEstado, 1500);
   };
   buscarEventos(); buscarEstado();
+  if (api.niveis) { // a voz de verdade: o painel_visual.js deixa de simular
+    document.body.dataset.niveis = "1";
+    buscarNiveis();
+  }
   definirEstado("repouso");
 }
 
-desenharNucleo($("#nucleo"));
-iniciarParticulas();
+// Níveis da voz dela (o áudio tocando) e do microfone, ~20 vezes por segundo, para a esfera e a montanha.
+async function buscarNiveis() {
+  try {
+    const niveis = await api.niveis(), visual = window.visualBeatriz;
+    if (visual && niveis) {
+      if (niveis.beatriz) {
+        visual.vozDela(niveis.beatriz.nivel, niveis.beatriz.bandas);
+        definirEstado("falando", 700); // enquanto o áudio toca; volta ao repouso logo depois que ele acaba
+      }
+      if (niveis.voce) {
+        visual.vozMinha(niveis.voce.nivel, niveis.voce.bandas, niveis.voce.db);
+        const estado = document.body.dataset.estado;
+        if (niveis.voce.nivel > 0.32 && (estado === "repouso" || estado === "ouvindo")) definirEstado("ouvindo", 1500);
+      }
+    }
+  } catch (erro) { /* a ponte se recupera sozinha */ }
+  setTimeout(buscarNiveis, 50);
+}
+
 iniciarRelogio();
-if (window.pywebview && window.pywebview.api) comecar(window.pywebview.api);
+if (window.pywebview && window.pywebview.api && window.pywebview.api.inicio) comecar(window.pywebview.api);
 else {
   let pronto = false;
   addEventListener("pywebviewready", () => { pronto = true; comecar(window.pywebview.api); });
-  setTimeout(() => { if (!pronto) comecar(criarApiDemonstracao()); }, 1500);
+  setTimeout(() => {
+    if (pronto) return;
+    document.body.dataset.demonstracao = "1"; // o painel_visual.js simula a sua voz ao "ouvir"
+    comecar(criarApiDemonstracao());
+  }, 1500);
 }
 
 /* ------------------------------------------------------------------ modo demonstração */
@@ -754,7 +912,8 @@ function criarApiDemonstracao() {
                    { id: "b", pedido: "Planilha de gastos de outubro", status: "na fila", etapa: "", pasta: "" }];
   const roteiro = [
     [1200, { tipo: "resposta", texto: "Boa noite! Que bom ter você por aqui. Bora começar?" }],
-    [5200, { tipo: "ouvido", texto: "Beatriz, quais filmes estão em cartaz?", pensando: true }],
+    [3600, { tipo: "ouvindo", duracao: 1700 }],
+    [5300, { tipo: "ouvido", texto: "Beatriz, quais filmes estão em cartaz?", pensando: true }],
     [7600, { tipo: "filmes", texto: "Em São Paulo há 74 filmes em cartaz.", cidade: "São Paulo", genero: "", so_estreias: false,
       filmes: [["Se Eu Fosse Você 3", "comédia", "#6A44A6"], ["Verity", "drama", "#1B4F8C"], ["Street Fighter", "ação", "#8C2A3A"],
                ["Outra Mamãe", "terror", "#2A1745"], ["Tadeo", "animação", "#C98F1E"], ["Um Tio Quase Perfeito 3", "comédia", "#3B6D11"]]
@@ -762,6 +921,7 @@ function criarApiDemonstracao() {
       pre_venda: [{ titulo: "Vingadores: Doutor Destino", estreia: "16 de dezembro" }] }],
     [7700, { tipo: "resposta", texto: "Em São Paulo há 74 filmes em cartaz." }],
     [13000, { tipo: "ignorado", texto: "vem cá mãe, olha isso", motivo: "diga “Beatriz” antes do pedido" }],
+    [13800, { tipo: "ouvindo", duracao: 2100 }],
     [16000, { tipo: "missao", titulo: "Nova missão", texto: "Resumo sobre a reforma tributária" }],
     [16100, { tipo: "pensando" }],
     [21000, { tipo: "resumo", tema: "reforma tributária", texto: "Resumo: reforma tributária", arquivo: "",
@@ -806,7 +966,49 @@ function criarApiDemonstracao() {
     tarefa_nova: async (texto) => `(demonstração) Anotei a tarefa ${texto}.`,
     tarefa_alternar: async () => "(demonstração) Tarefa marcada.",
     tarefa_remover: async () => "(demonstração) Tarefa removida.",
+    biblioteca: async () => bibliotecaDemonstracao(),
+    biblioteca_mover: async (id, pasta) => moverNaDemonstracao(id, pasta),
+    biblioteca_renomear: async () => ({ ok: true, mensagem: "(demonstração) No painel de verdade, eu renomearia o arquivo." }),
+    biblioteca_criar_pasta: async (pasta, nome) => ({ ok: true, mensagem: `(demonstração) Criaria a pasta “${nome}”.` }),
+    biblioteca_apagar_pasta: async () => ({ ok: true, mensagem: "(demonstração) Apagaria a pasta vazia." }),
+    biblioteca_tirar: async () => ({ ok: true, mensagem: "(demonstração) Tiraria o arquivo da biblioteca." }),
+    biblioteca_apagar: async () => ({ ok: true, mensagem: "(demonstração) Mandaria o arquivo para a Lixeira." }),
+    biblioteca_adicionar: async () => ({ ok: false, mensagem: "(demonstração) No painel de verdade, abre a escolha de arquivos." }),
+    biblioteca_abrir: async () => ({ ok: true, mensagem: "" }),
   };
+}
+
+const BIBLIOTECA_DEMONSTRACAO = {
+  pastas: [
+    { id: "documentos", nome: "Documentos", caminho: "Documentos", profundidade: 0, raiz: true, pode_criar_pasta: true, arquivos: [] },
+    { id: "documentos/direito", nome: "direito", caminho: "Documentos › direito", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
+      { id: "documentos/direito/Constituição comentada.pdf", nome: "Constituição comentada.pdf", tamanho: 4823000, modificado: 1760000000, tipo: "pdf", estado: "lida" },
+      { id: "documentos/direito/Aula 3 - contratos.pptx", nome: "Aula 3 - contratos.pptx", tamanho: 912000, modificado: 1760500000, tipo: "apresentacao", estado: "ainda não lida" },
+    ] },
+    { id: "documentos/faculdade", nome: "faculdade", caminho: "Documentos › faculdade", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
+      { id: "documentos/faculdade/foto do quadro.jpg", nome: "foto do quadro.jpg", tamanho: 1300000, modificado: 1760700000, tipo: "imagem", estado: "sem texto" },
+    ] },
+    { id: "obsidian", nome: "Obsidian", caminho: "Obsidian", profundidade: 0, raiz: true, pode_criar_pasta: true, arquivos: [] },
+    { id: "obsidian/direito", nome: "direito", caminho: "Obsidian › direito", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
+      { id: "obsidian/direito/Resumo CDC.md", nome: "Resumo CDC.md", tamanho: 8200, modificado: 1760800000, tipo: "nota", estado: "lida" },
+    ] },
+    { id: "obsidian/direito/OAB", nome: "OAB", caminho: "Obsidian › direito › OAB", profundidade: 2, raiz: false, pode_criar_pasta: true, arquivos: [] },
+  ],
+};
+function bibliotecaDemonstracao() {
+  const pastas = BIBLIOTECA_DEMONSTRACAO.pastas;
+  const arquivos = pastas.flatMap((p) => p.arquivos);
+  return { pastas, total: arquivos.length, lidas: arquivos.filter((a) => a.estado === "lida").length, leitura: "" };
+}
+function moverNaDemonstracao(id, destino) {
+  const pastas = BIBLIOTECA_DEMONSTRACAO.pastas;
+  const origem = pastas.find((p) => p.arquivos.some((a) => a.id === id));
+  const alvo = pastas.find((p) => p.id === destino);
+  if (!origem || !alvo || origem === alvo) return { ok: false, mensagem: "O arquivo já está nessa pasta." };
+  const arquivo = origem.arquivos.find((a) => a.id === id);
+  origem.arquivos = origem.arquivos.filter((a) => a !== arquivo);
+  alvo.arquivos.push({ ...arquivo, id: `${alvo.id}/${arquivo.nome}`, estado: "ainda não lida" });
+  return { ok: true, mensagem: `Movi “${arquivo.nome}” para ${alvo.caminho}.` };
 }
 
 const AGENDA_DEMONSTRACAO = [

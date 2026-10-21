@@ -16,22 +16,29 @@ import threading
 import time
 
 import memory
+import niveis_voz
 from agente_agenda import criar_agente_agenda
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
 from agentes import PainelCompartilhado, criar_orquestrador
+from biblioteca_fontes import BibliotecaDeFontes, ErroDaBiblioteca, resultado as resultado_da_biblioteca
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
 from config import MASCOTE_NA_TELA, MODOS_PASTAS, OLLAMA_MODEL, PASTA_DOCUMENTOS_GERADOS
 from interface_texto import ATALHOS_RAPIDOS, definir_id_app_windows, verificar_ollama
 from jeito_de_falar import frase
+from agente_pastas import AgentePastas
+from fontes import criar_agente_fontes
+from leitura_tela import AgenteTela
 from llm_nuvem import claude, gemini
 from memory import importar_fonte_local, notelooklm_responder
 from painel_hud import MonitorRecursos, contar_linhas, grupos_da_biblioteca, ler_metricas_analise
 from professora_idiomas import processar_comando_idiomas
 from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
 from voice import (
+    ao_medir_nivel,
     definir_microfone_ativo,
     falar_async,
+    responder_troca_de_voz,
     listar_microfones,
     listar_saidas_audio,
     microfone_ativo,
@@ -47,7 +54,7 @@ PASTA_PROJETO = os.path.dirname(os.path.abspath(__file__))
 PAGINA = os.path.join(PASTA_PROJETO, "interface_web", "index.html")
 ICONE_ICO = os.path.join(PASTA_PROJETO, "assets", "beatriz_icone.ico")
 PASTA_ARMAZENAMENTO = os.path.join(PASTA_PROJETO, "banco_memoria", "painel_web")  # preferências da página
-FUNDO = "#0B0614"
+FUNDO = "#000000"
 EVENTOS_POR_BUSCA = 50
 VALIDADE_OLLAMA = 15.0  # segundos entre consultas ao Ollama
 VALIDADE_BIBLIOTECA = 10.0  # contar trechos e conversas a cada busca de estado pesaria
@@ -69,8 +76,13 @@ def _inferir_categoria(caminho: str) -> str:
 class ApiPainel:
     """Métodos que a página chama. Cada um devolve dados simples (viram JSON na ponte)."""
 
-    def __init__(self, microfone_evento=None, audio_config=None, fila_voz=None):
+    def __init__(self, microfone_evento=None, audio_config=None, fila_voz=None, niveis=None):
         self._microfone_evento = microfone_evento
+        # Níveis da voz (dela e do microfone) que o processo principal mede; a fala deste processo
+        # (respostas do chat digitado) também entra, para a esfera vibrar com ela.
+        self._niveis = niveis_voz.NiveisDeVoz(niveis) if niveis is not None else None
+        if self._niveis is not None:
+            ao_medir_nivel(self._niveis.publicar)
         self._audio_config = audio_config
         self._fila_voz = fila_voz  # o que a voz ouviu e respondeu, vindo do processo principal
         self._eventos = queue.Queue()  # eventos gerados aqui mesmo (pedidos digitados no painel)
@@ -86,6 +98,15 @@ class ApiPainel:
             texto_agenda=lambda t: texto_da_agenda(self._agenda, t),
             avisar=self._responder,
         )
+        self._pastas = AgentePastas()  # "abre a pasta da OAB" (a busca tem o próprio índice, neste processo)
+        threading.Thread(target=self._pastas.aquecer, daemon=True).start()
+        # Arquivos recebidos (o WhatsApp roda no processo principal; o registro é o mesmo arquivo): "vira fonte", "arquiva", "imprime",
+        # "escaneia". "Me manda no zap" só funciona pela voz ou pelo próprio WhatsApp.
+        self._fontes = criar_agente_fontes(avisar=lambda texto, canal: self._responder(texto), enviar_zap=None,
+                                           impressora=self._impressora, pastas=self._pastas, llm=llm_clients)
+        self._tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa (não a do painel)
+        # Biblioteca de fontes organizada à mão: a nova leitura do índice é pedida ao processo principal (só ele grava no banco).
+        self._biblioteca = BibliotecaDeFontes(ao_mudar=self._pedir_leitura_da_biblioteca)
         self._monitor = MonitorRecursos()
         self._janela = None
         self._mascote = None  # a mascote que anda pela tela (mascote_tela.MascoteDaTela)
@@ -106,6 +127,10 @@ class ApiPainel:
         except queue.Empty:
             pass
         return novos
+
+    def niveis(self) -> dict:
+        """A voz dela e a do microfone agora (nível, dB e bandas); a página pergunta ~20 vezes por segundo."""
+        return self._niveis.ler() if self._niveis is not None else {}
 
     def estado(self) -> dict:
         metricas = ler_metricas_analise() or {}
@@ -220,6 +245,64 @@ class ApiPainel:
     def tarefa_remover(self, tarefa_id: int) -> str:
         return self._agenda.remover_tarefa_por_id(tarefa_id)
 
+    # ------------------------------------------------------------------ janela da biblioteca de fontes
+    def biblioteca(self) -> dict:
+        """As pastas de fontes com os arquivos e o estado de cada um (lida, sem texto, ainda não lida)."""
+        dados = self._biblioteca.listar()
+        dados["leitura"] = (self._compartilhado("painel").get("indexacao") or {}).get("status", "")
+        return dados
+
+    def biblioteca_mover(self, arquivo: str, pasta: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.mover, arquivo, pasta)
+
+    def biblioteca_renomear(self, arquivo: str, nome: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.renomear, arquivo, nome)
+
+    def biblioteca_criar_pasta(self, pasta: str, nome: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.criar_pasta, pasta, nome)
+
+    def biblioteca_apagar_pasta(self, pasta: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.apagar_pasta, pasta)
+
+    def biblioteca_tirar(self, arquivo: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.tirar, arquivo)
+
+    def biblioteca_apagar(self, arquivo: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.apagar, arquivo)
+
+    def biblioteca_adicionar(self, pasta: str) -> dict:
+        """Escolher arquivos do PC e copiar para a pasta da biblioteca."""
+        import webview
+
+        if self._janela is None:
+            return {"ok": False, "mensagem": "A janela não está pronta."}
+        caminhos = self._janela.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True)
+        if not caminhos:
+            return {"ok": True, "mensagem": ""}
+        respostas = [resultado_da_biblioteca(self._biblioteca.adicionar, os.path.basename(c), pasta, origem=c) for c in caminhos]
+        return {"ok": all(r["ok"] for r in respostas), "mensagem": " ".join(r["mensagem"] for r in respostas)}
+
+    def biblioteca_abrir(self, arquivo: str, na_pasta: bool = False) -> dict:
+        """Abre o arquivo no programa dele, ou mostra onde ele está no Explorador (`na_pasta`)."""
+        try:
+            caminho = self._biblioteca.caminho_para_abrir(arquivo)
+        except ErroDaBiblioteca as exc:
+            return {"ok": False, "mensagem": str(exc)}
+        if na_pasta:
+            import subprocess
+
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(caminho)])
+        else:
+            os.startfile(caminho)
+        return {"ok": True, "mensagem": ""}
+
+    def _pedir_leitura_da_biblioteca(self):
+        if self._audio_config is not None:
+            try:
+                self._audio_config["reindexar_biblioteca"] = time.time()
+            except Exception as exc:
+                logger.debug("Não consegui pedir a nova leitura da biblioteca: %s", exc)
+
     def abrir(self, caminho: str) -> bool:
         """Abre um arquivo ou pasta gerado pela Beatriz (só dentro da pasta do projeto ou dos documentos gerados)."""
         caminho = os.path.realpath(caminho or "")
@@ -258,9 +341,23 @@ class ApiPainel:
         """O mesmo caminho do chat do painel clássico: impressora, agenda, agentes, idiomas, resumo, cinema e biblioteca."""
         self._emitir({"tipo": "pensando"})
         try:
+            resposta_troca_voz = responder_troca_de_voz(comando)
+            if resposta_troca_voz:  # "usa a voz da Siri": vale aqui e na voz (a escolha fica num arquivo)
+                return self._responder(resposta_troca_voz)
             resposta_impressora = self._impressora.responder(comando)
             if resposta_impressora:
                 return self._responder(resposta_impressora)
+            resposta_fontes = self._fontes.responder(comando, "painel")
+            if resposta_fontes:
+                return self._responder(resposta_fontes)
+            resposta_tela = self._tela.responder(comando)
+            if resposta_tela:  # leitura de tela: resposta curta falada, completa no painel; não vira "imprime isso"
+                falar_async(resposta_tela.fala)
+                texto = f"{resposta_tela.fala}\n\n{resposta_tela.painel}" if resposta_tela.painel else resposta_tela.fala
+                return self._emitir({"tipo": "resposta", "texto": texto, "mostrar": True})
+            resposta_pasta = self._pastas.responder(comando)
+            if resposta_pasta:
+                return self._responder(resposta_pasta)
             resposta_lei = self._leis.responder(comando)
             if resposta_lei:
                 return self._responder_lei(resposta_lei)
@@ -348,10 +445,7 @@ class ApiPainel:
 
     @staticmethod
     def _contar_biblioteca() -> dict:
-        try:
-            trechos = memory.colecao_docs.count()
-        except Exception:
-            trechos = None
+        trechos = memory.total_de_trechos()  # pelo processo principal: o painel não abre o banco
         grupos = grupos_da_biblioteca(memory.CAMINHO_MANIFESTO_MEMORIA,
                                       {"documento_local": memory.PASTA_DOCUMENTOS, "obsidian": memory.VAULT_OBSIDIAN})
         return {"trechos": trechos, "fontes": sum(grupos.values()), "conversas": contar_linhas(memory.ARQUIVO_HISTORICO_CONVERSAS)}
@@ -378,19 +472,19 @@ def _ajustar_janela_windows(janela):
             icone = user32.LoadImageW(None, ICONE_ICO, 1, tamanho, tamanho, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
             if icone:
                 user32.SendMessageW(ctypes.c_void_p(hwnd), 0x80, ctypes.c_void_p(tipo), ctypes.c_void_p(icone))  # WM_SETICON
-        for atributo, cor in ((34, "#3FA9FF"), (35, FUNDO), (36, "#EAF6FF")):  # borda, barra de título e texto
+        for atributo, cor in ((34, "#3A3A3A"), (35, FUNDO), (36, "#E4E4E4")):  # borda, barra de título e texto
             valor = _cor_windows(cor)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, atributo, ctypes.byref(valor), ctypes.sizeof(valor))
     except (AttributeError, OSError) as exc:
         logger.debug("Não foi possível ajustar a janela: %s", exc)
 
 
-def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None, fila_voz=None):
+def iniciar(evento_pronto=None, microfone_evento=None, audio_config=None, fila_voz=None, niveis=None):
     """Abre o painel (mesma assinatura de interface_texto.iniciar) e só volta quando a janela fecha."""
     import webview
 
     definir_id_app_windows()
-    api = ApiPainel(microfone_evento, audio_config, fila_voz)
+    api = ApiPainel(microfone_evento, audio_config, fila_voz, niveis)
     janela = webview.create_window(
         "Beatriz", url=PAGINA, js_api=api, width=1440, height=900, min_size=(1100, 700),
         background_color=FUNDO, text_select=True, maximized=True,

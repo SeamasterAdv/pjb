@@ -769,3 +769,216 @@ def test_escaneia_e_resume_pelo_gemini(mundo):
     texto, _ = mundo.avisos[-1]
     assert texto.startswith("Escaneei a página") and "(Resposta do Gemini.)" in texto
     assert mundo.nuvem.chamadas[0]["preferir"] == "gemini" and mundo.llm.prompts == []
+
+
+# ------------------------------------------------------------------ auto: o Claude entra quando o modelo do PC não dá conta
+GRANDE = "Cláusula sobre o aluguel de R$ 2.300,00 e o reajuste anual pelo IPCA. " * 200  # ~14 mil caracteres: passa do PC
+
+
+def mundo_auto(tmp_path, **textos):
+    return Mundo(tmp_path, textos={"contrato.pdf": "Pagamento mensal de R$ 1.500. " * 5, "grande.pdf": GRANDE, **textos},
+                 ia_padrao="auto")
+
+
+def quebrar_o_pc(mundo):
+    def quebrado(*_a, **_k):
+        raise RuntimeError("Ollama fora do ar")
+
+    mundo.llm.chat_beatriz = quebrado
+
+
+def test_auto_arquivo_que_cabe_fica_no_pc(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    mundo.chega("contrato.pdf")
+    assert mundo.diz("resume esse PDF") == "O contrato fala de pagamento mensal e prazo de 12 meses."
+    assert mundo.nuvem.chamadas == [] and mundo.avisos == [] and len(mundo.llm.prompts) == 1
+
+
+def test_auto_arquivo_grande_demais_para_o_pc_vai_so_para_o_claude(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    mundo.chega("grande.pdf")
+    resposta = mundo.diz("resume esse PDF")
+    assert resposta.endswith("(Resposta do Claude.)") and "Li só o começo e o fim" not in resposta
+    chamada = mundo.nuvem.chamadas[0]
+    assert chamada["preferir"] == "claude" and chamada["exclusivo"] is True  # o Gemini nunca, sem pedir
+    assert "meio do arquivo cortado" not in chamada["prompt"] and GRANDE.strip() in chamada["prompt"]
+    assert mundo.llm.prompts == []
+    assert mundo.avisos == [("O arquivo é grande para o modelo do PC: pedindo ao Claude, leva uns segundos.", "whatsapp")]
+
+
+def test_auto_com_o_pc_fora_do_ar_o_claude_responde(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    quebrar_o_pc(mundo)
+    mundo.chega("contrato.pdf")
+    assert mundo.diz("resume esse PDF").endswith("(Resposta do Claude.)")
+    assert mundo.nuvem.chamadas[0]["preferir"] == "claude"
+    assert mundo.avisos[-1][0].startswith("O modelo do PC não respondeu: pedindo ao Claude")
+
+
+def test_auto_sem_o_pc_e_sem_o_claude_explica_sem_tentar_de_novo(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    tentativas = []
+
+    def quebrado(*_a, **_k):
+        tentativas.append(1)
+        raise RuntimeError("Ollama fora do ar")
+
+    mundo.llm.chat_beatriz = quebrado
+    mundo.nuvem.indisponivel = True
+    mundo.chega("contrato.pdf")
+    assert "nem o modelo do PC nem o Claude responderam" in mundo.diz("resume esse PDF")
+    assert len(tentativas) == 1 and len(mundo.nuvem.chamadas) == 1
+
+
+def test_auto_claude_em_pausa_le_o_comeco_e_o_fim_no_pc(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    mundo.nuvem.indisponivel = True
+    mundo.chega("grande.pdf")
+    resposta = mundo.diz("resume esse PDF")
+    assert "Não consegui falar com Claude agora" in resposta and "Li só o começo e o fim" in resposta
+    assert "meio do arquivo cortado" in mundo.llm.prompts[-1]
+
+
+def test_auto_arquivo_pessoal_ou_so_no_pc_nunca_sai(tmp_path):
+    mundo = mundo_auto(tmp_path, **{"historico.json": GRANDE})
+    mundo.chega("historico.json", conteudo=b"{}")
+    mundo.diz("resume esse arquivo")
+    mundo.passa(fontes.VALIDADE_DA_LEITURA + 10)
+    mundo.chega("grande.pdf")
+    mundo.diz("resume esse PDF só no PC")
+    assert mundo.nuvem.chamadas == [] and len(mundo.llm.prompts) == 2
+    assert all("meio do arquivo cortado" in p for p in mundo.llm.prompts)
+
+
+def test_auto_pergunta_seguinte_num_arquivo_grande_confere_no_pc_e_vai_ao_claude(tmp_path):
+    mundo = mundo_auto(tmp_path)
+    mundo.chega("grande.pdf")
+    mundo.diz("resume esse PDF")
+    mundo.passa(30)
+    mundo.llm.resposta = "SIM"
+    assert mundo.diz("qual o índice do reajuste?").endswith("(Resposta do Claude.)")
+    assert "Responda só SIM ou NAO" in mundo.llm.prompts[0] and len(mundo.nuvem.chamadas) == 2
+    mundo.llm.resposta = "NAO"
+    assert mundo.diz("qual a previsão do tempo amanhã?") is None and len(mundo.nuvem.chamadas) == 2
+
+
+def test_o_padrao_do_agente_e_auto(tmp_path):
+    assert AgenteFontes(Registro(str(tmp_path / "r.json")), str(tmp_path), str(tmp_path)).ia_padrao == "auto"
+
+
+# ------------------------------------------------------------------ ficha de estudo do arquivo recebido (agentes, pelo Claude)
+class EstudoFalso:
+    """O que o processo com o orquestrador liga em `estudar`: guarda o pedido e devolve a mensagem de início."""
+
+    def __init__(self):
+        self.pedidos = []
+
+    def __call__(self, caminhos, pedido, canal, ia=None):
+        self.pedidos.append({"arquivos": [os.path.basename(c) for c in caminhos], "pedido": pedido, "canal": canal, "ia": ia})
+        return "Certo, vou preparar a ficha de estudo, com o Claude."
+
+
+@pytest.fixture
+def estudo(mundo):
+    mundo.agente.ia_padrao = "auto"  # o padrão do .env
+    mundo.agente.estudar = EstudoFalso()
+    return mundo.agente.estudar
+
+
+@pytest.mark.parametrize("frase", [
+    "faz uma ficha desse PDF", "resume esse PDF para a prova", "faz um resumo disso pra prova da OAB",
+    "quero estudar isso", "monta flashcards desse arquivo", "transforma isso numa ficha de estudo",
+    "faz um material de estudo desse PDF",
+])
+def test_ficha_de_estudo_do_arquivo_vai_para_os_agentes(mundo, estudo, frase):
+    mundo.chega("contrato.pdf")
+    mundo.passa(fontes.VALIDADE_DA_PERGUNTA + 10)  # já não é a resposta a "o que faço com ele?": vale por citar o arquivo
+    assert mundo.diz(frase) == "Certo, vou preparar a ficha de estudo, com o Claude."
+    assert estudo.pedidos == [{"arquivos": ["contrato.pdf"], "pedido": frase, "canal": "whatsapp", "ia": None}]
+    assert mundo.llm.prompts == [] and mundo.nuvem.chamadas == []  # sem a leitura rápida
+    assert "ficha de estudo" in mundo.agente.registro.recentes()[0].acoes
+
+
+def test_resumo_sem_prova_continua_a_leitura_rapida(mundo, estudo):
+    mundo.chega("contrato.pdf")
+    assert mundo.diz("resume esse PDF") == "O contrato fala de pagamento mensal e prazo de 12 meses."
+    assert estudo.pedidos == []
+
+
+def test_legenda_ou_resposta_a_pergunta_tambem_pedem_a_ficha(mundo, estudo):
+    resposta = mundo.chega("contrato.pdf", legenda="faz um resumo para a prova")
+    assert resposta.startswith("Recebi “contrato.pdf”") and "ficha de estudo" in resposta
+    mundo.passa(fontes.VALIDADE_DOS_RECENTES + 10)
+    mundo.chega("aula.pdf")
+    mundo.diz("faz uma ficha para a prova")  # responde a "o que faço com ele?", sem citar o arquivo
+    assert [p["arquivos"] for p in estudo.pedidos] == [["contrato.pdf"], ["aula.pdf"]]
+
+
+def test_resumo_para_a_prova_sem_arquivo_e_do_agente_de_estudos_de_sempre(mundo, estudo):
+    assert mundo.diz("faz um resumo para a prova de história") is None
+    mundo.chega("contrato.pdf")
+    mundo.passa(fontes.VALIDADE_DA_PERGUNTA + 10)
+    assert mundo.diz("faz um resumo para a prova de história") is None  # não cita o arquivo nem responde à pergunta
+    assert estudo.pedidos == []
+
+
+def test_ficha_so_no_pc_pelo_gemini_ou_com_fontes_ia_local(tmp_path):
+    mundo = Mundo(tmp_path, textos={"contrato.pdf": "Pagamento mensal. " * 5})
+    mundo.agente.estudar = estudo = EstudoFalso()
+    mundo.chega("contrato.pdf")
+    mundo.diz("faz uma ficha desse PDF só no PC")
+    mundo.diz("faz uma ficha desse PDF pelo Gemini")
+    mundo.agente.ia_padrao = "local"  # FONTES_IA=local: o conteúdo nunca sai do PC
+    mundo.diz("faz uma ficha desse PDF")
+    assert [p["ia"] for p in estudo.pedidos] == ["local", "gemini", "local"]
+
+
+def test_ficha_de_arquivo_pessoal_ou_sem_orquestrador_explica(tmp_path):
+    mundo = Mundo(tmp_path, textos={"diario.pdf": "Hoje eu... " * 5}, pessoal=lambda caminho: True)
+    mundo.agente.estudar = estudo = EstudoFalso()
+    mundo.chega("diario.pdf")
+    assert "pessoal" in mundo.diz("faz uma ficha desse PDF") and estudo.pedidos == []
+    mundo.agente.estudar = None
+    assert "não consigo montar a ficha" in mundo.diz("faz uma ficha desse PDF")
+
+
+def test_imprimir_a_ficha_continua_sendo_impressao(mundo, estudo):
+    mundo.chega("ficha.pdf")
+    mundo.diz("imprime essa ficha")
+    assert estudo.pedidos == [] and mundo.impressora.pedidos
+
+
+def test_ficha_e_me_manda_fica_para_quando_ela_ficar_pronta(mundo, estudo):
+    mundo.chega("contrato.pdf")
+    mundo.diz("faz uma ficha disso e me manda no zap")
+    assert len(estudo.pedidos) == 1 and mundo.enviados == []  # quem manda é o aviso de tarefa concluída
+
+
+def test_escaneia_e_faz_a_ficha(mundo, estudo):
+    mundo.agente.extrair_texto = lambda caminho: "Apostila de direito civil, capítulo 3. " * 5
+    mundo.diz("escaneia a folha e faz uma ficha para a prova")
+    assert estudo.pedidos[0]["arquivos"][0].startswith("escaneado_") and mundo.llm.prompts == []
+
+
+def test_estudar_arquivos_do_main_avisa_pelo_canal_e_manda_se_pediram(monkeypatch):
+    import main
+
+    avisos = []
+
+    class OrquestradorFalso:
+        def enviar_estudo_de_arquivos(self, pedido, caminhos, ao_concluir=None, abrir=True, ia=None):
+            self.argumentos = {"pedido": pedido, "caminhos": caminhos, "abrir": abrir, "ia": ia}
+            self.ao_concluir = ao_concluir
+            return "tarefa"
+
+        def mensagem_inicio(self, tarefa):
+            return "Certo, vou preparar a ficha."
+
+    monkeypatch.setattr(main, "anunciar_tarefa_concluida", lambda *args: avisos.append(args))
+    orquestrador = OrquestradorFalso()
+    assert main.estudar_arquivos(orquestrador, ["c:/x/a.pdf"], "faz uma ficha disso e me manda", "whatsapp", "gemini") == (
+        "Certo, vou preparar a ficha.")
+    assert orquestrador.argumentos == {"pedido": "faz uma ficha disso e me manda", "caminhos": ["c:/x/a.pdf"],
+                                       "abrir": False, "ia": "gemini"}  # longe do PC: não abre o arquivo
+    orquestrador.ao_concluir("pronta")
+    assert avisos == [("faz uma ficha disso e me manda", "pronta", "whatsapp", True)]

@@ -103,7 +103,8 @@ class ApiPainel:
         # Arquivos recebidos (o WhatsApp roda no processo principal; o registro é o mesmo arquivo): "vira fonte", "arquiva", "imprime",
         # "escaneia". "Me manda no zap" só funciona pela voz ou pelo próprio WhatsApp.
         self._fontes = criar_agente_fontes(avisar=lambda texto, canal: self._responder(texto), enviar_zap=None,
-                                           impressora=self._impressora, pastas=self._pastas, llm=llm_clients)
+                                           impressora=self._impressora, pastas=self._pastas, llm=llm_clients,
+                                           estudar=self._estudar_arquivos)
         self._tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa (não a do painel)
         # Biblioteca de fontes organizada à mão: a nova leitura do índice é pedida ao processo principal (só ele grava no banco).
         self._biblioteca = BibliotecaDeFontes(ao_mudar=self._pedir_leitura_da_biblioteca)
@@ -406,6 +407,11 @@ class ApiPainel:
             self._emitir({"tipo": "resposta", "texto": resposta.painel or resposta.leitura, "mostrar": True})
         if resposta.explicar:
             self._responder(resposta.explicar())
+
+    def _estudar_arquivos(self, caminhos, pedido, canal="painel", ia=None):
+        """"Faz uma ficha desse PDF" sobre um arquivo recebido: a ficha tática dos agentes, escrita pelo Claude."""
+        tarefa = self._orquestrador.enviar_estudo_de_arquivos(pedido, caminhos, ao_concluir=self._missao_concluida, ia=ia)
+        return self._orquestrador.mensagem_inicio(tarefa) if tarefa else None
 
     def _missao_concluida(self, tarefa):
         # A janela de "missão concluída" sai da lanterna (estado compartilhado); aqui só a fala.

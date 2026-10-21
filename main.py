@@ -388,10 +388,11 @@ def responder_com_pesquisa_web(pergunta: str, salvar: bool = False, preferir: st
             f"Pergunta: {pergunta}\n\nFontes da internet:\n{conteudo}\n\nResposta:"
         )
     contexto = "Use as fontes fornecidas e preserve o tom natural da Beatriz."
-    # Claude, depois Gemini (ou a IA pedida na frase, primeiro): só a pergunta e o conteúdo público
+    # Gemini, depois Claude (ORDEM_IA_PESQUISA; ou a IA pedida na frase, primeiro): só a pergunta e o conteúdo público
     # das fontes vão para a nuvem (sem memória nem histórico). Se nenhuma puder responder, o Ollama responde.
     quem_respondeu = []
-    resposta = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3}, preferir=preferir, registro=quem_respondeu)
+    resposta = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3}, preferir=preferir, registro=quem_respondeu,
+                                  funcao="pesquisa")
     if not resposta:
         try:
             resposta = llm_clients.chat_beatriz(prompt, contexto=contexto)
@@ -1168,6 +1169,16 @@ def responder_fontes(texto: str, canal: str = "voz") -> None:
     falar_async(limpar_texto_para_fala(texto))
     avisar_painel("resposta", texto)
     abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), texto)
+
+
+def estudar_arquivos(orquestrador, caminhos, pedido: str, canal: str = "voz", ia: str = None):
+    """"Faz uma ficha desse PDF" sobre um arquivo recebido: a ficha tática dos agentes, escrita pelo Claude com o arquivo como
+    fonte. Avisa no fim pelo canal do pedido (e manda os arquivos se o pedido disse "me manda"), como as outras tarefas."""
+    tarefa = orquestrador.enviar_estudo_de_arquivos(
+        pedido, caminhos, ia=ia, abrir=canal == "voz",
+        ao_concluir=lambda t: anunciar_tarefa_concluida(pedido, t, canal, pede_envio(pedido)),
+    )
+    return orquestrador.mensagem_inicio(tarefa) if tarefa else None
 
 
 def mandar_pelo_whatsapp(caminhos, texto: str = "") -> None:
@@ -2072,6 +2083,8 @@ def main(evento_carregamento=None):
     iniciar_lembretes(AGENDA, avisar_lembrete)
     # O andamento das tarefas dos agentes vai para o mesmo dicionário que o painel lê.
     orquestrador = criar_orquestrador(publicar=PainelCompartilhado(configuracao_audio))
+    # "Faz uma ficha desse PDF" (arquivo recebido) vira tarefa deste orquestrador.
+    FONTES.estudar = lambda caminhos, pedido, canal, ia=None: estudar_arquivos(orquestrador, caminhos, pedido, canal, ia)
     if WHATSAPP_COMANDOS:
         # O estado do WhatsApp (QR, conectado...) também vai para o dicionário do painel.
         CANAL_WHATSAPP = CanalWhatsApp(configuracao_audio, numero=WHATSAPP_MEU_NUMERO)

@@ -321,7 +321,8 @@ class JanelaComandos(tk.Tk):
         )
         # Arquivos recebidos pelo WhatsApp (no processo principal; o registro é o mesmo arquivo): vira fonte, arquiva, imprime, escaneia.
         self.fontes = criar_agente_fontes(avisar=lambda texto, canal: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")),
-                                          enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients)
+                                          enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients,
+                                          estudar=self._estudar_arquivos)
 
         self.style = ttk.Style(self)
         try:
@@ -391,6 +392,12 @@ class JanelaComandos(tk.Tk):
             os.startfile(pasta)
         else:
             self.definir_status("A pasta desta tarefa ainda não foi criada", erro=True)
+
+    def _estudar_arquivos(self, caminhos, pedido, canal="painel", ia=None):
+        """"Faz uma ficha desse PDF" sobre um arquivo recebido: a ficha tática dos agentes, escrita pelo Claude."""
+        tarefa = self.orquestrador.enviar_estudo_de_arquivos(
+            pedido, caminhos, ia=ia, ao_concluir=lambda t: self.after(0, lambda: self._tarefa_concluida(t)))
+        return self.orquestrador.mensagem_inicio(tarefa) if tarefa else None
 
     def _tarefa_concluida(self, tarefa):
         self.adicionar_mensagem("Beatriz", tarefa.mensagem_final, tag="status" if tarefa.status == "falhou" else "beatriz")

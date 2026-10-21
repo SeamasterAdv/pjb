@@ -7,7 +7,7 @@ import re
 from agentes.base import Agente, Avaliacao, Tarefa
 # O crítico confere o texto contra o mesmo trecho das fontes que o redator recebeu; com menos,
 # fatos verdadeiros do resto das fontes seriam apontados como inventados.
-from agentes.especialistas import LIMITE_CONTEXTO_WEB, problemas_da_aula
+from agentes.especialistas import limite_web, problemas_da_aula
 from agentes.geradores import _lista
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,10 @@ def _verificar_estudos(tarefa: Tarefa, conteudo: dict) -> list:
         resultado.append((f"{feitos} {rotulo} (pedido: {pedidos[chave]})", feitos >= max(1, int(pedidos[chave] * 0.8))))
     topicos = len(conteudo.get("topicos") or [])
     if tarefa.materia and tarefa.fontes_no_claude:
-        # Resumo da matéria inteira, escrito pelo Claude: precisa cobrir mais que o básico.
-        resultado.append((f"Matéria em {topicos} tópicos (mínimo 5)", topicos >= 5))
+        # Resumo da matéria inteira, escrito pelo Claude: precisa cobrir mais que o básico. A ficha de um arquivo recebido
+        # pode ser de um texto curto.
+        minimo = 3 if tarefa.contexto.get("arquivo_recebido") else 5
+        resultado.append((f"Matéria em {topicos} tópicos (mínimo {minimo})", topicos >= minimo))
     else:
         resultado.append(("Material tem tópicos explicados", topicos >= 2))
     return resultado
@@ -228,7 +230,7 @@ class AgenteCritico(Agente):
         fontes = tarefa.contexto.get("web", "")
         conferencia = (
             f"\n\nTRECHO DAS FONTES USADAS (confira se números, nomes e fatos do conteúdo aparecem aqui; "
-            f"aponte como problema cada afirmação que não aparece):\n{fontes[:LIMITE_CONTEXTO_WEB]}"
+            f"aponte como problema cada afirmação que não aparece):\n{fontes[:limite_web(self.na_nuvem())]}"
             if fontes else ""
         )
         prompt = (

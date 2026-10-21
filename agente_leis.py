@@ -6,7 +6,7 @@ Exemplos: "dita o artigo 5º da Constituição", "o que diz o artigo 49 do Códi
 abordagem a cada vez), "continua" (segue lendo um artigo longo), "lê de novo".
 
 O texto da lei é público, então pode ir para a nuvem: a explicação sai do Gemini (o Claude e o Ollama
-ficam de reserva). Nada da memória, das notas ou do histórico vai junto.
+ficam de reserva; a ordem é a de ORDEM_IA_PESQUISA). Nada da memória, das notas ou do histórico vai junto.
 `AgenteLeis.responder(texto)` devolve uma RespostaLei (o que ler agora e a explicação, que pode
 demorar alguns segundos) ou None (o roteamento segue).
 """
@@ -579,14 +579,15 @@ CONTEXTO_EXPLICACAO = (
 
 
 def explicar_com_ia(prompt: str, contexto: str) -> str:
-    """Gemini primeiro (o texto da lei é público); sem ele, o Claude e, por último, o Ollama local."""
-    from llm_nuvem import responder_na_nuvem
+    """Na ordem da pesquisa (ORDEM_IA_PESQUISA: Gemini, depois Claude), porque o texto da lei é público; por último, o Ollama."""
+    from llm_nuvem import provedores_nuvem, responder_na_nuvem
 
     registro = []
-    texto = responder_na_nuvem(prompt, contexto=contexto, preferir="gemini", registro=registro)
+    texto = responder_na_nuvem(prompt, contexto=contexto, registro=registro, funcao="pesquisa")
     if texto:
-        if registro and registro[0].lower() != "gemini":
-            logger.info("Gemini indisponível; a explicação da lei veio de %s.", registro[0])
+        primeira = next(iter(provedores_nuvem("pesquisa")), None)
+        if primeira is not None and registro and registro[0] != primeira.nome:
+            logger.info("%s indisponível; a explicação da lei veio de %s.", primeira.nome, registro[0])
         return texto
     from llm_clients import llm_clients
 

@@ -13,9 +13,10 @@ from agentes.base import Agente, Tarefa, TarefaImpossivel, normalizar
 
 logger = logging.getLogger(__name__)
 
-LIMITE_CONTEXTO_WEB = 7000
+LIMITE_CONTEXTO_WEB = 7000  # o que cabe no Ollama
+LIMITE_CONTEXTO_WEB_NUVEM = 40000  # o Claude e o Gemini recebem tudo o que a pesquisa leu
 LIMITE_CONTEXTO_BIBLIOTECA = 4000
-# Material de estudo com o Claude: as fontes da matéria vão inteiras (até LIMITE_FONTES_ESTUDO no total).
+# Material de estudo e documentos com o Claude: as fontes vão inteiras (até LIMITE_FONTES_ESTUDO no total).
 LIMITE_POR_FONTE = 40000
 TRECHOS_MATERIA = 20  # trechos da busca usados para achar os arquivos da matéria
 DIAS_FONTES_RECENTES = 7
@@ -23,15 +24,23 @@ MAXIMO_FONTES_RECENTES = 8
 EXTENSOES_DE_ESTUDO = (".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".html", ".htm", ".png", ".jpg", ".jpeg")
 
 
-def _bloco_contexto(tarefa: Tarefa) -> str:
-    """Junta o que os agentes anteriores levantaram, para o agente redator usar."""
+def limite_web(nuvem: bool) -> int:
+    return LIMITE_CONTEXTO_WEB_NUVEM if nuvem else LIMITE_CONTEXTO_WEB
+
+
+def _bloco_contexto(tarefa: Tarefa, nuvem: bool = False) -> str:
+    """Junta o que os agentes anteriores levantaram, para o agente redator usar.
+
+    `nuvem` (quem escreve agora é o Claude ou o Gemini) manda as fontes sem o corte feito para o Ollama.
+    """
     partes = []
     if tarefa.contexto.get("biblioteca"):
-        # Com o Claude, as fontes já vêm no tamanho certo (o agente da biblioteca limita o total).
-        limite = None if tarefa.fontes_no_claude else LIMITE_CONTEXTO_BIBLIOTECA
+        # Com o Claude, as fontes já vêm no tamanho certo (o agente da biblioteca limita o total). Se ele parou no meio
+        # da tarefa e quem escreve é o Ollama, vai só o que cabe no modelo local.
+        limite = None if tarefa.fontes_no_claude and nuvem else LIMITE_CONTEXTO_BIBLIOTECA
         partes.append("TRECHOS DOS DOCUMENTOS DO USUÁRIO:\n" + tarefa.contexto["biblioteca"][:limite])
     if tarefa.contexto.get("web"):
-        partes.append("FONTES DA INTERNET:\n" + tarefa.contexto["web"][:LIMITE_CONTEXTO_WEB])
+        partes.append("FONTES DA INTERNET:\n" + tarefa.contexto["web"][:limite_web(nuvem)])
     return "\n\n".join(partes)
 
 
@@ -140,7 +149,8 @@ class AgenteBiblioteca(Agente):
 
     def executar(self, tarefa: Tarefa) -> str:
         if tarefa.fontes_recentes:
-            caminhos = tarefa.contexto.get("fontes_escolhidas") or self.escolher_fontes_recentes()
+            caminhos = [c for c in tarefa.contexto.get("fontes_escolhidas") or self.escolher_fontes_recentes()
+                        if not fonte_pessoal(c)]
             if not caminhos:
                 raise TarefaImpossivel(
                     "Não achei fontes suas na biblioteca para resumir. Anexe os arquivos no painel (ou coloque na "
@@ -151,7 +161,8 @@ class AgenteBiblioteca(Agente):
         if not resultado.strip() or resultado.startswith(("Nenhuma informação", "Erro", "Consulta de documentos desativada")):
             return "Não encontrou nada relevante nos seus documentos."
         if tarefa.fontes_no_claude:
-            # O Claude lê os arquivos da matéria inteiros, não só os trechos; diário, memória e histórico ficam de fora.
+            # O Claude lê os arquivos achados inteiros (da matéria ou do documento pedido), não só os trechos; diário, memória
+            # e histórico ficam de fora.
             trechos = trechos_por_arquivo(resultado)
             if not trechos:
                 return "Não encontrou fontes de estudo sobre o assunto nos seus documentos."
@@ -268,7 +279,7 @@ class AgentePesquisa(Agente):
         # Pesquisa sem documento: este agente também escreve a resposta final.
         if tarefa.plano and tarefa.plano[-1] == self.nome:
             tarefa.contexto["resposta"] = self.pedir_texto(
-                f"Pergunta: {tarefa.pedido}\n\n{_bloco_contexto(tarefa)}{_bloco_correcao(tarefa)}\n\n"
+                f"Pergunta: {tarefa.pedido}\n\n{_bloco_contexto(tarefa, self.na_nuvem())}{_bloco_correcao(tarefa)}\n\n"
                 "Escreva uma resposta completa em 2 a 4 parágrafos curtos, sem markdown.",
                 max_tokens=700,
             )
@@ -297,7 +308,7 @@ class AgenteDocumento(Agente):
     def escrever_conteudo(self, tarefa: Tarefa) -> dict:
         prompt = (
             f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n\n"
-            f"{_bloco_contexto(tarefa) or 'Sem fontes externas: use conhecimento geral consolidado.'}"
+            f"{_bloco_contexto(tarefa, self.na_nuvem()) or 'Sem fontes externas: use conhecimento geral consolidado.'}"
             f"{_bloco_correcao(tarefa)}"
         )
         return self.pedir_json(prompt, max_tokens=5000)
@@ -334,7 +345,7 @@ class AgenteApresentacao(Agente):
         prompt = (
             f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n"
             f"Quantidade de slides de conteúdo (sem contar a capa): exatamente {quantidade}.\n\n"
-            f"{_bloco_contexto(tarefa) or 'Sem fontes externas: use conhecimento geral consolidado.'}"
+            f"{_bloco_contexto(tarefa, self.na_nuvem()) or 'Sem fontes externas: use conhecimento geral consolidado.'}"
             f"{_bloco_correcao(tarefa)}"
         )
         conteudo = self.pedir_json(prompt, max_tokens=3000)
@@ -382,7 +393,7 @@ class AgentePlanilha(Agente):
     def executar(self, tarefa: Tarefa) -> str:
         prompt = (
             f"Pedido do usuário: {tarefa.pedido}\nTema: {tarefa.tema}\n\n"
-            f"{_bloco_contexto(tarefa) or 'Sem fontes externas.'}{_bloco_correcao(tarefa)}"
+            f"{_bloco_contexto(tarefa, self.na_nuvem()) or 'Sem fontes externas.'}{_bloco_correcao(tarefa)}"
         )
         conteudo = self.pedir_json(prompt, max_tokens=5000)
         conteudo["fontes"] = list(dict.fromkeys(tarefa.contexto.get("fontes", [])))
@@ -573,10 +584,10 @@ class AgenteEstudos(Agente):
             except Exception as exc:
                 logger.debug("Não foi possível publicar o andamento do material: %s", exc)
 
-    @staticmethod
-    def _base(tarefa: Tarefa, materia: bool) -> str:
+    def _base(self, tarefa: Tarefa, materia: bool) -> str:
         """Começo igual nas chamadas que leem as fontes: fontes antes do pedido (se o texto passar do limite de
         algum modelo, o pedido não se perde no corte)."""
+        nuvem = self.na_nuvem()
         lei = tarefa.contexto.get("lei_citada")
         bloco_lei = (f"TEXTO OFICIAL DE {lei[0].upper()} (Planalto; a ficha parte dele):\n{lei[1]}\n\n" if lei else "")
         # "e em PDF manda pro meu WhatsApp": a Beatriz cuida disso depois; sem o aviso, a IA comentava na ficha.
@@ -584,14 +595,16 @@ class AgenteEstudos(Agente):
                    if RE_ENTREGA_NO_PEDIDO.search(normalizar(tarefa.pedido)) else "")
         if materia:
             assunto = "a das fontes acima, que o usuário acabou de colocar" if tarefa.fontes_recentes else tarefa.tema
-            fontes = _bloco_contexto(tarefa) or "Sem fontes do usuário sobre o assunto: use conhecimento consolidado."
+            fontes = _bloco_contexto(tarefa, nuvem) or "Sem fontes do usuário sobre o assunto: use conhecimento consolidado."
             return f"{bloco_lei}{fontes}\n\n---\nPedido do usuário: {tarefa.pedido}\n{entrega}Matéria: {assunto}\n"
-        fontes = _bloco_contexto(tarefa) or ("" if lei else "Sem fontes externas: use conhecimento consolidado.")
+        fontes = _bloco_contexto(tarefa, nuvem) or ("" if lei else "Sem fontes externas: use conhecimento consolidado.")
         return f"Pedido do usuário: {tarefa.pedido}\n{entrega}Tema: {tarefa.tema}\n\n{bloco_lei}{fontes}\n"
 
     def _analisar(self, tarefa: Tarefa, materia: bool) -> dict:
         self._avisar(tarefa, "analisando como o assunto cai na prova")
-        escopo = ("Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em 6 a 16 "
+        escopo = ("Esta análise prepara a ficha de estudo do arquivo que o usuário mandou: cubra todo o conteúdo dele, em 3 a "
+                  "16 tópicos conforme o tamanho." if materia and tarefa.contexto.get("arquivo_recebido") else
+                  "Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em 6 a 16 "
                   "tópicos." if materia else
                   "Esta análise prepara a ficha de um assunto, em 2 a 8 tópicos conforme o tamanho dele (um artigo de lei "
                   "isolado pede de 2 a 4: o caput, os parágrafos e incisos que caem, e os institutos que ele usa).")
@@ -635,9 +648,12 @@ class AgenteEstudos(Agente):
         fora = list(dict.fromkeys(str(f) for _, extras in resultados for f in extras if f))
         return fichas, fora
 
-    @staticmethod
-    def _ficha_no_prompt(ficha: dict, limite: int) -> str:
-        """As fichas em JSON (sem a explicação longa, se precisar caber no modelo local)."""
+    def _ficha_no_prompt(self, ficha: dict) -> str:
+        """As fichas em JSON: inteiras para a nuvem; sem a explicação longa, se precisar caber no modelo local.
+
+        Decidido na hora de cada chamada: se o Claude parou no meio da tarefa, o Ollama recebe a versão enxuta.
+        """
+        limite = LIMITE_FICHA_NO_PROMPT["nuvem" if self.na_nuvem() else "local"]
         campos = ("titulo", "regra", "excecoes", "requisitos", "prazos_e_efeitos", "lei_seca", "jurisprudencia", "pegadinhas",
                   "teste_de_estresse")
         completo = json.dumps({"titulo": ficha.get("titulo"), "topicos": ficha.get("topicos")}, ensure_ascii=False)
@@ -650,7 +666,6 @@ class AgenteEstudos(Agente):
         n_cartoes, n_questoes = tarefa.quantidade_estudo("flashcards"), tarefa.quantidade_estudo("questoes")
         # A matéria inteira, com as fontes, só com o Claude: o modelo local não comporta as fontes inteiras.
         materia = bool(tarefa.materia and tarefa.fontes_no_claude)
-        limite = LIMITE_FICHA_NO_PROMPT["nuvem" if materia else "local"]
 
         # 1. Incidência: como o assunto vira questão. 2. Desconstrução: a ficha de cada tópico.
         if self.buscar_lei and "lei_citada" not in tarefa.contexto:
@@ -668,7 +683,7 @@ class AgenteEstudos(Agente):
         # Revisão espaçada: flashcards e glossário a partir das fichas.
         self._avisar(tarefa, "preparando os flashcards")
         fechamento = self.pedir_json(
-            f"FICHAS:\n{self._ficha_no_prompt(ficha, limite)}\n\nQuantidade: exatamente {n_cartoes} flashcards.",
+            f"FICHAS:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_cartoes} flashcards.",
             max_tokens=6000, sistema=self._sistema(self.instrucoes_fechamento))
         ficha["flashcards"] = [c for c in fechamento.get("flashcards") or []
                                if isinstance(c, dict) and c.get("frente") and c.get("verso")][:n_cartoes]
@@ -678,7 +693,7 @@ class AgenteEstudos(Agente):
         # 4. Teste de estresse: questões difíceis respondidas só com a ficha; o que faltou entra nela.
         self._avisar(tarefa, "fazendo o teste de estresse")
         estresse = self.pedir_json(
-            f"FICHA DE ESTUDO:\n{self._ficha_no_prompt(ficha, limite)}\n\nQuantidade: exatamente {n_questoes} questões.",
+            f"FICHA DE ESTUDO:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_questoes} questões.",
             max_tokens=8000, sistema=self._sistema(self.instrucoes_estresse))
         ficha["questoes"] = [q for q in map(_questao_valida, estresse.get("questoes") or []) if q][:n_questoes]
         lacunas = ficha_estudo.aplicar_lacunas(ficha, estresse.get("lacunas"))
@@ -865,7 +880,8 @@ class AgenteAulas(Agente):
     def _base(self, tarefa: Tarefa) -> str:
         """Começo igual em todas as chamadas do curso (fontes, pedido): o que muda fica no fim do prompt."""
         assunto = "a das fontes acima, que o usuário acabou de colocar" if tarefa.fontes_recentes else tarefa.tema
-        fontes = _bloco_contexto(tarefa) or "Sem fontes do usuário sobre o assunto: ensine com conhecimento consolidado."
+        fontes = (_bloco_contexto(tarefa, self.na_nuvem())
+                  or "Sem fontes do usuário sobre o assunto: ensine com conhecimento consolidado.")
         return f"{fontes}\n\n---\nPedido do usuário: {tarefa.pedido}\nMatéria: {assunto}\n"
 
     def _avisar(self, tarefa: Tarefa, etapa: str):

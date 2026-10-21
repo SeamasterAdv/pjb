@@ -63,12 +63,12 @@ def test_gera_resumo_curto_para_falar_completo_para_ler_e_word(monkeypatch, tmp_
     monkeypatch.setattr(re_, "PASTA_DOCUMENTOS_GERADOS", str(tmp_path))
     pedidos = []
     monkeypatch.setattr(llm_nuvem, "responder_na_nuvem",
-                        lambda prompt, contexto="", opcoes=None, preferir=None, registro=None:
-                        pedidos.append((prompt, preferir)) or RESPOSTA_DA_IA)
+                        lambda prompt, contexto="", opcoes=None, preferir=None, registro=None, funcao=None:
+                        pedidos.append((prompt, preferir, funcao)) or RESPOSTA_DA_IA)
 
     resumo = re_.gerar_resumo("fotossíntese", preferir="gemini")
-    prompt, preferir = pedidos[0]
-    assert preferir == "gemini"
+    prompt, preferir, funcao = pedidos[0]
+    assert preferir == "gemini" and funcao == "pesquisa"  # a ordem da pesquisa: Gemini, depois Claude
     assert "[Wikipédia: Fotossíntese]" in prompt and "Estudo sobre fotossíntese artificial" in prompt
 
     assert resumo.fala.startswith("A fotossíntese é como as plantas fazem o próprio alimento")
@@ -88,7 +88,7 @@ def test_sem_formato_ou_sem_fontes(monkeypatch, tmp_path):
     # A IA ignorou os rótulos: o texto vira o resumo e as primeiras frases viram a fala.
     monkeypatch.setattr(re_, "reunir_fontes", lambda tema: {"wikipedia": None, "web": "texto", "manchetes": []})
     monkeypatch.setattr(llm_nuvem, "responder_na_nuvem",
-                        lambda prompt, contexto="", opcoes=None, preferir=None, registro=None:
+                        lambda prompt, contexto="", opcoes=None, preferir=None, registro=None, funcao=None:
                         "Primeira frase. Segunda frase. Terceira frase. Quarta frase.")
     resumo = re_.gerar_resumo("algo")
     assert resumo.fala.startswith("Primeira frase. Segunda frase. Terceira frase.")
@@ -107,3 +107,23 @@ def test_ollama_recebe_contexto_maior_quando_a_nuvem_nao_responde(monkeypatch, t
                         opcoes_usadas.append(opcoes) or RESPOSTA_DA_IA)
     re_.gerar_resumo("fotossíntese")
     assert opcoes_usadas[0]["num_ctx"] == 8192
+
+
+def test_nuvem_recebe_as_fontes_inteiras_e_o_ollama_so_o_que_cabe(monkeypatch, tmp_path):
+    import llm_nuvem
+
+    web = "[Fonte: Brasil Escola]\nURL: https://brasilescola.uol.com.br\n" + "fotossíntese " * 2000  # ~26 mil caracteres
+    wikipedia = {"titulo": "Fotossíntese", "texto": "Parágrafo da Wikipédia.\n" * 800, "url": "https://pt.wikipedia.org"}
+    monkeypatch.setattr(re_, "reunir_fontes", lambda tema: {"wikipedia": wikipedia, "web": web, "manchetes": []})
+    monkeypatch.setattr(re_, "PASTA_DOCUMENTOS_GERADOS", str(tmp_path))
+    para_a_nuvem, para_o_pc = [], []
+    monkeypatch.setattr(llm_nuvem, "responder_na_nuvem", lambda prompt, *a, **k: para_a_nuvem.append(prompt) or None)
+    monkeypatch.setattr(main.llm_clients, "chat_beatriz",
+                        lambda prompt, contexto=None, usar_historico=True, opcoes=None: para_o_pc.append(prompt) or RESPOSTA_DA_IA)
+
+    re_.gerar_resumo("fotossíntese")
+
+    assert web in para_a_nuvem[0]  # a web inteira para a nuvem
+    assert len(para_a_nuvem[0]) > len(web) + re_.LIMITE_WIKIPEDIA
+    assert web not in para_o_pc[0] and web[:re_.LIMITE_WEB] in para_o_pc[0]  # para o Ollama, o corte de antes
+    assert len(para_o_pc[0]) < re_.LIMITE_WEB + re_.LIMITE_WIKIPEDIA + 3000

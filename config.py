@@ -147,18 +147,19 @@ BIOMETRIA_CADASTRO_SEGUNDOS = float(os.getenv("BIOMETRIA_CADASTRO_SEGUNDOS", "20
 BIOMETRIA_MANTER_SEGUNDOS = float(os.getenv("BIOMETRIA_MANTER_SEGUNDOS", "45"))  # "sim"/"não" curtos herdam quem falava
 # Fontes e arquivos recebidos (fontes.py): o que você manda pelo WhatsApp (ou escaneia) cai em PASTA_RECEBIDOS, organizado por
 # dia; "arquiva" copia para PASTA_ARQUIVADOS (por mês) ou para uma pasta que você disser; "vira fonte" copia para a Vault
-# do Obsidian, na categoria CATEGORIA_DAS_FONTES, e entra na biblioteca. Nada disso vai para a nuvem, a não ser que você peça (FONTES_IA).
+# do Obsidian, na categoria CATEGORIA_DAS_FONTES, e entra na biblioteca. Nada disso vai para a nuvem, a não ser na leitura (FONTES_IA).
 PASTA_RECEBIDOS = os.getenv("PASTA_RECEBIDOS", os.path.join(NOTELOOKLM_PATH, "documentos_recebidos"))
 PASTA_ARQUIVADOS = os.getenv("PASTA_ARQUIVADOS", os.path.join(NOTELOOKLM_PATH, "documentos_arquivados"))
 CATEGORIA_DAS_FONTES = os.getenv("CATEGORIA_DAS_FONTES", "fontes_recebidas")
 LIMITE_DO_ARQUIVO_MB = float(os.getenv("LIMITE_DO_ARQUIVO_MB", "50"))  # arquivos maiores que isto não são baixados do WhatsApp
-# Quem lê e responde sobre o arquivo ("resume esse PDF", "qual o valor do aluguel?"): `local` (padrão: o Ollama, o conteúdo não sai
-# do PC), `claude`, `gemini` ou `nuvem` (a ordem de ORDEM_IA_NUVEM). Em cada pedido vale o que você disser: "resume esse PDF pelo
-# Gemini", "...pelo Claude", "...na nuvem" ou "...só no PC". Para a nuvem vão só o conteúdo desse arquivo e o seu pedido, nunca a
-# memória nem o histórico, e nunca arquivos .json/.jsonl, o diário e a memória do usuário.
-FONTES_IA = os.getenv("FONTES_IA", "local").strip().lower()
-if FONTES_IA not in {"local", "claude", "gemini", "nuvem"}:
-    FONTES_IA = "local"
+# Quem lê e responde sobre o arquivo ("resume esse PDF", "qual o valor do aluguel?"): `auto` (padrão: o Ollama lê, e o Claude
+# entra só quando o Ollama não dá conta, ou seja, arquivo maior do que ele lê sem cortar ou o Ollama fora do ar), `local` (só o
+# Ollama, o conteúdo nunca sai do PC), `claude`, `gemini` ou `nuvem` (a ordem de ORDEM_IA_NUVEM). Em cada pedido vale o que você
+# disser: "resume esse PDF pelo Gemini", "...pelo Claude", "...na nuvem" ou "...só no PC". Para a nuvem vão só o conteúdo desse
+# arquivo e o seu pedido, nunca a memória nem o histórico, e nunca arquivos .json/.jsonl, o diário e a memória do usuário.
+FONTES_IA = os.getenv("FONTES_IA", "auto").strip().lower()
+if FONTES_IA not in {"auto", "local", "claude", "gemini", "nuvem"}:
+    FONTES_IA = "auto"
 # Pastas que ela procura quando você pede "abre a pasta X" (agente_pastas.py), além de Área de Trabalho, Documentos,
 # Downloads, Imagens, Vídeos, Músicas e a pasta do projeto. Caminhos separados por ponto e vírgula (ex.: D:\\Estudos;E:\\Fotos).
 PASTAS_RAIZ = [p.strip() for p in os.getenv("PASTAS_RAIZ", "").split(";") if p.strip()]
@@ -224,14 +225,27 @@ USAR_CLAUDE = os.getenv("USAR_CLAUDE", "true").strip().lower() in {"1", "true", 
 CLAUDE_CODE_CAMINHO = os.getenv("CLAUDE_CODE_CAMINHO", "")  # vazio: acha sozinho
 CLAUDE_MODELO = os.getenv("CLAUDE_MODELO", "")  # vazio: o padrão do plano; ou 'sonnet', 'opus'...
 CLAUDE_ESFORCO = os.getenv("CLAUDE_ESFORCO", "")  # vazio: o padrão; ou low, medium, high
-# Ordem em que as IAs da nuvem são tentadas antes do Ollama local.
-ORDEM_IA_NUVEM = [n.strip().lower() for n in os.getenv("ORDEM_IA_NUVEM", "claude,gemini").split(",") if n.strip()]
+# Ordem em que as IAs da nuvem são tentadas antes do Ollama local (o Ollama fica sempre por último).
+def _ordem_ia(variavel: str, padrao: str) -> list:
+    return [n.strip().lower() for n in os.getenv(variavel, padrao).split(",") if n.strip()]
+
+
+ORDEM_IA_NUVEM = _ordem_ia("ORDEM_IA_NUVEM", "claude,gemini")
+# Cada IA onde rende mais: a pesquisa rápida por voz, o resumo explicativo, a explicação de leis e as manchetes do
+# resumo do dia vão primeiro ao Gemini (gratuito), para o plano do Claude sobrar para os materiais longos; fichas,
+# aulas, documentos, slides, planilhas e o crítico vão primeiro ao Claude. Uma IA fora da ORDEM_IA_NUVEM fica fora daqui também.
+ORDEM_IA_PESQUISA = _ordem_ia("ORDEM_IA_PESQUISA", ",".join(n for n in ("gemini", "claude") if n in ORDEM_IA_NUVEM))
+ORDEM_IA_AGENTES = _ordem_ia("ORDEM_IA_AGENTES", ",".join(ORDEM_IA_NUVEM))
 # Resumos e aulas de matéria ("resumo da matéria de X", "crie aulas da matéria de X", "resume as
 # fontes que eu coloquei"): o Claude lê as suas fontes sobre o assunto (documentos e notas, sem o
 # diário, a memória e o histórico de conversa) e escreve o material. Exceção pedida à regra acima: as fontes vão
 # só para o Claude, nunca para o Gemini; sem o Claude, o material é feito no Ollama.
 # Para desligar: ESTUDOS_COM_CLAUDE=false
 ESTUDOS_COM_CLAUDE = os.getenv("ESTUDOS_COM_CLAUDE", "true").strip().lower() in {"1", "true", "yes", "on"}
+# A mesma exceção para documentos, slides e planilhas pedidos "com base nos meus documentos": os trechos e arquivos
+# da biblioteca vão só para o Claude, com os mesmos filtros; sem o Claude, a tarefa é feita no Ollama.
+# Para desligar: DOCUMENTOS_COM_CLAUDE=false
+DOCUMENTOS_COM_CLAUDE = os.getenv("DOCUMENTOS_COM_CLAUDE", "true").strip().lower() in {"1", "true", "yes", "on"}
 # Quanto das suas fontes (em caracteres) o Claude lê num resumo de matéria (~4 caracteres por token).
 LIMITE_FONTES_ESTUDO = int(os.getenv("LIMITE_FONTES_ESTUDO", "120000"))
 

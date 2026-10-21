@@ -23,6 +23,7 @@ from agentes.especialistas import (
     AgentePesquisa,
     AgentePlanilha,
     AgenteResumoDia,
+    fonte_pessoal,
 )
 from agentes.geradores import _numero, nome_arquivo_seguro
 from agentes.relator import AgenteRelator
@@ -119,6 +120,9 @@ RE_CORTE_TEMA = re.compile(
 )
 NUMEROS = {"tres": 3, "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10,
            "onze": 11, "doze": 12, "quinze": 15, "vinte": 20}
+# Tarefas com a biblioteca em que as fontes do usuário vão só para o Claude (ESTUDOS_COM_CLAUDE e DOCUMENTOS_COM_CLAUDE).
+TIPOS_DE_ESTUDO = ("estudos", "aulas")
+TIPOS_DE_DOCUMENTO = ("documento", "apresentacao", "planilha")
 
 ROTULOS_ETAPA = {
     "biblioteca": "consultando sua biblioteca",
@@ -482,9 +486,14 @@ class TarefaCancelada(Exception):
 class Orquestrador:
     def __init__(self, pasta_saida: str, llm=None, modelo=None, publicar=None, abrir=None,
                  max_revisoes: int = 1, abrir_ao_concluir: bool = True, agentes: dict = None, llm_nuvem=None,
-                 llm_fontes=None):
+                 llm_fontes=None, llm_publico=None, tipos_fontes_no_claude=TIPOS_DE_ESTUDO + TIPOS_DE_DOCUMENTO):
         self.pasta_saida = pasta_saida
         opcoes = {"llm": llm, "modelo": modelo}
+        # As manchetes do resumo do dia são públicas e podem ser resumidas na nuvem (na ordem da pesquisa: Gemini
+        # primeiro); a agenda e os e-mails, não.
+        self.llm_publico = llm_publico or llm_nuvem
+        # O relator fica sempre no Ollama: 3 a 5 frases sobre o que foi feito não valem uma chamada do Claude (~15 s e
+        # o limite do plano), e as etapas citam os nomes dos arquivos da biblioteca.
         self.agentes = agentes or {
             "biblioteca": AgenteBiblioteca(**opcoes),
             "pesquisa": AgentePesquisa(**opcoes),
@@ -493,8 +502,7 @@ class Orquestrador:
             "planilha": AgentePlanilha(**opcoes),
             "estudos": AgenteEstudos(**opcoes),
             "aulas": AgenteAulas(**opcoes),
-            # As manchetes do resumo do dia são públicas e podem ser resumidas na nuvem; o resto, não.
-            "resumo_dia": AgenteResumoDia(llm_publico=llm_nuvem, **opcoes),
+            "resumo_dia": AgenteResumoDia(llm_publico=self.llm_publico, **opcoes),
             "email": AgenteEmail(**opcoes),
             "critico": AgenteCritico(**opcoes),
             "relator": AgenteRelator(**opcoes),
@@ -512,19 +520,21 @@ class Orquestrador:
                 "planilha": AgentePlanilha(**nuvem),
                 "estudos": AgenteEstudos(**nuvem),
                 "critico": AgenteCritico(**nuvem),
-                "relator": AgenteRelator(**nuvem),
             }
-        # Material de estudo com as fontes do usuário (ESTUDOS_COM_CLAUDE): escreve só com o Claude,
-        # com o Ollama de reserva. O Gemini nunca recebe os documentos.
+        # Material de estudo e documentos com as fontes do usuário (ESTUDOS_COM_CLAUDE, DOCUMENTOS_COM_CLAUDE): escreve só
+        # com o Claude, com o Ollama de reserva. O Gemini nunca recebe os documentos.
         self.llm_fontes = llm_fontes
+        self.tipos_fontes_no_claude = tuple(tipos_fontes_no_claude)
         self.agentes_fontes = {}
         if llm_fontes is not None:
             com_fontes = {"llm": llm_fontes, "modelo": modelo}
             self.agentes_fontes = {
                 "estudos": AgenteEstudos(**com_fontes),
                 "aulas": AgenteAulas(**com_fontes),
+                "documento": AgenteDocumento(**com_fontes),
+                "apresentacao": AgenteApresentacao(**com_fontes),
+                "planilha": AgentePlanilha(**com_fontes),
                 "critico": AgenteCritico(**com_fontes),
-                "relator": AgenteRelator(**com_fontes),
             }
         self.publicar = publicar or (lambda resumo: None)
         # Aulas e fichas de estudo levam vários minutos: o agente publica no painel cada etapa que fica pronta.
@@ -549,11 +559,37 @@ class Orquestrador:
         tarefa = planejar(comando)
         if tarefa is None:
             return None
+        return self._enfileirar(tarefa, ao_concluir, abrir)
+
+    def enviar_estudo_de_arquivos(self, pedido: str, caminhos: list, ao_concluir=None, abrir: bool = True, ia: str = None):
+        """"Faz uma ficha desse PDF", "resumo para a prova disso" sobre um arquivo recebido: a ficha tática do agente de estudos,
+        com esses arquivos como fontes, lidos inteiros só pelo Claude (como no resumo da matéria). Devolve a Tarefa, ou None
+        se todos forem pessoais (diário, memória, .json), que nunca entram num material.
+
+        `ia`: "gemini" (fica de fora: as fontes vão só para o Claude, e a mensagem de início avisa) ou "local" ("só no PC":
+        a ficha sai do Ollama).
+        """
+        caminhos = [c for c in caminhos if not fonte_pessoal(c)]
+        if not caminhos:
+            return None
+        texto = normalizar(pedido)
+        achado = RE_TEMA.search(pedido)
+        nome = os.path.splitext(os.path.basename(caminhos[0]))[0]
+        tema = RE_CORTE_TEMA.split(achado.group(1))[0].strip(" .,!?:;\"'") if achado else nome
+        tarefa = Tarefa(
+            pedido=pedido.strip(), plano=["biblioteca", "estudos"], formatos=["docx"] if RE_DOCX.search(texto) else ["pdf"],
+            tema=tema or nome, quantidades=_quantidades_estudo(texto), materia=True, fontes_recentes=True,
+            ia_preferida=ia if ia in ("claude", "gemini") else "",
+        )
+        tarefa.contexto.update(fontes_escolhidas=list(caminhos), arquivo_recebido=True, so_no_pc=ia == "local")
+        return self._enfileirar(tarefa, ao_concluir, abrir)
+
+    def _enfileirar(self, tarefa: Tarefa, ao_concluir, abrir: bool) -> Tarefa:
         tarefa.contexto["abrir_ao_concluir"] = abrir
-        if (tarefa.tipo in ("estudos", "aulas") and "biblioteca" in tarefa.plano and self.llm_fontes is not None
-                and any(p.disponivel() for p in self.llm_fontes.principais)):
+        if (tarefa.tipo in self.tipos_fontes_no_claude and "biblioteca" in tarefa.plano and self.llm_fontes is not None
+                and not tarefa.contexto.get("so_no_pc") and self.llm_fontes.nuvem_disponivel()):
             tarefa.fontes_no_claude = True
-        if tarefa.fontes_recentes:
+        if tarefa.fontes_recentes and "fontes_escolhidas" not in tarefa.contexto:
             # Escolhidas já, para a mensagem de início dizer quais arquivos serão resumidos.
             escolher = getattr(self.agentes["biblioteca"], "escolher_fontes_recentes", None)
             tarefa.contexto["fontes_escolhidas"] = escolher() if escolher else []
@@ -604,6 +640,8 @@ class Orquestrador:
         if "pesquisa" in tarefa.plano and tarefa.formatos:
             extras.append("pesquisar na internet")
         passos = f" Vou {' e '.join(extras)} antes." if extras else ""
+        if tarefa.fontes_no_claude and tarefa.ia_preferida != "gemini":  # com o Gemini pedido, o `fim` já diz isso
+            passos += " Seus documentos vão só para o Claude."
         return f"Certo, vou preparar {entrega} sobre {tarefa.tema}.{passos} Te aviso quando terminar.{fim}"
 
     @staticmethod
@@ -633,7 +671,9 @@ class Orquestrador:
 
     @classmethod
     def _inicio_materia(cls, tarefa: Tarefa, cartoes: int, questoes: int) -> str:
-        if tarefa.fontes_recentes:
+        if tarefa.contexto.get("arquivo_recebido"):
+            o_que = f"preparar a ficha de estudo de {cls._fontes_escolhidas(tarefa)}"
+        elif tarefa.fontes_recentes:
             lista = cls._fontes_escolhidas(tarefa)
             if not lista:
                 return "Certo, vou procurar as fontes que você colocou na biblioteca para resumir."
@@ -657,7 +697,8 @@ class Orquestrador:
     def _agente(self, tarefa: Tarefa, nome: str):
         """Agente da nuvem quando a tarefa só usa conteúdo público; senão, o local.
 
-        Material de estudo com as fontes do usuário (`fontes_no_claude`): o agente que escreve só com o Claude.
+        Material de estudo ou documento com as fontes do usuário (`fontes_no_claude`): o agente que escreve só com o Claude.
+        O relator não tem versão na nuvem: fica sempre no Ollama.
         """
         if tarefa.fontes_no_claude and nome in self.agentes_fontes:
             return self.agentes_fontes[nome]
@@ -687,23 +728,23 @@ class Orquestrador:
         if tarefa.fontes_no_claude:
             registro = list(dict.fromkeys(self.llm_fontes.registro))
             return [nome if nome.startswith("Ollama") else f"{nome}, que leu as suas fontes" for nome in registro] or ["Ollama (local)"]
-        registro = list(dict.fromkeys(getattr(self.llm_nuvem, "registro", None) or []))
         if tarefa.local_apenas:
             # Os dados pessoais ficaram no Ollama; a nuvem só aparece se resumiu algo público (manchetes).
-            return [f"{nome} (só notícias públicas)" for nome in registro if not nome.startswith("Ollama")] + ["Ollama (local)"]
-        return registro or ["Ollama (local)"]
+            publico = list(dict.fromkeys(getattr(self.llm_publico, "registro", None) or []))
+            return [f"{nome} (só notícias públicas)" for nome in publico if not nome.startswith("Ollama")] + ["Ollama (local)"]
+        return list(dict.fromkeys(getattr(self.llm_nuvem, "registro", None) or [])) or ["Ollama (local)"]
 
     def _executar(self, tarefa: Tarefa, ao_concluir):
-        if getattr(self.llm_nuvem, "registro", None) is not None:
-            self.llm_nuvem.registro.clear()  # uma tarefa por vez: o registro passa a ser desta
-        if self.llm_nuvem is not None:
-            self.llm_nuvem.preferir = tarefa.ia_preferida or None  # "pelo Gemini" no pedido: o Gemini vai primeiro
+        for cadeia in dict.fromkeys(c for c in (self.llm_nuvem, self.llm_publico) if c is not None):
+            if getattr(cadeia, "registro", None) is not None:
+                cadeia.registro.clear()  # uma tarefa por vez: o registro passa a ser desta
+            cadeia.preferir = tarefa.ia_preferida or None  # "pelo Gemini" no pedido: o Gemini vai primeiro
         if self.llm_fontes is not None:
             self.llm_fontes.registro.clear()
-        if tarefa.fontes_no_claude and not any(p.disponivel() for p in self.llm_fontes.principais):
+        if tarefa.fontes_no_claude and not self.llm_fontes.nuvem_disponivel():
             # Claude em pausa (limite do plano, sem login): o material sai no Ollama, na versão normal,
             # com os trechos das fontes cabendo no contexto do modelo local.
-            logger.warning("Claude indisponível; o material de estudo da tarefa %s será feito no Ollama.", tarefa.id)
+            logger.warning("Claude indisponível; a tarefa %s, com as suas fontes, será feita no Ollama.", tarefa.id)
             tarefa.fontes_no_claude = False
         try:
             tarefa.status = "executando"
@@ -802,7 +843,7 @@ class Orquestrador:
         else:
             entrega = f"O documento '{titulo}' está pronto"
         sem_claude = ""
-        if tarefa.materia and self.llm_fontes is not None and all(
+        if tarefa.materia and self.llm_fontes is not None and not tarefa.contexto.get("so_no_pc") and all(
                 m.startswith("Ollama") for m in tarefa.contexto.get("modelos") or ["Ollama"]):
             sem_claude = (" O Claude não pôde escrever agora (limite do plano ou sem login), então o material saiu do "
                           "Ollama, mais simples; peça de novo mais tarde para a versão completa.")

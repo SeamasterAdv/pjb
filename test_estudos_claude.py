@@ -198,8 +198,10 @@ def test_resumo_da_materia_so_o_claude_le_as_fontes(tmp_path):
 
     assert tarefa.status == "concluída" and tarefa.avaliacao.cumprido, tarefa.avaliacao.problemas
     assert "com o Claude" in inicio and "glossário" in inicio
-    # Só o Claude das fontes trabalhou: nem o Gemini nem a cadeia comum receberam nada.
-    assert gemini.chamadas == 0 and claude_nuvem.chamadas == 0 and not local.prompts
+    # Só o Claude das fontes trabalhou: nem o Gemini nem a cadeia comum receberam nada. O relator fica no PC.
+    assert gemini.chamadas == 0 and claude_nuvem.chamadas == 0
+    assert [s.split(".")[0] for s, _ in local.prompts] == ["Você é o Agente Relator da Beatriz"]
+    assert not any("Agente Relator" in s for s, _ in claude_fontes.recebido)
     sistema, prompt = next(r for r in claude_fontes.recebido if "Agente de Estudos" in r[0])
     assert "resumo completo de uma matéria" in sistema
     assert AULA in prompt and "[Fonte: aula1.md | arquivo inteiro]" in prompt
@@ -274,3 +276,57 @@ def test_documento_da_materia_tem_glossario_pegadinhas_e_complementos():
     assert len(primeiro["paragrafos"]) == 5  # dois parágrafos + exemplo, atenção e fonte
     assert primeiro["paragrafos"][3].startswith("Atenção: ")
     assert documento["subtitulo"].startswith("Resumo da matéria")
+
+
+# ------------------------------------------------------------ ficha de um arquivo recebido
+def estudar_arquivo(orq, caminhos, pedido="faz uma ficha desse PDF", ia=None):
+    pronto = threading.Event()
+    tarefa = orq.enviar_estudo_de_arquivos(pedido, caminhos, ao_concluir=lambda t: pronto.set(), ia=ia)
+    assert tarefa is not None
+    inicio = orq.mensagem_inicio(tarefa)
+    assert pronto.wait(30)
+    return tarefa, inicio
+
+
+def test_ficha_do_arquivo_recebido_so_o_claude_le(tmp_path):
+    orq, claude_fontes, claude_nuvem, gemini, local = montar(tmp_path)
+    diario = os.path.join(config.PASTAS_OBSIDIAN["diario"], "segredo.md")
+
+    tarefa, inicio = estudar_arquivo(orq, [str(tmp_path / "aula1.md"), diario])
+
+    assert tarefa.status == "concluída" and tarefa.avaliacao.cumprido, tarefa.avaliacao.problemas
+    assert tarefa.fontes_no_claude and tarefa.contexto["fontes_escolhidas"] == [str(tmp_path / "aula1.md")]  # o diário saiu
+    assert inicio.startswith("Certo, vou preparar a ficha de estudo de aula1.md, com o Claude, numa ficha tática")
+    assert gemini.chamadas == 0 and claude_nuvem.chamadas == 0
+    sistema, prompt = next(r for r in claude_fontes.recebido if "Agente de Estudos" in r[0])
+    assert "ficha de estudo do arquivo que o usuário mandou" in sistema and "3 a 16 tópicos" in sistema
+    assert "[Fonte: aula1.md | arquivo inteiro]" in prompt and AULA in prompt and "briguei" not in prompt
+    assert tarefa.tema == "aula1" and tarefa.arquivos[0].endswith(".pdf")
+
+
+def test_ficha_do_arquivo_com_poucos_topicos_passa_no_critico(tmp_path):
+    orq, *_ = montar(tmp_path, claude_fontes=IAFalsa("Claude", topicos=3))
+    tarefa, _ = estudar_arquivo(orq, [str(tmp_path / "aula1.md")])
+    assert any("Matéria em 3 tópicos (mínimo 3)" in d and ok for d, ok in tarefa.avaliacoes[0].verificacoes)
+
+
+def test_ficha_do_arquivo_so_no_pc_nao_chama_o_claude(tmp_path):
+    orq, claude_fontes, claude_nuvem, gemini, local = montar(tmp_path)
+    tarefa, inicio = estudar_arquivo(orq, [str(tmp_path / "aula1.md")], "faz uma ficha desse PDF em Word", ia="local")
+    assert "aqui no computador" in inicio and not tarefa.fontes_no_claude
+    assert claude_fontes.chamadas == gemini.chamadas == claude_nuvem.chamadas == 0 and local.prompts
+    assert "O Claude não pôde escrever agora" not in tarefa.mensagem_final  # foi pedido, não falha
+    assert tarefa.formatos == ["docx"]
+
+
+def test_ficha_do_arquivo_pelo_gemini_avisa_que_vai_so_para_o_claude(tmp_path):
+    orq, claude_fontes, _, gemini, _ = montar(tmp_path)
+    _, inicio = estudar_arquivo(orq, [str(tmp_path / "aula1.md")], ia="gemini")
+    assert "O Gemini fica de fora: suas fontes vão só para o Claude." in inicio
+    assert gemini.chamadas == 0 and claude_fontes.chamadas
+
+
+def test_ficha_so_de_arquivos_pessoais_nao_e_feita(tmp_path):
+    orq, claude_fontes, *_ = montar(tmp_path)
+    pessoais = [os.path.join(config.PASTAS_OBSIDIAN["diario"], "segredo.md"), str(tmp_path / "historico.jsonl")]
+    assert orq.enviar_estudo_de_arquivos("faz uma ficha disso", pessoais) is None and claude_fontes.chamadas == 0

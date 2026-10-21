@@ -139,8 +139,8 @@ def test_curso_com_plano_e_uma_aula_por_pdf(tmp_path):
     nomes = [os.path.basename(a) for a in tarefa.arquivos]
     assert nomes[0] == "00_plano_do_curso.pdf"
     assert [n[:9].lower() for n in nomes[1:]] == ["01_aula_t", "02_aula_t", "03_aula_t"]
-    # Só o Claude das fontes trabalhou, com a mesma base (fontes e plano) em todas as aulas.
-    assert gemini.chamadas == 0 and not local.recebido
+    # Só o Claude das fontes trabalhou, com a mesma base (fontes e plano) em todas as aulas. O relator fica no PC.
+    assert gemini.chamadas == 0 and all("Agente Relator" in s for s, _ in local.recebido)
     aulas = professor.prompts_de_aula()
     assert len(aulas) == 3
     bases = {p.split("Escreva agora a aula")[0] for p in aulas}

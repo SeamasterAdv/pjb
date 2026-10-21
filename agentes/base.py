@@ -65,7 +65,7 @@ class Tarefa:
     ia_preferida: str = ""           # "claude" ou "gemini" quando o pedido diz "pelo Gemini"; vai primeiro na nuvem
     materia: bool = False            # "resumo da matéria de X": material detalhado da matéria inteira, com as fontes do usuário
     fontes_recentes: bool = False    # "resume as fontes que eu coloquei", sem assunto: as fontes adicionadas por último
-    fontes_no_claude: bool = False   # o orquestrador decide ao enviar: as fontes do usuário vão só para o Claude
+    fontes_no_claude: bool = False   # o orquestrador decide ao enviar (estudo, aulas e documentos): as fontes do usuário vão só para o Claude
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     status: str = "na fila"          # na fila, executando, revisando, relatando, concluída, falhou, cancelada
     etapa_atual: str = ""
@@ -198,6 +198,11 @@ class Agente:
             from llm_clients import llm_clients as llm
         self.llm = llm
         self.modelo = modelo
+
+    def na_nuvem(self) -> bool:
+        """Se a próxima chamada vai para uma IA da nuvem, que lê muito mais que o modelo local: aí as fontes vão sem corte."""
+        disponivel = getattr(self.llm, "nuvem_disponivel", None)
+        return bool(disponivel and disponivel())
 
     def _sistema(self, instrucoes: str = None) -> str:
         return (

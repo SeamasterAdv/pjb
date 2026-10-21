@@ -1,6 +1,7 @@
 """IAs na nuvem sem custo extra: Claude (pela assinatura, via Claude Code) e Gemini (plano gratuito).
 
-Ordem de tentativa: Claude → Gemini → Ollama local (configurável em ORDEM_IA_NUVEM).
+Ordem de tentativa por função, sempre com o Ollama local por último: na pesquisa rápida, no resumo explicativo, nas leis e
+nas manchetes, Gemini → Claude (ORDEM_IA_PESQUISA); nos agentes, Claude → Gemini (ORDEM_IA_AGENTES); no resto, ORDEM_IA_NUVEM.
 
 Só vão para a nuvem a pergunta e o conteúdo público lido na internet: documentos, notas,
 memória e histórico de conversa continuam só no Ollama. Quem pesquisa é a própria Beatriz
@@ -25,7 +26,9 @@ from config import (
     GEMINI_API_KEY,
     GEMINI_MODELO,
     NOTELOOKLM_PATH,
+    ORDEM_IA_AGENTES,
     ORDEM_IA_NUVEM,
+    ORDEM_IA_PESQUISA,
     PERSONALIDADE_BEATRIZ,
     USAR_CLAUDE,
     USAR_GEMINI,
@@ -343,6 +346,10 @@ class LLMComReserva:
         self.registro = []
         self.preferir = None
 
+    def nuvem_disponivel(self) -> bool:
+        """Se a próxima chamada vai para uma IA da nuvem (e não direto para a reserva)."""
+        return any(provedor.disponivel() for provedor in self.principais)
+
     def chat(self, prompt, system_prompt=None, model=None, **kwargs):
         for provedor in ordenar_por_preferencia(self.principais, self.preferir):
             if not provedor.disponivel():
@@ -373,21 +380,25 @@ claude = ClienteClaudeCode()
 gemini = ClienteGemini()
 
 
-def provedores_nuvem() -> list:
-    """IAs da nuvem configuradas, na ordem de ORDEM_IA_NUVEM (padrão: claude, gemini)."""
+ORDENS_POR_FUNCAO = {"pesquisa": ORDEM_IA_PESQUISA, "agentes": ORDEM_IA_AGENTES}
+
+
+def provedores_nuvem(funcao: str = None) -> list:
+    """IAs da nuvem configuradas, na ordem da função ("pesquisa" ou "agentes"); sem função, a de ORDEM_IA_NUVEM."""
     por_nome = {"claude": claude, "gemini": gemini}
-    ordem = [por_nome[n] for n in ORDEM_IA_NUVEM if n in por_nome]
+    ordem = [por_nome[n] for n in ORDENS_POR_FUNCAO.get(funcao, ORDEM_IA_NUVEM) if n in por_nome]
     return [p for p in ordem if p.ativo and p.configurado()]
 
 
 def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None, preferir: str = None, registro: list = None,
-                       exclusivo: bool = False):
+                       exclusivo: bool = False, funcao: str = None):
     """Resposta da primeira IA da nuvem que conseguir; None se nenhuma puder (o chamador usa o Ollama).
 
-    `preferir` ("claude" ou "gemini") tenta essa IA primeiro; `registro` recebe o nome de quem respondeu.
+    `funcao` ("pesquisa" ou "agentes") escolhe a ordem das IAs; `preferir` ("claude" ou "gemini") tenta essa IA primeiro;
+    `registro` recebe o nome de quem respondeu.
     `exclusivo` (com `preferir`) tenta só essa IA, sem passar o conteúdo para a outra: para o que a pessoa só aceita mandar a uma delas.
     """
-    provedores = ordenar_por_preferencia(provedores_nuvem(), preferir)
+    provedores = ordenar_por_preferencia(provedores_nuvem(funcao), preferir)
     if exclusivo and preferir:
         provedores = [p for p in provedores if getattr(p, "nome", "").lower() == preferir]
     if preferir and not any(getattr(p, "nome", "").lower() == preferir for p in provedores):

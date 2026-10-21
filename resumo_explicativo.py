@@ -2,8 +2,9 @@
 
 Fontes, buscadas em paralelo: o artigo da Wikipédia em português (a base para explicar o
 conceito), as páginas achadas na busca da web e manchetes recentes do Google Notícias. Uma
-IA da nuvem escreve (Claude, Gemini ou a pedida na frase); sem nuvem, o Ollama. Para a nuvem
-vão só o tema e conteúdo público da internet.
+IA da nuvem escreve (na ordem de ORDEM_IA_PESQUISA, Gemini e depois Claude, ou a pedida na frase)
+com tudo o que foi lido; sem nuvem, o Ollama, com as fontes cortadas no tamanho que cabe nele.
+Para a nuvem vão só o tema e conteúdo público da internet.
 
 Em voz ela fala a versão curta; o resumo completo vai para o chat do painel e para um Word
 em documentos_gerados.
@@ -25,8 +26,12 @@ logger = logging.getLogger(__name__)
 
 API_WIKIPEDIA = "https://pt.wikipedia.org/w/api.php"
 _CABECALHOS = {"User-Agent": "Beatriz/1.0 (assistente pessoal local)"}
-LIMITE_WIKIPEDIA = 8000  # começo do artigo: a introdução e as primeiras seções
+# Para o Ollama: o começo do artigo (a introdução e as primeiras seções) e parte da web, para caber no contexto dele.
+LIMITE_WIKIPEDIA = 8000
 LIMITE_WEB = 6000
+# Para a nuvem, que lê muito mais de uma vez: o artigo quase inteiro e todas as páginas lidas.
+LIMITE_WIKIPEDIA_NUVEM = 30000
+LIMITE_WEB_NUVEM = 40000
 
 # Rótulos que a IA usa para separar as partes do resumo, e o título de cada parte no texto final.
 SECOES = {
@@ -133,7 +138,7 @@ def buscar_wikipedia(tema: str):
         if len(texto) < 300 or "pode referir-se a" in texto[:400].lower():
             continue
         url = "https://pt.wikipedia.org/wiki/" + urllib.parse.quote(titulo.replace(" ", "_"))
-        return {"titulo": titulo, "texto": _cortar(texto, LIMITE_WIKIPEDIA), "url": url}
+        return {"titulo": titulo, "texto": _cortar(texto, LIMITE_WIKIPEDIA_NUVEM), "url": url}
     return None
 
 
@@ -169,12 +174,14 @@ class Resumo:
     arquivo: str = ""
 
 
-def _prompt(tema: str, fontes: dict) -> str:
+def _prompt(tema: str, fontes: dict, nuvem: bool = False) -> str:
+    """`nuvem` manda tudo o que foi lido; sem ela, as fontes vão cortadas no tamanho do Ollama."""
+    limite_wikipedia, limite_web = (LIMITE_WIKIPEDIA_NUVEM, LIMITE_WEB_NUVEM) if nuvem else (LIMITE_WIKIPEDIA, LIMITE_WEB)
     partes = []
     if fontes["wikipedia"]:
-        partes.append(f"[Wikipédia: {fontes['wikipedia']['titulo']}]\n{fontes['wikipedia']['texto']}")
+        partes.append(f"[Wikipédia: {fontes['wikipedia']['titulo']}]\n{_cortar(fontes['wikipedia']['texto'], limite_wikipedia)}")
     if fontes["web"]:
-        partes.append(f"[Páginas da web]\n{fontes['web'][:LIMITE_WEB]}")
+        partes.append(f"[Páginas da web]\n{fontes['web'][:limite_web]}")
     if fontes["manchetes"]:
         linhas = "\n".join(f"- {titulo} ({data.replace('Notícia publicada em ', '')})" for titulo, _, data in fontes["manchetes"])
         partes.append(f"[Manchetes recentes do Google Notícias]\n{linhas}")
@@ -268,12 +275,12 @@ def gerar_resumo(tema: str, preferir: str = None) -> Resumo:
         aviso = f"Não encontrei fontes sobre {tema} agora. Pode ser a internet; tente de novo em instantes."
         return Resumo(tema=tema, fala=aviso, texto=aviso)
 
-    prompt = _prompt(tema, fontes)
     contexto = "Resumo explicativo feito com fontes da internet, no tom natural da Beatriz."
-    texto = responder_na_nuvem(prompt, contexto, opcoes={"temperature": 0.3}, preferir=preferir)
+    texto = responder_na_nuvem(_prompt(tema, fontes, nuvem=True), contexto, opcoes={"temperature": 0.3}, preferir=preferir,
+                               funcao="pesquisa")
     if not texto:
         # O Ollama corta o que passa do contexto padrão; as fontes pedem um contexto maior.
-        texto = llm_clients.chat_beatriz(prompt, contexto=contexto, usar_historico=False,
+        texto = llm_clients.chat_beatriz(_prompt(tema, fontes), contexto=contexto, usar_historico=False,
                                          opcoes={"temperature": 0.3, "num_ctx": OLLAMA_NUM_CTX})
 
     secoes = separar_secoes(texto)

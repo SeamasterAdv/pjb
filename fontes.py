@@ -5,8 +5,11 @@
     "imprime" (com cópias, páginas...)     pergunta e imprime pela fila do Windows (agente_impressora)
     "escaneia"                             com um arquivo recente, lê e ajuda; sem ele (ou com "scanner", "folha", "papel"),
                                            escaneia a folha do vidro da impressora multifuncional (scanner.py)
-    "resume", "explica", "traduz", "lê"    responde sobre o arquivo com o Ollama local (o conteúdo não sai do PC); com "pelo Gemini"
-                                           ou "pelo Claude" (ou FONTES_IA no .env) quem lê e formula a resposta é essa IA da nuvem
+    "resume", "explica", "traduz", "lê"    responde sobre o arquivo com o Ollama local; o Claude só entra quando o Ollama não dá
+                                           conta (arquivo maior do que ele lê sem cortar, ou ele fora do ar). Com "pelo Gemini",
+                                           "pelo Claude" ou "só no PC" (ou FONTES_IA no .env) quem lê e formula a resposta é essa IA
+    "faz uma ficha", "resumo para a prova" a ficha tática do agente de estudos, com o arquivo como fonte, escrita pelo Claude
+                                           (Orquestrador.enviar_estudo_de_arquivos); "só no PC" faz no Ollama
     "me manda no zap"                      devolve o arquivo (ou o escaneamento) pelo WhatsApp
 
 "Isso", "esse arquivo", "o que eu mandei" e "todos" falam do que chegou nos últimos 20 minutos (a rajada mais recente).
@@ -226,6 +229,16 @@ RE_ARQUIVAR = re.compile(r"\barquiv(?:a|e|ar|ei|em|ando|ado|ada)\b|\b(?:guarda\w
                          r"\W+(?:na|em|para\W+a|pra|para\W+o|no)\W+(?:minha\W+)?pasta\b|^(?:guarda\w*|salva\w*)(?:\W+(?:isso|esse arquivo|ele|ela))?$")
 RE_IMPRIMIR = re.compile(r"\bimprim\w+|\bimprima\b|\bmanda\w*\W+(?:pra|para\W+a)\W+impressora\b")
 RE_ESCANEAR = re.compile(r"\b(?:escane\w+|scane\w+|digitaliz\w+)\b")
+# "Faz uma ficha desse PDF", "resume isso para a prova", "material de estudo disso", "quero estudar isso": a ficha tática do agente
+# de estudos, escrita pelo Claude com o arquivo como fonte (no lugar da leitura rápida). "Imprime a ficha" continua sendo impressão.
+RE_ESTUDAR = re.compile(
+    r"\b(?:faz\w*|faca|fazer|cri\w+|mont\w+|ger[ae]\w*|prepar\w+|transform\w+|vir[ae]\w*|elabor\w+|escrev\w+|quero|preciso|"
+    r"me\W+da)\W+(?:\w+\W+){0,4}?(?:fichas?|fichamento|flashcards?|simulados?|questoes)\b"
+    r"|\b(?:resum\w*|revis\w*|fichas?|material)\W+(?:\w+\W+){0,4}?(?:pra|para)\W+(?:a\W+|minha\W+|o\W+)?"
+    r"(?:prova|oab|concurso|vestibular|enem)\b"
+    r"|\b(?:quero|vou|preciso)\W+estudar\b|\b(?:pra|para)\W+(?:eu\W+)?estudar\b|\bajud\w*\W+(?:a|para|pra)\W+estudar\b"
+    r"|\bestud\w+\W+(?:isso|isto|esse|essa|este|esta|por\W+ele|por\W+ela|com\W+ele|com\W+ela)\b"
+    r"|\bmaterial\W+de\W+estudo\b|\bficha\W+(?:tatica|de\W+estudo)\b")
 RE_LER = re.compile(r"\b(?:le|leia|ler|resum\w+|explic\w+|traduz\w*|transcrev\w+|analis\w+|revis\w+|confer\w+|extrai\w*|"
                     r"o\W+que\W+(?:diz|tem|ha|esta\W+escrito|fala)|me\W+(?:ajuda\w*|conta|diz)|responde\w*|corrig\w+|"
                     r"faz\w*\W+(?:um\W+)?resumo)\b")
@@ -237,7 +250,7 @@ RE_MAIS_UMA = re.compile(r"\bmais\W+uma\b|\b(?:outra|proxima|seguinte)\W+(?:pagi
 RE_PRONTO = re.compile(r"^(?:pronto|terminei|acabou|fim|e\W+so\W+isso|so\W+isso|nao\W+tem\W+mais|ja\W+foi|era\W+so\W+isso)$")
 RE_CANCELAR = re.compile(r"^(?:nao|deixa|deixa\W+pra\W+la|nada|esquece|cancela|nenhum\w*|nao\W+quero|por\W+enquanto\W+nada)$")
 # Só os demonstrativos: "o PDF da OAB" não é "o que acabei de mandar"; "o PDF" sozinho, sem mais nada, é (veja `fala_do_recebido`).
-RE_REFERE = re.compile(r"\b(?:isso|isto|esse|essa|este|esta|desse|dessa|deste|desta|nesse|nessa|neste|nesta|nele|nela|dele|dela|ele|ela|eles|elas|o\W+que\W+(?:eu\W+)?(?:mandei|enviei|acabei\W+de\W+\w+)|"
+RE_REFERE = re.compile(r"\b(?:isso|isto|disso|disto|nisso|nisto|esse|essa|este|esta|desse|dessa|deste|desta|nesse|nessa|neste|nesta|nele|nela|dele|dela|ele|ela|eles|elas|o\W+que\W+(?:eu\W+)?(?:mandei|enviei|acabei\W+de\W+\w+)|"
                        r"recebid[oa]s?|todos|todas|tudo|ultim[oa]|aqui)\b")
 RE_TIPO = re.compile(r"\b(?:pdf|word|docx?|planilha|excel|xlsx?|powerpoint|pptx?|apresentacao|foto|fotos|imagem|imagens|print|arquivos?|"
                      r"documentos?|texto)\b")
@@ -283,8 +296,11 @@ class AgenteFontes:
     def __init__(self, registro: Registro, pasta_recebidos: str, pasta_arquivados: str, importar_fonte=None, impressora=None,
                  pastas=None, scanner=None, extrair_texto=None, llm=None, enviar_zap=None, avisar=None, relogio=time.time,
                  em_segundo_plano=None, limite_mb: float = 50.0, categoria: str = "fontes_recebidas", nuvem=None,
-                 ia_padrao: str = "local", pessoal=None):
+                 ia_padrao: str = "auto", pessoal=None, estudar=None):
         self.registro, self.pasta_recebidos, self.pasta_arquivados = registro, pasta_recebidos, pasta_arquivados
+        # `estudar(caminhos, pedido, canal, ia)` põe a ficha de estudo na fila dos agentes e devolve a mensagem de início
+        # (Orquestrador.enviar_estudo_de_arquivos); o processo que tem o orquestrador liga aqui.
+        self.estudar = estudar
         self.importar_fonte, self.impressora, self.pastas, self.scanner = importar_fonte, impressora, pastas, scanner
         self.extrair_texto, self.llm, self.enviar_zap = extrair_texto, llm, enviar_zap
         self.avisar = avisar or (lambda texto, canal: None)  # resposta que sai depois (o escaneamento leva ~20 s)
@@ -418,6 +434,10 @@ class AgenteFontes:
             acoes.append("arquivar")
         if RE_ENVIAR.search(t):
             acoes.append("enviar")
+        if RE_ESTUDAR.search(t):
+            # A ficha no lugar da leitura rápida; "e imprime" e "me manda" ficam para quando ela ficar pronta (o orquestrador
+            # oferece a impressão e manda os arquivos), não para o arquivo recebido.
+            acoes = [a for a in acoes if a not in ("ler", "imprimir", "enviar")] + ["estudar"]
         return acoes
 
     def _alvos(self, t: str, acoes: list[str]):
@@ -430,6 +450,12 @@ class AgenteFontes:
         so_ler = set(acoes) <= {"ler"}
         recentes_para_ler = [r for r in recentes if self.relogio() - r.recebido_em <= VALIDADE_DA_LEITURA]
 
+        if "estudar" in acoes and "escanear" not in acoes:
+            # Só com o arquivo citado ("desse PDF", "disso") ou como resposta a "o que faço com ele?": "resumo para a prova de
+            # história" sem arquivo é do agente de estudos de sempre.
+            if recentes and (RE_REFERE.search(t) or self.esperando_resposta()):
+                return self._rajada(t, recentes), "", False
+            return None, "", False
         if "escanear" in acoes:
             if RE_FISICO.search(t) or not recentes_para_ler:
                 return None, "", True
@@ -490,7 +516,9 @@ class AgenteFontes:
     # ============================================================== execução
     def _aplicar(self, acoes: list[str], alvos: list[Recebido], original: str, t: str, canal: str, ia: str | None = None) -> str:
         falas, pendentes = [], []
-        if "ler" in acoes:
+        if "estudar" in acoes:
+            falas.append(self._estudar(alvos, original, canal, ia))
+        elif "ler" in acoes:
             falas.append(self._ler(alvos, original, canal, ia=ia))
         if "fonte" in acoes:
             falas.extend(self._virar_fonte(a) for a in alvos)
@@ -502,6 +530,27 @@ class AgenteFontes:
             pendentes.append(self._arquivar(alvos, t))
         self._pergunta_ate = 0.0
         return " ".join(f for f in falas + pendentes if f)
+
+    def _estudar(self, alvos: list[Recebido], pedido: str, canal: str, ia: str | None = None) -> str:
+        """A ficha tática do agente de estudos com estes arquivos como fontes, escrita pelo Claude (`estudar`, ligado ao
+        orquestrador por quem monta o agente). "Só no PC" no pedido, ou FONTES_IA=local, faz a ficha no Ollama."""
+        if self.estudar is None:
+            return "Daqui eu não consigo montar a ficha de estudo; peça pela voz, pelo WhatsApp ou pelo painel."
+        caminhos = [a.caminho for a in alvos if not self._pessoal(a.caminho)]
+        if not caminhos:
+            return "Esse arquivo é pessoal (diário, memória ou dados), então não faço ficha de estudo dele."
+        if ia is None and self.ia_padrao == "local":
+            ia = "local"
+        try:
+            resposta = self.estudar(caminhos, pedido, canal, ia)
+        except Exception as exc:
+            logger.warning("Não consegui começar a ficha de estudo: %s", exc)
+            return f"Não consegui começar a ficha de estudo: {exc}."
+        if not resposta:
+            return "Não consegui começar a ficha de estudo desse arquivo."
+        for alvo in alvos:
+            self.registro.atualizar(alvo.id, "ficha de estudo")
+        return resposta
 
     def _ler(self, alvos: list[Recebido], pedido: str, canal: str, confirmar_assunto: bool = False, ia: str | None = None) -> str:
         escolhida = self._qual_ia(ia)
@@ -547,9 +596,20 @@ class AgenteFontes:
         """Quem lê e responde: (resposta, quem respondeu da nuvem, se o texto foi cortado, aviso). `resposta` None = ninguém conseguiu.
 
         Na nuvem vai só este arquivo e o pedido, e só a IA dita (o Gemini não repassa para o Claude, nem o contrário); arquivos
-        pessoais e quem não respondeu ficam com o modelo do PC.
+        pessoais e quem não respondeu ficam com o modelo do PC. `auto`: o modelo do PC lê, e o Claude entra quando ele não dá
+        conta (o arquivo passa do que ele lê sem cortar, ou ele não respondeu).
         """
-        nota = ""
+        nota, motivo = "", ""
+        if ia == "auto":
+            if self.nuvem is None or self._pessoal(alvo.caminho):
+                ia = "local"
+            elif len(texto) > LIMITE_DO_TEXTO:
+                ia, motivo = "claude", "O arquivo é grande para o modelo do PC: "
+            else:
+                no_pc = self._no_pc(alvo, texto, comando, tamanho, confirmar_assunto)
+                if no_pc[0] is not None:
+                    return no_pc
+                ia, motivo = "claude", "O modelo do PC não respondeu: "
         if ia != "local" and self.nuvem is not None:
             if self._pessoal(alvo.caminho):
                 nota = "Esse arquivo é pessoal demais para sair do PC, então li só com o modelo local."
@@ -559,7 +619,8 @@ class AgenteFontes:
                 para_nuvem, cortado = cortar_texto(texto, LIMITE_DO_TEXTO_NUVEM)
                 registro: list = []
                 try:
-                    self.avisar(f"Pedindo {PEDINDO_A.get(ia, 'à nuvem')}, leva uns segundos.", canal)
+                    pedindo = f"pedindo {PEDINDO_A.get(ia, 'à nuvem')}, leva uns segundos."
+                    self.avisar(motivo + pedindo if motivo else pedindo[:1].upper() + pedindo[1:], canal)
                 except Exception:
                     logger.debug("Não consegui avisar que estava pedindo à nuvem", exc_info=True)
                 try:
@@ -570,7 +631,14 @@ class AgenteFontes:
                     resposta = None
                 if resposta and resposta.strip():
                     return resposta.strip(), (registro[0] if registro else NOMES_DA_IA.get(ia, "Gemini")), cortado, ""
+                if motivo.startswith("O modelo do PC não respondeu"):
+                    return None, "", False, f"Li “{alvo.nome}”, mas nem o modelo do PC nem o Claude responderam agora."
                 nota = f"Não consegui falar com {NOMES_DA_IA.get(ia, 'a nuvem')} agora, então li com o modelo local."
+        resposta, quem, cortado, erro = self._no_pc(alvo, texto, comando, tamanho, confirmar_assunto)
+        return resposta, quem, cortado, erro or nota
+
+    def _no_pc(self, alvo: Recebido, texto: str, comando: str, tamanho: str, confirmar_assunto: bool):
+        """O modelo do PC lê o que cabe nele (o começo e o fim, se o arquivo for grande); `resposta` None se ele falhar."""
         para_o_pc, cortado = cortar_texto(texto, LIMITE_DO_TEXTO)
         try:
             resposta = self.llm.chat_beatriz(self._prompt(alvo, para_o_pc, cortado, comando, tamanho, confirmar_assunto),
@@ -578,7 +646,9 @@ class AgenteFontes:
         except Exception as exc:
             logger.warning("Não consegui ler %s com o modelo: %s", alvo.nome, exc)
             return None, "", cortado, f"Li “{alvo.nome}”, mas o modelo não respondeu agora ({exc})."
-        return (resposta or "").strip(), "", cortado, nota
+        if not (resposta or "").strip():
+            return None, "", cortado, f"Li “{alvo.nome}”, mas o modelo não respondeu agora."
+        return resposta.strip(), "", cortado, ""
 
     def _prompt(self, alvo: Recebido, texto: str, cortado: bool, comando: str, tamanho: str, confirmar_assunto: bool) -> str:
         return (f"ARQUIVO: {alvo.nome} ({tipo_do_arquivo(alvo.caminho)})\nPEDIDO DO USUÁRIO: {comando}\n\n"
@@ -739,7 +809,7 @@ class AgenteFontes:
         n = len(sessao.paginas)
         resultado = f"Escaneei {'a página' if n == 1 else 'mais uma página'}: o PDF tem {n} página{'s' if n != 1 else ''}."
         if depois:
-            acoes = [a for a in depois if a in {"ler", "fonte", "arquivar", "imprimir", "enviar"}]
+            acoes = [a for a in depois if a in {"ler", "estudar", "fonte", "arquivar", "imprimir", "enviar"}]
             extra = self._aplicar(acoes, [recebido], t, t, canal, ia)
             self.avisar(f"{resultado} {extra}".strip(), canal)
             return

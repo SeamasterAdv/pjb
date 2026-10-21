@@ -1,0 +1,112 @@
+/* Login e cadastro: o mesmo visual do painel (estilo.css), com a câmera dentro da esfera. */
+.palco-login {
+  position: relative; z-index: 1; min-height: 0;
+  display: grid; grid-template-columns: 280px minmax(0, 1fr) 330px; gap: 18px; padding: 14px 18px 10px;
+}
+
+/* ---------------------------------------------------------------- identificação e passos */
+.identificacao { align-self: start; }
+.titulo-passos { margin-top: 16px; }
+.passos { list-style: none; margin: 0; padding: 0; counter-reset: passo; }
+.passos li {
+  counter-increment: passo; position: relative; padding: 6px 0 6px 28px; font-size: 12.5px; line-height: 1.4; color: var(--suave);
+  border-bottom: 1px dashed var(--linha);
+}
+.passos li:last-child { border-bottom: 0; }
+.passos li::before {
+  content: counter(passo, decimal-leading-zero); position: absolute; left: 0; top: 6px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--apagado);
+}
+.passos li.atual { color: var(--claro); }
+.passos li.atual::before { content: "▶"; color: var(--cor); }
+.passos li.feito { color: var(--suave); text-decoration: line-through; text-decoration-color: var(--apagado); }
+
+/* ---------------------------------------------------------------- centro: esfera e câmera */
+.centro-login { display: flex; flex-direction: column; align-items: center; min-height: 0; min-width: 0; }
+.palco-esfera { position: relative; flex: 1 1 0; width: 100%; min-height: 240px; --lado: 400px; }
+.palco-esfera .esfera { position: absolute; inset: 0; }
+.visor {
+  position: absolute; left: 50%; top: 50%; width: calc(var(--lado) * .54); aspect-ratio: 1;
+  transform: translate(-50%, -50%); pointer-events: none;
+}
+.visor[hidden] { display: none; }
+.lente { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: #050505; }
+.lente img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  filter: grayscale(1) contrast(1.12) brightness(.92); opacity: .9; transition: filter 1s;
+}
+body[data-vitoria] .lente img { filter: grayscale(1) sepia(1) saturate(2.2) hue-rotate(-8deg) brightness(.95); }
+.guia { position: absolute; inset: 9% 25%; border: 1px dashed rgba(255, 255, 255, .32); border-radius: 50%; }
+.caixa { position: absolute; transition: left .12s, top .12s, width .12s, height .12s; }
+.caixa::before, .caixa::after {
+  content: ""; position: absolute; width: 14px; height: 14px; border: 2px solid var(--cor);
+}
+.caixa::before { left: -2px; top: -2px; border-right: 0; border-bottom: 0; }
+.caixa::after { right: -2px; bottom: -2px; border-left: 0; border-top: 0; }
+.varredura {
+  position: absolute; left: 0; right: 0; height: 2px; top: 0; opacity: 0;
+  background: linear-gradient(90deg, transparent, var(--cor), transparent);
+}
+body[data-estado="ouvindo"] .varredura, body[data-estado="pensando"] .varredura { opacity: .7; animation: varrer 2.2s linear infinite; }
+@keyframes varrer { from { top: 0; } to { top: 100%; } }
+.anel {
+  position: absolute; inset: -9px; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .22); outline: 1px dashed rgba(255, 255, 255, .12); outline-offset: 6px;
+}
+body[data-vitoria] .anel { border-color: var(--cor); }
+
+.progresso-login { font-family: var(--mono); font-size: 11px; color: var(--texto); letter-spacing: 0; margin-top: 4px; display: flex; gap: 8px; }
+.progresso-login #porcento { color: var(--suave); min-width: 34px; }
+.mensagem { min-height: 2.9em; max-width: 560px; margin: 6px 0 0; text-align: center; font-size: 15.5px; line-height: 1.45; color: var(--texto); }
+.mensagem.ok { color: var(--cor); }
+.mensagem.erro { color: var(--vermelho); }
+.mensagem.aviso { color: var(--ouro); }
+
+/* ---------------------------------------------------------------- acesso (formulários) */
+.acesso { align-self: start; display: flex; flex-direction: column; gap: 4px; }
+.formulario { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 6px; }
+.formulario[hidden] { display: none; }
+.formulario label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--suave);
+}
+.formulario input:not([type="checkbox"]) {
+  height: 36px; padding: 0 10px; background: transparent; color: var(--claro); outline: none;
+  border: 1px solid var(--linha-forte); font-family: var(--sans); font-size: 14.5px; letter-spacing: 0; text-transform: none;
+  user-select: text;
+}
+.formulario input:focus { border-color: var(--claro); }
+.formulario input:disabled { opacity: .4; }
+.formulario input::placeholder { color: var(--apagado); font-family: var(--mono); font-size: 12px; }
+.principal, .secundario {
+  height: 38px; font-family: var(--mono); font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+}
+.principal { border: 0; background: var(--cor); color: #000; }
+.principal:disabled { background: var(--apagado); color: #000; cursor: default; }
+.secundario { background: transparent; border: 1px solid var(--linha-forte); color: var(--texto); }
+.secundario:hover { border-color: var(--claro); color: var(--claro); }
+.marcar { flex-direction: row !important; align-items: center; gap: 8px !important; cursor: pointer; }
+.marcar input { accent-color: #ffffff; width: 15px; height: 15px; }
+.codigo-novo {
+  font-family: var(--mono); font-size: 19px; letter-spacing: .06em; text-align: center; color: var(--ouro);
+  border: 1px solid var(--ouro); padding: 14px 6px; user-select: text;
+}
+.dica { margin: 4px 0 0; font-size: 12.5px; color: var(--suave); line-height: 1.5; }
+.dica:empty { display: none; }
+.links { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--linha); }
+.link {
+  background: none; border: 0; padding: 0; text-align: left; color: var(--suave);
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+}
+.link::before { content: "› "; color: var(--apagado); }
+.link:hover { color: var(--claro); }
+.link[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- montanha (embaixo, toda a largura) */
+.rodape-login { padding: 0 18px 14px; }
+.rodape-login .quadro-montanha { width: 100%; height: clamp(130px, 19vh, 190px); margin: 0; }
+
+@media (max-width: 1150px) {
+  .palco-login { grid-template-columns: 0 minmax(0, 1fr) 300px; gap: 12px; }
+  .identificacao { display: none; }
+}

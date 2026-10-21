@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beatriz — Entrar</title>
+<link rel="stylesheet" href="estilo.css">
+<link rel="stylesheet" href="login.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.min.js" } }
+</script>
+</head>
+<body data-estado="repouso" class="pagina-login">
+<!-- Login e cadastro (login_web.py): a esfera em rede com a câmera dentro, os campos à direita e a montanha da sua
+     voz embaixo. O Python decide o que aparece (estado()); aqui só se desenha e se chama. -->
+<header class="topo">
+  <div class="marca">
+    <span class="nome">B.E.A.T.R.I.Z</span>
+    <span class="sub" id="sub">autenticação</span>
+  </div>
+  <div class="chips">
+    <span class="chip"><i class="ponto" id="ponto-camera"></i><span id="chip-camera">câmera</span></span>
+    <span class="chip"><i class="ponto" id="ponto-microfone"></i><span>microfone</span></span>
+  </div>
+  <div class="acoes-topo">
+    <div class="relogio"><span id="hora">--:--</span><span id="data"></span></div>
+  </div>
+</header>
+
+<main class="palco-login">
+  <aside class="quadro identificacao" aria-label="Identificação">
+    <div class="titulo-quadro">◢ identificação</div>
+    <dl class="leituras">
+      <dt>usuário</dt><dd id="id-usuario">--</dd>
+      <dt>modo</dt><dd id="id-modo">--</dd>
+      <dt>etapa</dt><dd id="id-etapa">--</dd>
+      <dt>erros</dt><dd id="id-erros">--</dd>
+    </dl>
+    <div class="titulo-quadro titulo-passos"><span>◢ <span id="titulo-passos">como entrar</span></span></div>
+    <ol class="passos" id="passos"></ol>
+  </aside>
+
+  <section class="centro-login">
+    <div class="palco-esfera" id="palco-esfera">
+      <div class="esfera" id="esfera" aria-hidden="true"></div>
+      <div class="visor" id="visor" hidden>
+        <div class="lente">
+          <img id="camera" alt="Sua imagem na câmera">
+          <div class="guia" aria-hidden="true"></div>
+          <div class="caixa" id="caixa" hidden aria-hidden="true"></div>
+          <div class="varredura" aria-hidden="true"></div>
+        </div>
+        <div class="anel" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div class="rotulo-estado"><span class="marca-estado">◢</span> <span id="rotulo">iniciando</span></div>
+    <div class="progresso-login" aria-hidden="true"><span id="barra"></span><span id="porcento"></span></div>
+    <p class="mensagem" id="mensagem" aria-live="polite"></p>
+  </section>
+
+  <aside class="quadro acesso" aria-label="Acesso">
+    <div class="titulo-quadro"><span>◢ <span id="titulo-acesso">acesso</span></span></div>
+
+    <form class="formulario" id="form-senha" hidden autocomplete="off">
+      <label>usuário<input id="usuario" spellcheck="false"></label>
+      <label>senha<input id="senha" type="password"></label>
+      <button class="principal" type="submit">entrar</button>
+    </form>
+
+    <form class="formulario" id="form-codigo" hidden autocomplete="off">
+      <label>código de recuperação<input id="codigo" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" spellcheck="false"></label>
+      <button class="secundario" type="submit">validar o código</button>
+    </form>
+
+    <form class="formulario" id="form-credenciais" hidden autocomplete="off">
+      <label>usuário<input id="novo-usuario" spellcheck="false"></label>
+      <label>senha (mínimo 8 caracteres)<input id="nova-senha" type="password"></label>
+      <label>repita a senha<input id="nova-senha-2" type="password"></label>
+      <button class="principal" type="submit">continuar</button>
+    </form>
+
+    <div class="formulario" id="area-codigo-novo" hidden>
+      <div class="codigo-novo" id="codigo-novo"></div>
+      <button class="secundario" id="btn-copiar" type="button">copiar o código</button>
+      <label class="marcar"><input type="checkbox" id="guardei"> guardei o código em um lugar seguro</label>
+      <button class="principal" id="btn-concluir" type="button" disabled>concluir</button>
+    </div>
+
+    <p class="dica" id="dica"></p>
+    <nav class="links">
+      <button class="link" id="link-senha" type="button" hidden>entrar com a senha</button>
+      <button class="link" id="link-codigo" type="button" hidden>sem câmera ou o rosto mudou? use o código de recuperação</button>
+      <button class="link" id="link-de-novo" type="button" hidden>tentar o rosto de novo</button>
+      <button class="link" id="link-sem-rosto" type="button" hidden>cadastrar sem o rosto (só com a senha)</button>
+      <button class="link" id="link-sair" type="button">fechar</button>
+    </nav>
+  </aside>
+</main>
+
+<footer class="rodape-login">
+  <section class="quadro quadro-montanha" aria-label="Sua voz captada">
+    <div class="titulo-quadro">◢ sinal de entrada · sua voz
+      <span class="leitura"><span id="montanha-espectro" class="espectro"></span><b id="montanha-db">-∞</b> dB</span></div>
+    <div class="grafico">
+      <div class="eixo-y" aria-hidden="true"><span>0</span><span>-24</span><span>-48</span></div>
+      <div class="area-montanha">
+        <div class="montanha" id="montanha" aria-hidden="true"></div>
+      </div>
+      <div class="eixo-x" aria-hidden="true">
+        <span>5k</span><span>2k</span><span>1k</span><span>500</span><span>250</span><span>120 Hz</span><span>250</span><span>500</span><span>1k</span><span>2k</span><span>5k</span>
+      </div>
+    </div>
+  </section>
+</footer>
+
+<script src="login.js"></script>
+<script type="module" src="painel_visual.js"></script>
+</body>
+</html>

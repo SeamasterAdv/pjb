@@ -460,6 +460,39 @@ class AgenteImpressora:
         pdf = self.impressora.preparar(caminho)
         return Documento(descrever_arquivo(caminho), pdf, self.impressora.contar_paginas(pdf), pdf != caminho)
 
+    def achar_arquivo(self, resto: str, original: str = "") -> str | None:
+        """O arquivo que um pedido descreve ("o pdf da oab dos downloads"), ou None. `resto` vem em minúsculas e sem acentos."""
+        resto = (resto or "").lower()
+        extensoes, tipo = self._tipo_pedido(resto)
+        termos = self._termos(resto)
+        if not termos and tipo is None:
+            return None
+        with self._trava:
+            return self._procurar_arquivo(termos, extensoes, resto)
+
+    def imprimir_arquivos(self, caminhos, texto: str = "") -> str:
+        """Pede a impressão de arquivos que já se conhecem (os que chegaram pelo WhatsApp ou foram escaneados). As opções ditas
+        ("2 cópias", "só a página 1", "preto e branco") valem; pergunta antes, como sempre, e o "sim" imprime."""
+        with self._trava:
+            try:
+                _, t = _texto_preparado(texto or "")
+                opcoes, _ = ler_opcoes(t)
+                documentos = [self._documento_de_arquivo(c) for c in caminhos if os.path.isfile(c)]
+                if not documentos:
+                    return "Não achei o arquivo para imprimir."
+                if not self.confirmar:
+                    return self._imprimir(documentos, opcoes)
+                self._descartar_pendencia()
+                self.pendencia = Pendencia("confirmar", self.relogio() + SEGUNDOS_PARA_CONFIRMAR * 2, documentos, opcoes)
+                resposta = self._pergunta(documentos, opcoes)
+                self._minhas_respostas = (self._minhas_respostas + [resposta])[-10:]
+                return resposta
+            except ErroImpressora as exc:
+                return f"Não consegui: {exc}."
+            except Exception as exc:
+                logger.exception("Falha ao preparar a impressão de arquivos recebidos")
+                return f"Não consegui preparar a impressão: {exc}"
+
     def oferecer_arquivos(self, arquivos) -> str | None:
         """Depois de uma tarefa pedida com "e imprime": pergunta se imprime os arquivos (ou imprime direto)."""
         with self._trava:

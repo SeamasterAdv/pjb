@@ -220,6 +220,23 @@ def test_responder_na_nuvem_tenta_a_ia_pedida_primeiro(monkeypatch):
     assert registro == ["Gemini"]
 
 
+def test_exclusivo_nao_passa_o_conteudo_para_a_outra_ia(monkeypatch):
+    class GeminiSemResposta(GeminiFalso):
+        def chat(self, *args, **kwargs):
+            self.chamadas += 1
+            raise NuvemIndisponivel("Gemini ocupado")
+
+    claude, gemini = ClaudeFalso(), GeminiSemResposta()
+    monkeypatch.setattr(llm_nuvem, "provedores_nuvem", lambda: [claude, gemini])
+    registro = []
+
+    assert llm_nuvem.responder_na_nuvem("Leia o contrato.", preferir="gemini", exclusivo=True, registro=registro) is None
+    assert gemini.chamadas == 1 and claude.chamadas == 0 and registro == []  # sem exclusivo, o Claude responderia
+
+    assert llm_nuvem.responder_na_nuvem("Leia o contrato.", preferir="gemini", registro=registro) is not None
+    assert claude.chamadas == 1 and registro == ["Claude"]
+
+
 def comando_de_pesquisa(monkeypatch, comando):
     """Roda o comando falado e devolve como a pesquisa foi chamada, sem abrir navegador nem acessar a rede."""
     chamadas = []

@@ -4,6 +4,11 @@ Você escreve do celular nessa conversa; a Beatriz lê pelo WhatsApp Web, faz o 
 responde na mesma conversa, com as respostas começando por "◆ Beatriz". Só essa conversa é lida,
 então só você consegue mandar comandos.
 
+Documentos e fotos que você manda nela são baixados para a pasta de recebidos (`PASTA_RECEBIDOS`) e viram um aviso para o
+agente de fontes (`fontes.py`): "vira fonte", "arquiva", "imprime", "escaneia"... Os arquivos que a própria Beatriz manda de
+volta nunca são tratados como seus. Os seletores do WhatsApp Web mudam com o tempo; se o download falhar, o log guarda o
+esqueleto da mensagem (sem o texto) para ajustar `SELETOR_DOCUMENTO`.
+
 O WhatsApp Web roda num Chromium próprio (Playwright), num processo separado, com o login salvo em
 banco_memoria/whatsapp_web. Na primeira vez a janela mostra o QR code: no celular, abra
 WhatsApp > Aparelhos conectados > Conectar um aparelho. Depois a janela fica minimizada.
@@ -37,16 +42,65 @@ FOLGA_RELOGIO = 60               # segundos de diferença aceita entre o relógi
 
 # Leitura das mensagens visíveis da conversa aberta (só as de fora, não as citadas dentro de outra).
 # O atributo data-pre-plain-text ("[10:41, 14/10/2026] Felipe: ") existe há anos no WhatsApp Web e
-# marca as mensagens de texto; dele vem o horário.
-JS_LER_MENSAGENS = """
+# marca as mensagens de texto; dele vem o horário. Documentos e fotos aparecem com um `anexo`
+# ({tipo: documento|imagem|audio|video, nome}); a legenda, se houver, vem em `texto`.
+JS_LER_MENSAGENS = r"""
 () => Array.from(document.querySelectorAll('#main [data-id]'))
     .filter(el => !el.parentElement.closest('[data-id]'))
     .map(el => {
         const texto = el.querySelector('.copyable-text[data-pre-plain-text]');
         const corpo = texto ? (texto.querySelector('span.selectable-text') || texto) : null;
+        // Só o que é da própria mensagem: o documento ou a foto citados numa resposta não contam.
+        const citada = 'div[data-testid="quoted-message"], [aria-label^="Mensagem citada"], [aria-label^="Quoted"]';
+        const buscar = (seletor) => Array.from(el.querySelectorAll(seletor))
+            .find(x => x.closest('[data-id]') === el && !x.closest(citada)) || null;
+        let anexo = null;
+        if (buscar('[data-icon^="document-"], [data-icon="document"], [title^="Baixar"], [title^="Download"], [aria-label^="Baixar"], [aria-label^="Download"]')) {
+            const baixar = buscar('[title^="Baixar"], [title^="Download"]');
+            let nome = baixar ? (baixar.getAttribute('title') || '').replace(/^(Baixar|Download)\s*"?/i, '').replace(/"$/, '') : '';
+            if (!nome) {
+                const candidato = Array.from(el.querySelectorAll('span[title], span[dir="auto"]'))
+                    .filter(x => x.closest('[data-id]') === el && !x.closest(citada))
+                    .map(x => (x.getAttribute('title') || x.innerText || '').trim()).find(x => /\.[A-Za-z0-9]{2,5}$/.test(x));
+                nome = candidato || '';
+            }
+            anexo = {tipo: 'documento', nome: nome};
+        } else if (buscar('img[src^="blob:"]')) {
+            anexo = {tipo: 'imagem', nome: ''};
+        } else if (buscar('audio, [data-icon="audio-play"], [data-icon="ptt-status"], [data-icon="audio-download"]')) {
+            anexo = {tipo: 'audio', nome: ''};
+        } else if (buscar('video, [data-icon="media-play"], [data-icon="video-pip"]')) {
+            anexo = {tipo: 'video', nome: ''};
+        }
         return {id: el.getAttribute('data-id'), texto: corpo ? corpo.innerText : null,
-                quando: texto ? texto.getAttribute('data-pre-plain-text') : null};
+                quando: texto ? texto.getAttribute('data-pre-plain-text') : null, anexo: anexo};
     })
+"""
+# A foto da conversa é um blob do próprio WhatsApp Web: o navegador a lê e devolve em base64.
+JS_BAIXAR_IMAGEM = r"""
+async (id) => {
+    const img = document.querySelector('[data-id="' + id + '"] img[src^="blob:"]');
+    if (!img) return null;
+    const resposta = await fetch(img.src);
+    const blob = await resposta.blob();
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let texto = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) texto += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return {tipo: blob.type, base64: btoa(texto)};
+}
+"""
+# Só a forma da mensagem (tags, ícones, rótulos), para ajustar os seletores quando o WhatsApp Web mudar; sem o texto das conversas.
+JS_ESQUELETO = r"""
+(id) => {
+    const raiz = document.querySelector('[data-id="' + id + '"]');
+    const forma = (e, d) => {
+        if (!e || d > 14) return '';
+        const marcas = ['role', 'data-icon', 'data-testid', 'aria-label', 'title'].map(a => e.getAttribute && e.getAttribute(a) ? a + '=' + e.getAttribute(a).slice(0, 40) : '').filter(Boolean);
+        return '  '.repeat(d) + e.tagName.toLowerCase() + (marcas.length ? ' [' + marcas.join(' ') + ']' : '') + '\n'
+            + Array.from(e.children).map(f => forma(f, d + 1)).join('');
+    };
+    return raiz ? forma(raiz, 0) : '';
+}
 """
 # O número da conta conectada fica no armazenamento local do WhatsApp Web ("5511...:12@c.us").
 JS_MEU_NUMERO = """
@@ -62,6 +116,19 @@ SELETORES_ANEXAR = (
 )
 # Na prévia do anexo o botão se chama "Enviar 1 item selecionado" (out/2026).
 SELETOR_ENVIAR_ARQUIVO = '[aria-label^="Enviar"], [aria-label^="Send"]'
+# Documento recebido: clicar nele (ou na seta de baixar) faz o navegador baixar o arquivo.
+SELETOR_DOCUMENTO = '[title^="Baixar"], [title^="Download"], [aria-label^="Baixar"], [aria-label^="Download"], [data-icon^="document-"], [data-icon="document"]'
+SELETOR_SETA_DE_BAIXAR = '[data-icon="audio-download"], [data-icon="download"], [data-icon="media-download"]'
+TEMPO_DO_PRIMEIRO_CLIQUE = 6_000  # ms que cada tentativa espera o download começar
+TEMPO_DO_DOWNLOAD = 60_000  # ms da última tentativa (o arquivo pode ser grande)
+# Botões da mensagem que nunca são o de baixar.
+RE_BOTAO_QUE_NAO_BAIXA = re.compile(r"encaminhar|forward|responder|reply|reagir|react|fixar|pin|estrela|star|menu|mais op|more|emoji", re.I)
+SELETOR_MENU_DA_MENSAGEM = ('[data-icon="down-context"], [data-icon="ic-chevron-down-menu"], [aria-label="Menu de contexto"], '
+                            '[aria-label="Context menu"], [aria-label="Mais opções"], [aria-label="More options"]')
+SELETOR_BAIXAR_NA_PAGINA = ('[aria-label="Baixar"], [aria-label="Download"], [title="Baixar"], [title="Download"], '
+                            '[data-icon="download"], [data-icon="ic-download"]')
+RE_ITEM_BAIXAR = re.compile(r"^\s*(Baixar|Download)\s*$", re.I)
+EXTENSAO_DA_IMAGEM = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
 
 
 # ----------------------------------------------------------------- lógica pura
@@ -184,8 +251,17 @@ class LeitorDeMensagens:
         horario = horario_da_mensagem(quando)
         return horario is not None and horario + 60 + FOLGA_RELOGIO <= self.pronto_em
 
-    def novas(self, mensagens: list, agora: float = None) -> list:
-        """mensagens: [{"id", "texto", "quando"}] na ordem da tela. Devolve os textos que são comandos novos."""
+    def ignorar(self, identificador: str):
+        """Marca uma mensagem como já vista (os arquivos que a própria Beatriz mandou: não são seus)."""
+        chave = chave_da_mensagem(identificador)
+        if chave:
+            self.vistos.add(chave)
+            self.historico.add(chave)
+
+    def novas_entradas(self, mensagens: list, agora: float = None) -> list:
+        """mensagens: [{"id", "texto", "quando", "anexo"}] na ordem da tela. Devolve o que é novo, na ordem:
+        [{"id", "texto", "anexo"}], com `anexo` None nas mensagens de texto (comandos) e {"tipo", "nome"} nos documentos e fotos
+        (o `texto` delas é a legenda, ou None)."""
         agora = time.time() if agora is None else agora
         chaves = [chave_da_mensagem(m.get("id")) for m in mensagens]
         if not self.pronto:
@@ -193,7 +269,7 @@ class LeitorDeMensagens:
             return []
         # Posição da última mensagem do histórico na tela: o que aparece acima dela é mais antigo.
         limite = max((posicao for posicao, chave in enumerate(chaves) if chave in self.historico), default=-1)
-        comandos, antigas = [], 0
+        entradas, antigas = [], 0
         for posicao, (mensagem, chave) in enumerate(zip(mensagens, chaves)):
             if not chave or chave in self.vistos:
                 continue
@@ -203,12 +279,24 @@ class LeitorDeMensagens:
                 antigas += 1
                 continue
             texto = self._normalizar(mensagem.get("texto"))
+            anexo = mensagem.get("anexo") or None
+            if anexo:
+                if texto and texto == self._normalizar(anexo.get("nome")):
+                    texto = ""  # o nome do arquivo não é uma legenda
+                if texto.startswith(PREFIXO_RESPOSTA) or texto in self.enviados:
+                    continue
+                entradas.append({"id": mensagem.get("id"), "texto": texto or None, "anexo": anexo})
+                continue
             if not texto or texto.startswith(PREFIXO_RESPOSTA) or texto in self.enviados:
                 continue
-            comandos.append(texto)
+            entradas.append({"id": mensagem.get("id"), "texto": texto, "anexo": None})
         if antigas:
             logger.info("WhatsApp: %d mensagem(ns) antiga(s) ignorada(s) (carregadas depois da abertura).", antigas)
-        return comandos
+        return entradas
+
+    def novas(self, mensagens: list, agora: float = None) -> list:
+        """Só os textos dos comandos novos (sem os anexos): `novas_entradas` sem o que vem com arquivo."""
+        return [e["texto"] for e in self.novas_entradas(mensagens, agora) if e["anexo"] is None]
 
 
 # ----------------------------------------------------------- processo do navegador
@@ -263,15 +351,15 @@ def _ultima_mensagem(pagina) -> str:
     return mensagens[-1]["id"] if mensagens else ""
 
 
-def _enviar_arquivo(pagina, caminho: str) -> bool:
-    """Anexa um arquivo como documento e confere que ele apareceu na conversa.
+def _enviar_arquivo(pagina, caminho: str) -> str:
+    """Anexa um arquivo como documento e confere que ele apareceu na conversa. Devolve o id da mensagem ("" se falhou).
 
     Menu Anexar > "Documento" abre o seletor de arquivos do sistema, que o Playwright responde.
     (A única entrada de arquivo que existe antes disso é a de figurinhas, que só aceita imagens.)
     """
     anexar = next((pagina.locator(s).first for s in SELETORES_ANEXAR if pagina.locator(s).count()), None)
     if anexar is None:
-        return False
+        return ""
     antes = _ultima_mensagem(pagina)
     anexar.click()
     documento = pagina.get_by_role("button", name="Documento").or_(pagina.get_by_text("Documento", exact=True)).first
@@ -281,9 +369,10 @@ def _enviar_arquivo(pagina, caminho: str) -> bool:
     pagina.locator(SELETOR_ENVIAR_ARQUIVO).first.click(timeout=20_000)
     for _ in range(30):  # até 15 s para o documento aparecer como mensagem nova
         pagina.wait_for_timeout(500)
-        if _ultima_mensagem(pagina) != antes:
-            return True
-    return False
+        novo = _ultima_mensagem(pagina)
+        if novo != antes:
+            return novo
+    return ""
 
 
 def mensagens_de_resposta(texto: str) -> list:
@@ -301,7 +390,9 @@ def _enviar(pagina, leitor: LeitorDeMensagens, pedido: dict):
         if not os.path.isfile(caminho):
             continue
         try:
-            if _enviar_arquivo(pagina, caminho):
+            identificador = _enviar_arquivo(pagina, caminho)
+            if identificador:
+                leitor.ignorar(identificador)  # o arquivo que ela mesma mandou não volta como se fosse seu
                 continue
         except Exception as exc:
             logger.warning("Falha ao anexar %s no WhatsApp: %s", caminho, exc)
@@ -311,7 +402,139 @@ def _enviar(pagina, leitor: LeitorDeMensagens, pedido: dict):
         _enviar_texto(pagina, aviso)
 
 
-def executar_navegador(fila_comandos, fila_envios, estado, pasta_perfil: str, numero_configurado: str = ""):
+class AnexoRecusado(Exception):
+    """O arquivo chegou mas não é guardado (programa, grande demais...); a mensagem vai para a pessoa."""
+
+
+def _tentar_baixar(pagina, acao, tempo: int):
+    """Faz `acao` (um clique) e espera o navegador começar um download; None se nada baixou."""
+    try:
+        with pagina.expect_download(timeout=tempo) as espera:
+            acao()
+        return espera.value
+    except Exception as exc:
+        logger.info("WhatsApp: tentativa de baixar sem download (%s).", str(exc).splitlines()[0][:80] if str(exc) else "")
+        return None
+
+
+def _fechar_visualizador(pagina):
+    try:
+        pagina.keyboard.press("Escape")
+    except Exception:
+        pass
+
+
+def _baixar_documento(pagina, identificador: str):
+    """O WhatsApp Web muda de cara: tenta, em ordem, o clique no documento, a seta de baixar, os outros botões da mensagem, o botão
+    "Baixar" do visualizador que um clique pode abrir e o menu da mensagem ("Baixar"). Devolve o download ou None."""
+    mensagem = pagina.locator(f'[data-id="{identificador}"]')
+    if not mensagem.count():
+        return None
+    mensagem.first.scroll_into_view_if_needed()
+
+    def clicar(alvo):
+        # clicar no ícone dentro de um botão tem de clicar no botão
+        botao = alvo.locator("xpath=ancestor-or-self::*[@role='button'][1]")
+        (botao.first if botao.count() else alvo).click()
+
+    candidatos = []
+    for seletor in (SELETOR_DOCUMENTO, SELETOR_SETA_DE_BAIXAR):
+        candidatos.extend(mensagem.locator(seletor).all()[:3])
+    for botao in mensagem.locator('[role="button"]').all()[:8]:
+        rotulo = (botao.get_attribute("aria-label") or "") + " " + (botao.get_attribute("title") or "")
+        if not RE_BOTAO_QUE_NAO_BAIXA.search(rotulo):
+            candidatos.append(botao)
+    for indice, alvo in enumerate(candidatos):
+        ultimo = indice == len(candidatos) - 1
+        baixou = _tentar_baixar(pagina, lambda alvo=alvo: clicar(alvo), TEMPO_DO_DOWNLOAD if ultimo else TEMPO_DO_PRIMEIRO_CLIQUE)
+        if baixou is not None:
+            return baixou
+        # o clique pode ter aberto o visualizador, que tem o botão de baixar
+        visualizador = pagina.locator(SELETOR_BAIXAR_NA_PAGINA).last
+        if visualizador.count():
+            baixou = _tentar_baixar(pagina, lambda: visualizador.click(), TEMPO_DO_DOWNLOAD)
+            _fechar_visualizador(pagina)
+            if baixou is not None:
+                return baixou
+    # menu da mensagem: passa o mouse, abre o menu e escolhe "Baixar" (ou clique direito)
+    for abrir_menu in (lambda: (mensagem.first.hover(), mensagem.locator(SELETOR_MENU_DA_MENSAGEM).first.click()),
+                       lambda: mensagem.first.click(button="right")):
+        try:
+            abrir_menu()
+            item = pagina.get_by_text(RE_ITEM_BAIXAR).first
+            item.wait_for(state="visible", timeout=2000)
+        except Exception:
+            _fechar_visualizador(pagina)
+            continue
+        baixou = _tentar_baixar(pagina, lambda: item.click(), TEMPO_DO_DOWNLOAD)
+        if baixou is not None:
+            return baixou
+        _fechar_visualizador(pagina)
+    return None
+
+
+def _baixar_anexo(pagina, identificador: str, anexo: dict, pasta_recebidos: str, limite_mb: float) -> str:
+    """Baixa o documento ou a foto da mensagem para `pasta_recebidos/AAAA-MM-DD/` e devolve o caminho."""
+    from fontes import caminho_livre, nome_seguro, validar_arquivo
+
+    pasta = os.path.join(pasta_recebidos, datetime.now().strftime("%Y-%m-%d"))
+    if anexo.get("tipo") == "imagem":
+        dados = pagina.evaluate(JS_BAIXAR_IMAGEM, identificador)
+        if not dados:
+            raise RuntimeError("não achei a foto na conversa")
+        import base64
+
+        destino = caminho_livre(pasta, f"foto_{datetime.now():%H%M%S}{EXTENSAO_DA_IMAGEM.get(dados.get('tipo'), '.jpg')}")
+        with open(destino, "wb") as arquivo:
+            arquivo.write(base64.b64decode(dados["base64"]))
+    else:
+        baixou = _baixar_documento(pagina, identificador)
+        if baixou is None:
+            raise RuntimeError("o WhatsApp Web não começou o download")
+        destino = caminho_livre(pasta, nome_seguro(baixou.suggested_filename or anexo.get("nome") or "documento"))
+        baixou.save_as(destino)
+    problema = validar_arquivo(destino, limite_mb)
+    if problema:
+        try:
+            os.remove(destino)
+        except OSError:
+            pass
+        raise AnexoRecusado(f"“{os.path.basename(destino)}”: {problema}")
+    return destino
+
+
+def _avisar(pagina, leitor: LeitorDeMensagens, texto: str):
+    for parte in mensagens_de_resposta(texto):
+        leitor.registrar_envio(parte)
+        _enviar_texto(pagina, parte)
+
+
+def _processar_anexo(pagina, leitor: LeitorDeMensagens, entrada: dict, fila_comandos, pasta_recebidos: str, limite_mb: float):
+    """Um documento ou foto chegou: baixa e entrega ao agente de fontes (a legenda, se houver, é o pedido)."""
+    anexo = entrada["anexo"]
+    if anexo.get("tipo") not in ("documento", "imagem"):
+        _avisar(pagina, leitor, "Só recebo documentos e fotos por aqui (áudio e vídeo, ainda não).")
+        return
+    try:
+        caminho = _baixar_anexo(pagina, entrada["id"], anexo, pasta_recebidos, limite_mb)
+    except AnexoRecusado as exc:
+        _avisar(pagina, leitor, f"Não guardei {exc}")
+        return
+    except Exception as exc:
+        logger.warning("WhatsApp: não consegui baixar o anexo: %s", exc)
+        try:
+            logger.info("WhatsApp: forma da mensagem que não baixou:\n%s", pagina.evaluate(JS_ESQUELETO, entrada["id"]))
+        except Exception:
+            pass
+        _avisar(pagina, leitor, "Recebi um arquivo, mas não consegui baixar. Tente mandar de novo como documento "
+                                "(no clipe, escolha Documento).")
+        return
+    fila_comandos.put({"tipo": "arquivo", "caminho": caminho, "nome": os.path.basename(caminho),
+                       "legenda": entrada.get("texto") or "", "origem": "whatsapp"})
+
+
+def executar_navegador(fila_comandos, fila_envios, estado, pasta_perfil: str, numero_configurado: str = "",
+                       pasta_recebidos: str = "", limite_mb: float = 50.0):
     """Processo do WhatsApp Web: lê a conversa consigo mesmo e envia as respostas da Beatriz."""
     from playwright.sync_api import sync_playwright
 
@@ -354,8 +577,11 @@ def executar_navegador(fila_comandos, fila_envios, estado, pasta_perfil: str, nu
                     if not pagina.query_selector(SELETOR_CAIXA):
                         raise RuntimeError("a conversa foi fechada ou o WhatsApp desconectou")
                     aquecendo = not leitor.pronto
-                    for comando in leitor.novas(pagina.evaluate(JS_LER_MENSAGENS)):
-                        fila_comandos.put(comando)
+                    for entrada in leitor.novas_entradas(pagina.evaluate(JS_LER_MENSAGENS)):
+                        if entrada["anexo"] is None:
+                            fila_comandos.put(entrada["texto"])
+                        elif pasta_recebidos:
+                            _processar_anexo(pagina, leitor, entrada, fila_comandos, pasta_recebidos, limite_mb)
                     if aquecendo and leitor.pronto:
                         logger.info("WhatsApp: conversa carregada (%d mensagens do histórico ignoradas).", len(leitor.historico))
                         _definir_estado(estado, "conectado", "Mande comandos na conversa Mensagem para você.")
@@ -373,9 +599,11 @@ def executar_navegador(fila_comandos, fila_envios, estado, pasta_perfil: str, nu
 class CanalWhatsApp:
     """Liga o processo do WhatsApp Web ao laço principal: comandos chegam por `receber`, respostas saem por `enviar`."""
 
-    def __init__(self, estado=None, pasta_perfil: str = None, numero: str = ""):
-        from config import NOTELOOKLM_PATH
+    def __init__(self, estado=None, pasta_perfil: str = None, numero: str = "", pasta_recebidos: str = None, limite_mb: float = None):
+        from config import LIMITE_DO_ARQUIVO_MB, NOTELOOKLM_PATH, PASTA_RECEBIDOS
 
+        self.pasta_recebidos = PASTA_RECEBIDOS if pasta_recebidos is None else pasta_recebidos
+        self.limite_mb = LIMITE_DO_ARQUIVO_MB if limite_mb is None else limite_mb
         self.estado = estado
         self.pasta_perfil = pasta_perfil or os.path.join(NOTELOOKLM_PATH, "banco_memoria", "whatsapp_web")
         self.numero = numero
@@ -386,14 +614,16 @@ class CanalWhatsApp:
     def iniciar(self):
         self.processo = multiprocessing.Process(
             target=executar_navegador,
-            args=(self.fila_comandos, self.fila_envios, self.estado, self.pasta_perfil, self.numero),
+            args=(self.fila_comandos, self.fila_envios, self.estado, self.pasta_perfil, self.numero,
+                  self.pasta_recebidos, self.limite_mb),
             daemon=True,
         )
         self.processo.start()
         logger.info("Canal do WhatsApp iniciado (processo %s).", self.processo.pid)
 
-    def receber(self) -> str:
-        """Próximo comando que chegou pelo WhatsApp, ou "" se não houver nenhum."""
+    def receber(self):
+        """Próxima coisa que chegou pelo WhatsApp: o texto de um comando, ou um dict {"tipo": "arquivo", "caminho", "nome",
+        "legenda", "origem"} quando você mandou um documento ou foto. "" se não houver nada."""
         try:
             return self.fila_comandos.get_nowait()
         except queue.Empty:

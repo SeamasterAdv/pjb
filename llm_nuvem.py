@@ -380,12 +380,16 @@ def provedores_nuvem() -> list:
     return [p for p in ordem if p.ativo and p.configurado()]
 
 
-def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None, preferir: str = None, registro: list = None):
+def responder_na_nuvem(prompt: str, contexto: str = "", opcoes=None, preferir: str = None, registro: list = None,
+                       exclusivo: bool = False):
     """Resposta da primeira IA da nuvem que conseguir; None se nenhuma puder (o chamador usa o Ollama).
 
     `preferir` ("claude" ou "gemini") tenta essa IA primeiro; `registro` recebe o nome de quem respondeu.
+    `exclusivo` (com `preferir`) tenta só essa IA, sem passar o conteúdo para a outra: para o que a pessoa só aceita mandar a uma delas.
     """
     provedores = ordenar_por_preferencia(provedores_nuvem(), preferir)
+    if exclusivo and preferir:
+        provedores = [p for p in provedores if getattr(p, "nome", "").lower() == preferir]
     if preferir and not any(getattr(p, "nome", "").lower() == preferir for p in provedores):
         logger.info("%s foi pedido, mas está desligado ou sem acesso; usando as outras IAs.", NOMES_IA.get(preferir, preferir))
     for provedor in provedores:

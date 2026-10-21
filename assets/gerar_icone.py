@@ -1,9 +1,9 @@
-"""Gera o ícone da Beatriz (sol dourado sobre roxo) em SVG, PNG e ICO.
+"""Gera o ícone da Beatriz (a esfera em rede, branca sobre preto) em SVG, PNG e ICO, e os ícones do app do celular.
 
 Uso: .venv312\\Scripts\\python.exe assets\\gerar_icone.py
 
-O desenho do sol e as cores vêm de identidade_visual.py, os mesmos do painel. Até
-32 px fica a versão simplificada do sol, para continuar legível na barra de tarefas.
+O desenho vem de identidade_visual.py (`formas_esfera`, `imagem_esfera`), o mesmo visual do painel. Até 48 px fica a
+versão de traço grosso (um anel e uma malha geodésica), para continuar legível na barra de tarefas.
 """
 import os
 import sys
@@ -11,35 +11,50 @@ import sys
 PASTA = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(PASTA))
 
-from identidade_visual import DOURADO, DOURADO_CLARO, ROXO, formas_sol, imagem_sol  # noqa: E402
+from identidade_visual import PRETO, _brilho_pela_frente, formas_esfera, imagem_esfera  # noqa: E402
 
-RAIO_CANTO = 24
+CANTOS = 0.22  # fração do lado (o raio dos cantos do quadrado preto)
+RAIO = 0.38  # o raio da esfera, em fração do lado
 TAMANHOS_ICO = [16, 20, 24, 32, 40, 48, 64, 256]
+# Ícones do app do celular (interface_app/icones): quadrados cheios, porque o iPhone arredonda os cantos sozinho; a
+# esfera um pouco menor, para caber na área segura dos ícones "maskable" do Android.
+PASTA_ICONES_APP = os.path.join(os.path.dirname(PASTA), "interface_app", "icones")
+TAMANHOS_APP = [180, 192, 512]
+RAIO_APP = 0.34
 
 
 def svg() -> str:
-    sol = formas_sol()
+    formas = formas_esfera(poeira=700)
+    escala, centro = RAIO * 100, 50
+
+    def tela(p):
+        return centro + p[0] * escala, centro - p[1] * escala
+
     partes = [
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">',
-        f'<rect width="100" height="100" rx="{RAIO_CANTO}" fill="{ROXO}"/>',
+        f'<rect width="100" height="100" rx="{CANTOS * 100:g}" fill="{PRETO}"/>',
+        '<g fill="#fff">',
     ]
-    for raio in sol["raios"]:
-        pontos = " ".join(f"{x:.2f},{y:.2f}" for x, y in raio)
-        partes.append(f'<polygon points="{pontos}" fill="{DOURADO}"/>')
-    partes.append(f'<circle cx="50" cy="50" r="{sol["disco"]}" fill="{DOURADO_CLARO}"/>')
-    b = sol["b"]
-    (cx, cy), raio_barriga = b["barriga"]
-    x, y1, y2 = b["haste"]
-    partes.append(
-        f'<circle cx="{cx}" cy="{cy}" r="{raio_barriga}" fill="none" stroke="{ROXO}" stroke-width="{b["traco"]}"/>'
-        f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{ROXO}" stroke-width="{b["traco"]}" stroke-linecap="round"/>'
-    )
+    for p in sorted(formas["poeira"], key=lambda q: q[2]):
+        x, y = tela(p)
+        partes.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r=".28" opacity="{0.47 * _brilho_pela_frente(p[2], 0.15):.2f}"/>')
+    partes.append('</g><g stroke="#fff" stroke-width=".35" stroke-linecap="round">')
+    nos = formas["nos"]
+    for a, b, perto in sorted(formas["linhas"], key=lambda linha: nos[linha[0]][2] + nos[linha[1]][2]):
+        (x1, y1), (x2, y2) = tela(nos[a]), tela(nos[b])
+        opacidade = _brilho_pela_frente((nos[a][2] + nos[b][2]) / 2) * (0.35 + 0.65 * perto)
+        partes.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" opacity="{opacidade:.2f}"/>')
+    partes.append('</g><g fill="#fff">')
+    for p in sorted(nos, key=lambda q: q[2]):
+        x, y = tela(p)
+        partes.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r=".85" opacity="{_brilho_pela_frente(p[2]):.2f}"/>')
+    partes.append(f'</g><circle cx="50" cy="50" r="{escala:g}" fill="none" stroke="#fff" stroke-width=".4" opacity=".27"/>')
     partes.append("</svg>\n")
     return "".join(partes)
 
 
 def main():
-    imagens = {tamanho: imagem_sol(tamanho, com_fundo=True) for tamanho in TAMANHOS_ICO}
+    imagens = {tamanho: imagem_esfera(tamanho, raio=RAIO, cantos=CANTOS) for tamanho in TAMANHOS_ICO}
     imagens[256].save(
         os.path.join(PASTA, "beatriz_icone.ico"),
         format="ICO",
@@ -49,7 +64,15 @@ def main():
     imagens[256].save(os.path.join(PASTA, "beatriz_icone_256.png"))
     with open(os.path.join(PASTA, "beatriz_icone.svg"), "w", encoding="utf-8") as arquivo:
         arquivo.write(svg())
-    print(f"Ícones gerados em {PASTA}")
+    icones_do_app()
+    print(f"Ícones gerados em {PASTA} e {PASTA_ICONES_APP}")
+
+
+def icones_do_app():
+    os.makedirs(PASTA_ICONES_APP, exist_ok=True)
+    for tamanho in TAMANHOS_APP:
+        imagem = imagem_esfera(tamanho, raio=RAIO_APP, cantos=0)
+        imagem.convert("RGB").save(os.path.join(PASTA_ICONES_APP, f"icone-{tamanho}.png"))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratório visual</title>
+<link rel="stylesheet" href="laboratorio_visual.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.min.js" } }
+</script>
+</head>
+<body>
+<!-- Laboratório do visual novo (esfera em rede = voz da Beatriz; montanha de pontos = sua voz).
+     Os ajustes ficam no navegador; "copiar ajustes" dá o JSON para levar ao painel e ao login. -->
+<div id="montanha" class="montanha" aria-hidden="true"></div>
+<div id="esfera" class="esfera" aria-hidden="true"></div>
+
+<header class="hud-topo">
+  <div class="marca">B.E.A.T.R.I.Z <span class="suave">// núcleo de voz · protótipo</span></div>
+  <div class="estado-atual">estado <b id="rotulo-estado">repouso</b></div>
+  <div id="relogio" class="suave"></div>
+</header>
+
+<aside class="controles" id="controles" aria-label="Ajustes"></aside>
+
+<nav class="testes" aria-label="Testes">
+  <div class="grupo">
+    <span class="titulo">estados</span>
+    <button data-estado="repouso" class="ativo">repouso</button>
+    <button data-estado="ouvindo">ouvindo</button>
+    <button data-estado="pensando">pensando</button>
+    <button data-estado="falando">falando</button>
+    <button data-estado="vitoria">vitória</button>
+  </div>
+  <div class="grupo">
+    <span class="titulo">voz dela</span>
+    <select id="amostra" aria-label="Amostra da voz">
+      <option value="1_atual_thalita.mp3">thalita (atual)</option>
+      <option value="5_siri_francisca_neutra.mp3">siri (francisca)</option>
+      <option value="3_thalita_multilingual_mais_alegre.mp3">thalita alegre</option>
+    </select>
+    <button id="btn-amostra">▶ tocar amostra</button>
+    <button id="btn-fala-dela">simular fala</button>
+  </div>
+  <div class="grupo">
+    <span class="titulo">sua voz</span>
+    <button id="btn-microfone">usar meu microfone</button>
+    <button id="btn-minha-voz">simular minha voz</button>
+  </div>
+  <div class="grupo">
+    <button id="btn-ciclo" class="forte">▶ conversa completa</button>
+  </div>
+</nav>
+
+<aside class="telemetria" aria-label="Leituras">
+  <div class="titulo">◢ telemetria</div>
+  <table id="leituras"></table>
+  <div class="colunas-hex" id="hex" aria-hidden="true"></div>
+</aside>
+
+<div class="medidor-grande" aria-hidden="true">
+  <span id="db-voce">-∞</span><small>dB · sua voz</small>
+</div>
+<p class="aviso" id="aviso" aria-live="polite"></p>
+
+<script type="module" src="laboratorio_visual.js"></script>
+</body>
+</html>

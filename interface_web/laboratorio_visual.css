@@ -1,0 +1,106 @@
+/* Laboratório do visual novo: preto, pontos brancos e letreiros de instrumento (como as fotos de
+   referência). Os controles imitam o painel de ajustes da foto do plexus. */
+:root {
+  --fundo: #000;
+  --linha: rgba(255, 255, 255, .14);
+  --texto: #d6d6d6;
+  --suave: #767676;
+  --claro: #fff;
+  --barra: #0c2436;
+  --barra-cheia: #155e8c;
+  --mono: "Cascadia Mono", "Consolas", "Lucida Console", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--fundo);
+  color: var(--texto);
+  font: 11px/1.45 var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  overflow: hidden;
+}
+button, select { font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.suave { color: var(--suave); }
+
+/* A montanha num quadro, como no painel. */
+.montanha {
+  position: fixed; left: 290px; right: 290px; bottom: 56px; height: 25vh; z-index: 0;
+  border: 1px solid var(--linha);
+  background: radial-gradient(circle, rgba(255, 255, 255, .2) .7px, transparent 1.1px) 0 0 / 7px 25%;
+}
+.esfera {
+  position: fixed; left: 50%; top: 38%; z-index: 1;
+  width: min(56vh, 46vw); height: min(56vh, 46vw);
+  transform: translate(-50%, -50%);
+}
+
+/* ---------------------------------------------------------------- topo */
+.hud-topo {
+  position: fixed; inset: 0 0 auto; z-index: 3;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 12px 18px; border-bottom: 1px solid var(--linha);
+}
+.marca { color: var(--claro); letter-spacing: .3em; }
+.marca .suave { letter-spacing: .08em; }
+.estado-atual b { color: var(--claro); font-weight: 400; margin-left: 6px; }
+#relogio { text-align: right; }
+
+/* ---------------------------------------------------------------- testes */
+.testes {
+  position: fixed; top: 52px; left: 290px; right: 290px; z-index: 3;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px;
+}
+.testes .grupo { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.testes .titulo { color: var(--suave); margin-right: 3px; }
+.testes button, .testes select {
+  background: rgba(0, 0, 0, .55); border: 1px solid var(--linha); padding: 4px 9px; cursor: pointer;
+}
+.testes select { padding: 3px 4px; }
+.testes button:hover { border-color: rgba(255, 255, 255, .45); }
+.testes button.ativo, .testes button.forte { background: var(--claro); color: #000; border-color: var(--claro); }
+
+/* ---------------------------------------------------------------- controles (como a foto do plexus) */
+.controles {
+  position: fixed; left: 14px; top: 52px; bottom: 14px; width: 262px; z-index: 3;
+  overflow-y: auto; padding-right: 6px; scrollbar-width: thin; scrollbar-color: #333 transparent;
+}
+.secao { margin-bottom: 14px; }
+.secao-cab {
+  display: flex; justify-content: space-between; align-items: center; width: 100%;
+  background: var(--barra); border: 0; padding: 2px 6px; margin-bottom: 10px; cursor: pointer; text-align: left;
+}
+.secao-cab::after { content: "▾"; font-size: 9px; }
+.secao.fechada .secao-cab::after { content: "▴"; }
+.secao.fechada .secao-corpo { display: none; }
+.secao-corpo { padding-left: 14px; }
+.deslizante { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; cursor: ew-resize; }
+.deslizante .barra { position: relative; width: 96px; height: 15px; background: var(--barra); flex: none; }
+.deslizante .cheio { position: absolute; inset: 0 auto 0 0; background: var(--barra-cheia); }
+.deslizante .valor { position: relative; padding-left: 4px; line-height: 15px; color: var(--claro); font-size: 10px; }
+.deslizante input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; }
+.deslizante .nome { font-size: 10px; }
+.deslizante:focus-within .barra { outline: 1px solid rgba(255, 255, 255, .5); }
+.linha-botoes { display: flex; gap: 6px; flex-wrap: wrap; padding-left: 14px; }
+.linha-botoes button, .linha-botoes select {
+  background: var(--barra); border: 0; padding: 4px 8px; cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- telemetria */
+.telemetria { position: fixed; right: 14px; top: 52px; width: 262px; z-index: 3; }
+.telemetria .titulo { color: var(--claro); border-bottom: 1px solid var(--linha); padding-bottom: 4px; margin-bottom: 6px; }
+#leituras { width: 100%; border-collapse: collapse; }
+#leituras td { padding: 1px 0; white-space: nowrap; }
+#leituras td:nth-child(2) { text-align: right; color: var(--claro); }
+#leituras .sub td:first-child { padding-left: 12px; color: var(--suave); }
+#leituras .barrinha { color: var(--suave); letter-spacing: 0; }
+.colunas-hex {
+  margin-top: 14px; color: #4d4d4d; font-size: 9px; line-height: 1.35; letter-spacing: .04em;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 10px;
+}
+
+.medidor-grande { position: fixed; left: 300px; bottom: 18px; z-index: 3; display: flex; align-items: baseline; gap: 8px; }
+.medidor-grande span { font-size: 30px; color: var(--claro); letter-spacing: 0; }
+.medidor-grande small { color: var(--suave); }
+.aviso { position: fixed; right: 18px; bottom: 14px; z-index: 3; margin: 0; max-width: 420px; text-align: right; color: var(--claro); }

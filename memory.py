@@ -8,6 +8,8 @@ import hashlib
 import math
 import mimetypes
 import shutil
+import subprocess
+import sys
 import threading
 import unicodedata
 import zipfile
@@ -90,6 +92,7 @@ def agendar_indexacao_em_background():
     _atualizar_status_indexacao("carregando", "Biblioteca de conhecimento sendo carregada em segundo plano.")
 
     def aquecer_e_indexar():
+        conferir_colecao_docs()
         _aquecer_embedding()
         indexar_pasta_documentos()
 
@@ -248,25 +251,96 @@ def _abrir_colecao_docs(cliente):
 
 # As coleções antigas (documentos_usuario_v2, com o embedding em inglês e cortes fixos)
 # ficam no banco sem uso, para não apagar dados.
-banco_memoria_path = os.path.join(NOTELOOKLM_PATH, "banco_memoria")
+# BEATRIZ_BANCO_MEMORIA troca a pasta do banco: os testes usam uma temporária (conftest.py), porque o ChromaDB não aguenta
+# dois processos gravando no mesmo banco e um teste rodando com a Beatriz aberta corrompeu o índice (out/2026).
+banco_memoria_path = os.getenv("BEATRIZ_BANCO_MEMORIA") or os.path.join(NOTELOOKLM_PATH, "banco_memoria")
 os.makedirs(banco_memoria_path, exist_ok=True)
+if os.getenv("BEATRIZ_BANCO_MEMORIA"):  # a auditoria acompanha o banco (os testes não escrevem na de verdade)
+    CAMINHO_AUDITORIA_MEMORIA = os.path.join(banco_memoria_path, "auditoria_memoria.jsonl")
 CAMINHO_MANIFESTO_MEMORIA = os.path.join(banco_memoria_path, f"manifesto_fontes_v3_{SUFIXO_EMBEDDING}.json")
 BANCO_EM_RAM = False
 _MANIFESTO_EM_RAM = {}
+# Só o processo principal abre o banco. Os outros processos da Beatriz (painel, tela de carregamento, WhatsApp, o Manager)
+# herdam esta variável dele (`servir_biblioteca`) e pedem a ele as buscas e as leituras das fontes (`FUNCOES_DO_BANCO`).
+BIBLIOTECA_REMOTA = os.getenv("BEATRIZ_BIBLIOTECA_REMOTA", "")
 
-try:
-    chroma_client = chromadb.PersistentClient(path=banco_memoria_path)
-    colecao_memoria = chroma_client.get_or_create_collection(name="memoria_usuario")
+
+def _travar_banco(pasta: str):
+    """Trava exclusiva do banco: o arquivo fica aberto e bloqueado enquanto este processo viver (o Windows solta a
+    trava sozinho se ele cair). Devolve o arquivo, ou None se outro processo já tem o banco: uma segunda Beatriz
+    aberta, ou um script de fora."""
+    arquivo = open(os.path.join(pasta, "banco.trava"), "a+")
+    try:
+        arquivo.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(arquivo.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(arquivo.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        arquivo.close()
+        return None
+    return arquivo
+
+
+# Com o banco ocupado, este processo não o abre e as funções do banco devolvem as respostas de reserva.
+_TRAVA_DO_BANCO = None if BIBLIOTECA_REMOTA else _travar_banco(banco_memoria_path)
+BANCO_OCUPADO = not BIBLIOTECA_REMOTA and _TRAVA_DO_BANCO is None
+
+chroma_client = colecao_memoria = colecao_docs = None
+if not BIBLIOTECA_REMOTA and not BANCO_OCUPADO:
+    try:
+        chroma_client = chromadb.PersistentClient(path=banco_memoria_path)
+        colecao_memoria = chroma_client.get_or_create_collection(name="memoria_usuario")
+        colecao_docs = _abrir_colecao_docs(chroma_client)
+    except Exception as exc:
+        print(f"Aviso: banco persistente indisponível, usando memória em RAM ({exc})")
+        # O banco em RAM começa vazio a cada abertura, então o manifesto do disco (que diz o que já
+        # foi indexado no banco persistente) não vale: este fica só na memória desta sessão.
+        BANCO_EM_RAM = True
+        CAMINHO_MANIFESTO_MEMORIA = os.path.join(banco_memoria_path, f"manifesto_fontes_v3_{SUFIXO_EMBEDDING}_ram.json")
+        chroma_client = chromadb.Client()
+        colecao_memoria = chroma_client.get_or_create_collection(name="memoria_usuario")
+        colecao_docs = _abrir_colecao_docs(chroma_client)
+
+# Um índice corrompido não lança exceção: o ChromaDB derruba o processo inteiro (violação de acesso no
+# chromadb_rust_bindings) na primeira leitura ou escrita da coleção. Por isso a conferência abre a coleção num
+# processo à parte. Saída 1 é uma exceção do Python (a coleção não existe, por exemplo), não corrupção.
+_CONFERIR_COLECAO = "import sys, chromadb; chromadb.PersistentClient(path=sys.argv[1]).get_collection(sys.argv[2]).count()"
+
+
+def _colecao_docs_abre(caminho: str | None = None, nome: str | None = None) -> bool:
+    try:
+        resultado = subprocess.run(
+            [sys.executable, "-c", _CONFERIR_COLECAO, caminho or banco_memoria_path, nome or NOME_COLECAO_DOCS],
+            capture_output=True, timeout=180, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Não consegui conferir a coleção da biblioteca: %s", exc)
+        return True  # na dúvida, segue como antes
+    return resultado.returncode in (0, 1)
+
+
+def conferir_colecao_docs() -> bool:
+    """Recria a coleção dos trechos se ela estiver corrompida (devolve True quando recriou).
+
+    Os trechos saem dos arquivos, que não são tocados: recriar só custa uma nova leitura das fontes, feita em seguida
+    pela indexação (o manifesto volta vazio)."""
+    global colecao_docs
+    if BANCO_EM_RAM or _colecao_docs_abre():
+        return False
+    logger.error("A coleção '%s' da biblioteca está corrompida (o ChromaDB cai ao abri-la): vou recriá-la e ler as fontes de novo.",
+                 NOME_COLECAO_DOCS)
+    try:
+        chroma_client.delete_collection(NOME_COLECAO_DOCS)
+    except Exception as exc:
+        logger.warning("Não consegui apagar a coleção corrompida: %s", exc)
     colecao_docs = _abrir_colecao_docs(chroma_client)
-except Exception as exc:
-    print(f"Aviso: banco persistente indisponível, usando memória em RAM ({exc})")
-    # O banco em RAM começa vazio a cada abertura, então o manifesto do disco (que diz o que já
-    # foi indexado no banco persistente) não vale: este fica só na memória desta sessão.
-    BANCO_EM_RAM = True
-    CAMINHO_MANIFESTO_MEMORIA = os.path.join(banco_memoria_path, f"manifesto_fontes_v3_{SUFIXO_EMBEDDING}_ram.json")
-    chroma_client = chromadb.Client()
-    colecao_memoria = chroma_client.get_or_create_collection(name="memoria_usuario")
-    colecao_docs = _abrir_colecao_docs(chroma_client)
+    _salvar_manifesto({})
+    _registrar_auditoria("colecao_recriada", colecao=NOME_COLECAO_DOCS)
+    return True
 
 
 # --- Palavras-chave ---
@@ -516,8 +590,19 @@ def _extrair_texto_pptx(caminho, limite=50000):
         return ""
 
 
+VERSAO_OCR = "winocr-1"  # fontes "vazias" de antes do OCR do Windows são tentadas uma vez de novo
+
+
 def _extrair_texto_imagem(caminho, limite=50000):
     nome = os.path.basename(caminho)
+    try:
+        from ocr_local import texto_do_arquivo_de_imagem
+
+        texto = texto_do_arquivo_de_imagem(caminho)  # OCR do Windows, no PC
+        if texto.strip():
+            return texto[:limite]
+    except Exception:
+        pass
     try:
         from PIL import Image
         try:
@@ -550,7 +635,15 @@ def _extrair_unidades(caminho, limite=50000):
     try:
         if ext == ".pdf":
             reader = pypdf.PdfReader(caminho)
-            return [(pagina.extract_text() or "", f"página {indice}") for indice, pagina in enumerate(reader.pages, start=1)]
+            textos = [pagina.extract_text() or "" for pagina in reader.pages]
+            try:  # páginas escaneadas (sem texto): OCR do Windows
+                from ocr_local import paginas_sem_texto
+
+                for numero, lido in paginas_sem_texto(caminho, textos):
+                    textos[numero - 1] = lido
+            except Exception as exc:
+                _registrar_auditoria("ocr_failed", caminho=caminho, erro=str(exc))
+            return [(texto, f"página {indice}") for indice, texto in enumerate(textos, start=1)]
         if ext == ".docx":
             from docx import Document
             documento = Document(caminho)
@@ -599,6 +692,8 @@ def extrair_texto_arquivo_otimizado(caminho, limite=50000):
                 texto += (pagina.extract_text() or "") + "\n"
                 if len(texto) > limite:
                     return texto[:limite]
+            if not texto.strip():  # PDF escaneado: sem camada de texto, só OCR
+                return "\n".join(texto_ for _, texto_ in _extrair_unidades(caminho, limite))[:limite]
             return texto
         elif ext in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
             return _extrair_texto_imagem(caminho, limite=limite)
@@ -809,13 +904,15 @@ def indexar_pasta_documentos():
             assinatura = f"{estat.st_mtime_ns}:{estat.st_size}"
             registro = manifesto.get(source_id, {})
             # Arquivo igual e cortado do mesmo jeito: nada a fazer. Fontes vazias não têm trechos.
-            if registro.get("assinatura") == assinatura and (registro.get("vazio") or registro.get("trechos") == VERSAO_TRECHOS):
+            if registro.get("assinatura") == assinatura and (
+                    (registro.get("vazio") and registro.get("ocr") == VERSAO_OCR) or registro.get("trechos") == VERSAO_TRECHOS):
                 continue
 
             unidades = _extrair_unidades(caminho)
             if not any(texto.strip() for texto, _ in unidades):
                 colecao_docs.delete(where={"source_id": source_id})
-                manifesto[source_id] = {"caminho": caminho, "tipo": tipo, "assinatura": assinatura, "vazio": True}
+                manifesto[source_id] = {"caminho": caminho, "tipo": tipo, "assinatura": assinatura, "vazio": True,
+                                        "ocr": VERSAO_OCR}
                 _registrar_auditoria("ingest_empty", caminho=caminho)
                 continue
 
@@ -1580,3 +1677,104 @@ def notelooklm_assistente(pergunta, modo=None):
 def notelooklm_responder(pergunta, modo=None):
     """Alias focado em conversa/assistente para o NotelookLM."""
     return notelooklm_assistente(pergunta, modo=modo)
+
+
+def total_de_trechos() -> int | None:
+    """Quantos trechos a biblioteca tem (o quadro de Status dos painéis)."""
+    try:
+        return colecao_docs.count()
+    except Exception:
+        return None
+
+
+# --- Um processo só no banco ---
+# O ChromaDB não aguenta dois processos no mesmo banco (até uma leitura grava: ela aplica ao índice as alterações
+# pendentes), e o painel buscava e lia fontes no processo dele enquanto o principal indexava. Agora o principal atende
+# por um pipe local (com chave secreta) estas funções, as únicas que tocam o banco, e os outros processos as repassam:
+# "vira fonte", importar arquivo, URL ou vídeo, criar nota e atualizar a memória copiam os arquivos no próprio processo
+# e chamam a indexação daqui, então ela também vai para o principal.
+FUNCOES_DO_BANCO = {
+    "indexar_pasta_documentos": "A biblioteca está indisponível agora: o processo principal da Beatriz não respondeu.",
+    "buscar_nos_documentos_modo": "Nenhuma informação encontrada.",
+    "buscar_notas_obsidian": "Não consegui buscar nas notas agora.",
+    "agendar_indexacao_em_background": False,
+    "conferir_colecao_docs": False,
+    "total_de_trechos": None,
+}
+_SERVIDOR_DA_BIBLIOTECA = {"valor": ""}
+
+
+def servir_biblioteca() -> str:
+    """No processo principal, antes de abrir qualquer outro processo: atende as funções do banco e põe o endereço
+    e a chave no ambiente, que os processos filhos herdam."""
+    from multiprocessing import AuthenticationError
+    from multiprocessing.connection import Listener
+
+    if _SERVIDOR_DA_BIBLIOTECA["valor"] or BIBLIOTECA_REMOTA or BANCO_OCUPADO:
+        return _SERVIDOR_DA_BIBLIOTECA["valor"] or BIBLIOTECA_REMOTA
+    chave = os.urandom(32)
+    ouvinte = Listener(authkey=chave)
+
+    def atender(conexao):
+        with conexao:
+            try:
+                nome, args, kwargs = conexao.recv()
+                if nome not in FUNCOES_DO_BANCO:
+                    resposta = (False, f"função fora da biblioteca: {nome}")
+                else:
+                    resposta = (True, globals()[nome](*args, **kwargs))
+            except Exception as exc:
+                resposta = (False, str(exc))
+            try:
+                conexao.send(resposta)
+            except (OSError, EOFError):
+                pass  # o outro processo desistiu (fechou o painel no meio)
+
+    def aceitar():
+        while True:
+            try:
+                conexao = ouvinte.accept()
+            except AuthenticationError:
+                continue  # chave errada: não é um processo da Beatriz
+            except OSError as exc:
+                logger.warning("O atendimento da biblioteca aos outros processos parou: %s", exc)
+                return
+            threading.Thread(target=atender, args=(conexao,), daemon=True).start()
+
+    threading.Thread(target=aceitar, name="biblioteca-dos-processos", daemon=True).start()
+    valor = f"{ouvinte.address}|{chave.hex()}"
+    _SERVIDOR_DA_BIBLIOTECA["valor"] = os.environ["BEATRIZ_BIBLIOTECA_REMOTA"] = valor
+    return valor
+
+
+def _no_processo_principal(nome: str):
+    reserva = FUNCOES_DO_BANCO[nome]
+
+    def repassar(*args, **kwargs):
+        from multiprocessing import AuthenticationError
+        from multiprocessing.connection import Client
+
+        if BANCO_OCUPADO:
+            logger.warning("O banco da biblioteca está aberto em outro processo (a Beatriz?): %s não foi feita aqui.", nome)
+            return reserva
+        try:
+            endereco, chave = BIBLIOTECA_REMOTA.rsplit("|", 1)
+            with Client(endereco, authkey=bytes.fromhex(chave)) as conexao:
+                conexao.send((nome, args, kwargs))
+                certo, valor = conexao.recv()
+        except (OSError, EOFError, ValueError, AuthenticationError) as exc:
+            logger.warning("A biblioteca do processo principal não respondeu (%s): %s", nome, exc)
+            return reserva
+        if not certo:
+            logger.warning("A biblioteca do processo principal falhou em %s: %s", nome, valor)
+            return reserva
+        return valor
+
+    repassar.__name__ = nome
+    repassar.__doc__ = f"{nome}, feita pelo processo principal da Beatriz (o único que abre o banco)."
+    return repassar
+
+
+if BIBLIOTECA_REMOTA or BANCO_OCUPADO:
+    for _nome in FUNCOES_DO_BANCO:
+        globals()[_nome] = _no_processo_principal(_nome)

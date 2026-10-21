@@ -275,3 +275,36 @@ def test_banco_em_ram_nao_confia_no_manifesto_do_disco(monkeypatch, tmp_path):
     memory._salvar_manifesto({"novo": {"caminho": "y"}})
     assert memory._carregar_manifesto() == {"novo": {"caminho": "y"}}
     assert json.loads(caminho.read_text(encoding="utf-8")) == {"novo": {"caminho": "y"}}  # o painel lê o arquivo
+
+
+# ------------------------------------------------------------------ coleção corrompida
+def test_conferencia_abre_a_colecao_num_processo_a_parte(tmp_path):
+    """Coleção boa e coleção que não existe passam; só uma queda do processo filho conta como corrupção."""
+    cliente = chromadb.PersistentClient(path=str(tmp_path))
+    cliente.get_or_create_collection("boa").add(ids=["a"], documents=["texto"], embeddings=[[0.1, 0.2, 0.3]])
+    assert memory._colecao_docs_abre(str(tmp_path), "boa")
+    assert memory._colecao_docs_abre(str(tmp_path), "nao_existe")  # exceção do Python, não corrupção
+
+
+def test_colecao_corrompida_e_recriada_e_as_fontes_lidas_de_novo(biblioteca, monkeypatch):
+    import subprocess
+
+    fontes, funcao, colecao = biblioteca
+    cliente = chromadb.EphemeralClient()
+    monkeypatch.setattr(memory, "chroma_client", cliente)
+    monkeypatch.setattr(memory, "NOME_COLECAO_DOCS", colecao.name)
+    monkeypatch.setattr(memory, "_abrir_colecao_docs", lambda c: c.get_or_create_collection(colecao.name, embedding_function=funcao))
+    _escrever_fontes(fontes)
+    memory.indexar_pasta_documentos()
+    assert memory.colecao_docs.count() > 0 and memory._carregar_manifesto()
+
+    saida = {"codigo": 0}
+    monkeypatch.setattr(memory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, saida["codigo"]))
+    assert memory.conferir_colecao_docs() is False  # abriu: nada muda
+    assert memory.colecao_docs.count() > 0
+
+    saida["codigo"] = 3221225477  # 0xC0000005: o ChromaDB derrubou o processo filho
+    assert memory.conferir_colecao_docs() is True
+    assert memory.colecao_docs.count() == 0 and memory._carregar_manifesto() == {}
+    assert memory.indexar_pasta_documentos().startswith("3 fontes")  # a próxima varredura lê tudo de novo
+    assert "aluguel.md" in memory.buscar_nos_documentos_modo("multa por rescisão do contrato de aluguel", modo="padrão")

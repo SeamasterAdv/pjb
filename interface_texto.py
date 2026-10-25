@@ -11,6 +11,7 @@ from tkinter import filedialog, ttk
 
 import memory
 from agente_agenda import criar_agente_agenda
+from agente_controle import criar_agente_controle
 from agente_impressora import criar_agente_impressora, texto_da_agenda
 from agente_leis import AgenteLeis
 from agente_pastas import AgentePastas
@@ -319,6 +320,9 @@ class JanelaComandos(tk.Tk):
             texto_agenda=lambda t: texto_da_agenda(self.agenda, t),
             avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="status")),
         )
+        # TV e ar pelo Ekaza (o mesmo arquivo de códigos e estado da voz); o fim do aprender aparece no chat.
+        self.controle = criar_agente_controle(
+            avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")))
         # Arquivos recebidos pelo WhatsApp (no processo principal; o registro é o mesmo arquivo): vira fonte, arquiva, imprime, escaneia.
         self.fontes = criar_agente_fontes(avisar=lambda texto, canal: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")),
                                           enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients,
@@ -1329,6 +1333,16 @@ class JanelaComandos(tk.Tk):
         if resposta_impressora:  # imprimir, fila e estado da impressora: na hora, sem LLM
             self._inicio_processamento = time.perf_counter()
             self._finalizar_resposta(resposta_impressora)
+            return
+
+        if self.controle.reconhece(comando):  # TV e ar: a rede pode demorar, então o envio vai numa thread
+            self._inicio_processamento = time.perf_counter()
+
+            def controlar():
+                resposta = self.controle.responder(comando) or "Não entendi o pedido do controle remoto."
+                self.after(0, lambda: self._finalizar_resposta(resposta))
+
+            threading.Thread(target=controlar, daemon=True).start()
             return
 
         resposta_agenda = self.agenda.responder(comando)

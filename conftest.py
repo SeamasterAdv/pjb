@@ -121,6 +121,26 @@ def aparelhos_isolados(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def controle_remoto_intocado(tmp_path, monkeypatch):
+    """Nenhum teste manda infravermelho, procura o controle na rede ou fala com a nuvem da Tuya, e os códigos e o estado
+    de verdade (banco_memoria/controle_remoto.json) nunca são lidos nem gravados."""
+    import controle_remoto
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou usar o controle remoto de verdade")
+
+    monkeypatch.setattr(controle_remoto.ControleLocalTuya, "_aparelho", proibido)
+    monkeypatch.setattr(controle_remoto.ControleLocalTuya, "_aparelho_simples", proibido)
+    monkeypatch.setattr(controle_remoto.ControleLocalTuya, "_descobrir_ip", proibido)
+    monkeypatch.setattr(controle_remoto.ControleNuvemTuya, "_nuvem", proibido)
+    if "main" in sys.modules:
+        controle = sys.modules["main"].CONTROLE
+        monkeypatch.setattr(controle, "registro", controle_remoto.RegistroDoControle(str(tmp_path / "controle_teste.json")))
+        monkeypatch.setattr(controle, "pendencia", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def impressora_intocada(monkeypatch):
     """Nenhum teste imprime, cancela ou pausa nada na fila do Windows de verdade."""
     import impressora

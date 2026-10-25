@@ -41,3 +41,4 @@ winrt-Windows.Foundation
 winrt-Windows.Foundation.Collections
 onnx
 onnxruntime
+tinytuya

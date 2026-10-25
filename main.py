@@ -39,6 +39,7 @@ from config import (
 import tools
 from jeito_de_falar import frase, tipo_de_encerramento, todas as todas_as_frases
 from agente_agenda import criar_agente_agenda, iniciar_lembretes
+from agente_controle import criar_agente_controle
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
 from biometria_voz import BIOMETRIA, NEGADO, AgenteBiometria, Falante
@@ -648,6 +649,7 @@ RE_SO_DO_DONO = re.compile(
     r"\b(tela|janela|escane\w*|fontes?|agenda|compromiss\w*|lembr\w*|tarefa\w*|rotina|imprim\w*|impressora|e-?mails?|gmail|whatsapp|zap|mensagem|"
     r"document\w*|arquiv\w*|pdf|word|planilha|apresenta\w*|slides?|biblioteca|mem[óo]ria|obsidian|drive|resum\w*|"
     r"aula|estud\w*|ficha|abr[ae]\w*|fech\w*|toc[ae]\w*|liga\w*|deslig\w*|desativ\w*|ativ[ae]\w*|encerr\w*|"
+    r"volume|mudo|ar.condicionado|temperatura do ar|aprend\w*|"
     r"sair|pesquis\w*|manda\w*|envi\w*|cri[ae]\w*|faz\b|fa[çc]a\b)",
     re.IGNORECASE,
 )
@@ -1169,6 +1171,10 @@ IMPRESSORA = criar_agente_impressora(
     avisar=lambda texto: responder_rapido(texto),
 )
 
+# Controle remoto (agente_controle.py): a TV e o ar-condicionado pelo Ekaza Mini 3 (infravermelho Tuya), pela rede de casa.
+# O aprender um botão roda em segundo plano; o fim volta por avisar.
+CONTROLE = criar_agente_controle(avisar=lambda texto: responder_rapido(texto))
+
 # Artigos de lei (agente_leis.py): lê o texto oficial do Planalto e explica com o Gemini; "não entendi"
 # traz outra explicação, com outra abordagem.
 LEIS = AgenteLeis()
@@ -1590,7 +1596,7 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
             avisar_painel("ignorado", texto, motivo)
             return ""
         if em_conversa and (tipo_de_encerramento(texto) or LEIS.e_seguimento(texto) or TELA.e_seguimento(texto)
-                            or PASTAS.esperando_resposta()):
+                            or PASTAS.esperando_resposta() or CONTROLE.esperando_resposta()):
             avaliacao = "pedido"  # "valeu!", "tchau", "não entendi", "explica melhor", "a segunda": no meio da conversa, é com ela
         elif FONTES.esperando_resposta() and FONTES.reconhece(texto):
             avaliacao = "pedido"  # acabou de chegar um arquivo (ou escaneou uma folha): "vira fonte", "arquiva", "mais uma"
@@ -2278,6 +2284,15 @@ def main(evento_carregamento=None):
         if resposta_impressora:
             falar_e_registrar(comando, resposta_impressora)
             analisador.registrar_interacao(comando, ["impressora"], 0.0, True)
+            continue
+
+        # Controle remoto (TV e ar pelo Ekaza) antes da tela, das pastas, da agenda e dos agentes: "liga a TV",
+        # "aumenta o volume", "liga o ar em 22 graus". Vale também pelo WhatsApp e pelo app (a resposta vai por escrito).
+        inicio_controle = time.time()
+        resposta_controle = CONTROLE.responder(comando)
+        if resposta_controle:
+            falar_e_registrar(comando, resposta_controle)
+            analisador.registrar_interacao(comando, ["controle_remoto"], time.time() - inicio_controle, True)
             continue
 
         # Leitura de tela antes das leis, dos agentes e das ferramentas: "resume o que está na tela" não é um pedido de

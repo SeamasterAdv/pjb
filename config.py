@@ -285,6 +285,37 @@ IMPRESSORA_CONFIRMAR = os.getenv("IMPRESSORA_CONFIRMAR", "true").strip().lower()
 # Resolução das páginas enviadas à impressora (pontos por polegada). 300 é nítido para texto e foto.
 IMPRESSORA_DPI = int(os.getenv("IMPRESSORA_DPI", "300"))
 
+# Controle remoto universal (controle_remoto.py, agente_controle.py): o Ekaza Mini 3, um controle infravermelho Tuya/Smart
+# Life com Wi-Fi, liga e desliga a TV e o ar-condicionado. Vai pela rede de casa (tinytuya), sem passar pela nuvem, e
+# precisa do id do aparelho e da chave local: rode `python -m tinytuya wizard` dentro de banco_memoria\tuya (os arquivos
+# que ele grava ali são lidos sozinhos) ou cole os dois aqui. Sem eles, ela explica o que falta. Para desligar o agente:
+# CONTROLE_REMOTO=false
+CONTROLE_REMOTO = os.getenv("CONTROLE_REMOTO", "true").strip().lower() in {"1", "true", "yes", "on"}
+CONTROLE_ID = os.getenv("CONTROLE_ID", "").strip()
+CONTROLE_CHAVE_LOCAL = os.getenv("CONTROLE_CHAVE_LOCAL", "").strip()
+# IP fixo do controle (reserve no roteador). Vazio = procura na rede pelo id e guarda o que achou.
+CONTROLE_IP = os.getenv("CONTROLE_IP", "").strip()
+# Versão do protocolo Tuya (3.3, 3.4 ou 3.5; o wizard e o scan mostram). Vazio = a que a busca na rede achar.
+CONTROLE_VERSAO = os.getenv("CONTROLE_VERSAO", "").strip()
+# 0 = descobrir; 1 = controles antigos (DPs 201/202); 2 = novos (DPs 1 a 13). Descoberto uma vez e guardado.
+CONTROLE_TIPO = int(os.getenv("CONTROLE_TIPO", "0") or 0)
+CAMINHO_CONTROLE = os.getenv("CAMINHO_CONTROLE", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "controle_remoto.json"))
+PASTA_TUYA = os.getenv("PASTA_TUYA", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "tuya"))
+# Nuvem da Tuya (opcional): os controles virtuais cadastrados no app (a TV e o ar pela marca), sem aprender cada botão.
+# auto = o que foi aprendido vai pela rede de casa e só o resto pela nuvem; local = nunca usa a nuvem; nuvem = nuvem primeiro.
+CONTROLE_NUVEM = os.getenv("CONTROLE_NUVEM", "auto").strip().lower()
+# Data center da conta: us (Américas Oeste, o do Brasil em geral), ue (Américas Leste), eu, in, cn. Vazio = o do wizard ou us.
+TUYA_API_REGIAO = os.getenv("TUYA_API_REGIAO", "").strip()
+TUYA_API_CHAVE = os.getenv("TUYA_API_CHAVE", "").strip()  # Access ID do projeto na Tuya IoT Platform
+TUYA_API_SEGREDO = os.getenv("TUYA_API_SEGREDO", "").strip()  # Access Secret
+CONTROLE_AR_MINIMA = int(os.getenv("CONTROLE_AR_MINIMA", "16"))
+CONTROLE_AR_MAXIMA = int(os.getenv("CONTROLE_AR_MAXIMA", "30"))
+# Quantos toques um "aumenta o volume" sem número dá.
+CONTROLE_VOLUME_PASSOS = int(os.getenv("CONTROLE_VOLUME_PASSOS", "3"))
+# Marca da TV. "sony": os códigos são montados pela Beatriz (protocolo SIRC) e vão pela rede de casa, sem o controle
+# original nem a nuvem. Vazio = a marca do controle virtual cadastrado no app (a do usuário é Sony).
+CONTROLE_TV_MARCA = os.getenv("CONTROLE_TV_MARCA", "").strip().lower()
+
 # Intervalos (em segundos)
 INTERVALO_REINDEXACAO = 3600  # 1 hora
 INTERVALO_CACHE_MEMORIA = 300  # 5 minutos

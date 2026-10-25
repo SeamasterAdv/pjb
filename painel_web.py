@@ -18,6 +18,7 @@ import time
 import memory
 import niveis_voz
 from agente_agenda import criar_agente_agenda
+from agente_controle import criar_agente_controle
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
 from agentes import PainelCompartilhado, criar_orquestrador
@@ -98,6 +99,8 @@ class ApiPainel:
             texto_agenda=lambda t: texto_da_agenda(self._agenda, t),
             avisar=self._responder,
         )
+        # TV e ar pelo Ekaza (o mesmo arquivo de códigos e estado do processo principal); o fim do aprender volta aqui.
+        self._controle = criar_agente_controle(avisar=self._responder)
         self._pastas = AgentePastas()  # "abre a pasta da OAB" (a busca tem o próprio índice, neste processo)
         threading.Thread(target=self._pastas.aquecer, daemon=True).start()
         # Arquivos recebidos (o WhatsApp roda no processo principal; o registro é o mesmo arquivo): "vira fonte", "arquiva", "imprime",
@@ -355,6 +358,9 @@ class ApiPainel:
             resposta_impressora = self._impressora.responder(comando)
             if resposta_impressora:
                 return self._responder(resposta_impressora)
+            resposta_controle = self._controle.responder(comando)
+            if resposta_controle:  # "liga a TV", "liga o ar em 22 graus"
+                return self._responder(resposta_controle)
             resposta_fontes = self._fontes.responder(comando, "painel")
             if resposta_fontes:
                 return self._responder(resposta_fontes)

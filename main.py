@@ -50,9 +50,11 @@ import niveis_voz
 from leitura_tela import AgenteTela, RespostaTela
 from canal_whatsapp import CanalWhatsApp
 import app_celular
+import busca_arquivos
 from biblioteca_fontes import BibliotecaDeFontes
 from llm_clients import llm_clients
-from agentes import PainelCompartilhado, criar_orquestrador, pede_envio, pedido_de_arquivo, texto_da_entrega
+from agentes import (PainelCompartilhado, criar_orquestrador, descricao_do_arquivo_pedido, pede_envio, pedido_de_arquivo,
+                     texto_da_entrega)
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
 from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
 from llm_nuvem import NOMES_IA, extrair_ia_pedida, responder_na_nuvem
@@ -500,8 +502,24 @@ def responder_no_whatsapp(pergunta: str, resposta: str, arquivos=(), registrar: 
 RE_PARA_O_WHATSAPP = re.compile(r"\b(pro|para o|pelo|no) (meu )?(whats\w*|zap)\b", re.IGNORECASE)
 
 
+VAZIAS_DO_ENVIO = {"zap", "zapzap", "whatsapp", "whats", "wpp", "celular", "app", "aplicativo", "telefone", "iphone", "novo"}
+
+
+def arquivo_descrito(comando: str, extensoes=(), so_os_que_saem: bool = False) -> tuple[str | None, str]:
+    """O arquivo que "manda o PDF da aula de embargos" descreve, pelo nome aproximado: (caminho ou None, palavras da busca).
+    Sem descrição ("manda o PDF"), (None, "") e quem chama usa a última tarefa."""
+    termos = busca_arquivos.palavras_do_pedido(descricao_do_arquivo_pedido(comando), vazias=VAZIAS_DO_ENVIO)
+    if not termos:
+        return None, ""
+    achados = PASTAS.arquivos.buscar(termos, set(extensoes) or None, maximo=10)
+    if so_os_que_saem:  # pelo app, só o que pode ir para o celular (sem Downloads, Área de Trabalho...)
+        achados = [(nota, a) for nota, a in achados if app_celular.pode_sair(a.caminho)]
+    return (achados[0][1].caminho if achados else None), " ".join(termos)
+
+
 def mandar_arquivo_pedido(comando: str, orquestrador) -> bool:
-    """Atende "manda o arquivo/o PDF/a planilha" com os arquivos da última tarefa. False se não for esse pedido.
+    """Atende "manda o arquivo/o PDF/a planilha": o arquivo descrito ("o PDF da aula de embargos", pelo nome aproximado) ou,
+    sem descrição, os da última tarefa. False se não for esse pedido.
 
     Pelo WhatsApp ou pelo app vale sempre (vai para lá); pela voz, só quando o pedido diz para onde ("... pro meu WhatsApp").
     """
@@ -511,8 +529,14 @@ def mandar_arquivo_pedido(comando: str, orquestrador) -> bool:
     remoto = canal_remoto()
     if remoto is None and (CANAL_WHATSAPP is None or not RE_PARA_O_WHATSAPP.search(comando)):
         return False
-    tarefa = orquestrador.ultima_com_arquivos()
-    if tarefa is None:
+    caminho, descrito = (None, "") if pedido == "relatorio" else arquivo_descrito(comando, pedido, CANAL.get("atual") == "app")
+    tarefa = None if caminho else orquestrador.ultima_com_arquivos()
+    if caminho:
+        arquivos = [caminho]
+        resposta = f"Aqui está: {os.path.basename(caminho)}."
+    elif descrito and tarefa is None:
+        resposta, arquivos = f"Não achei nenhum arquivo com “{descrito}”. Diga uma parte do nome do arquivo.", []
+    elif tarefa is None:
         resposta, arquivos = "Ainda não tenho nenhum arquivo pronto para mandar. Peça um documento, planilha ou apresentação.", []
     elif pedido == "relatorio":
         arquivos = [tarefa.relatorio] if tarefa.relatorio else []
@@ -522,6 +546,8 @@ def mandar_arquivo_pedido(comando: str, orquestrador) -> bool:
         nomes = ", ".join(os.path.basename(a) for a in arquivos)
         tipos = ", ".join(sorted({os.path.splitext(a)[1].lstrip(".").upper() for a in tarefa.arquivos}))
         resposta = f"Aqui está: {nomes}." if arquivos else f"A última tarefa não gerou esse tipo de arquivo; tenho {tipos}."
+        if descrito:
+            resposta = f"Não achei um arquivo com “{descrito}”; mandei o da última tarefa. " + resposta
     if remoto is not None:
         responder_no_whatsapp(comando, resposta, arquivos=arquivos, registrar=False)
     else:

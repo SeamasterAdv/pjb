@@ -581,6 +581,13 @@ body.offline .halo, body.offline .satelite, body.offline .arco-quente { opacity:
 .selo-estado { flex: none; padding: 2px 7px; border-radius: 9px; font-size: 10.5px; border: 1px solid var(--linha); color: var(--suave); }
 .selo-estado.lida { color: var(--ok); border-color: rgba(232, 232, 232, 0.5); }
 .selo-estado.sem-texto, .selo-estado.nao-e-lida { color: var(--laranja-claro); border-color: rgba(211, 211, 211, 0.5); }
+.selo-estado.so-arquivo { color: var(--texto); border-style: dashed; }
+.selo-estado.recebido { color: var(--ouro); border-color: rgba(245, 192, 74, 0.6); }
+.biblio-area { display: flex; flex-direction: column; gap: 2px; margin: 18px 4px 8px; }
+.biblio-area-nome { font-family: var(--hud); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cor); }
+.biblio-area-nome::before { content: "◢ "; }
+.biblio-area-desc { font-size: 12px; color: var(--suave); }
+.biblio-area.area-recebidos .biblio-area-nome { color: var(--ouro); }
 .pasta-vazia { padding: 10px 2px; color: var(--apagado); font-size: 13px; border-top: 1px solid rgba(223, 223, 223, 0.12); }
 
 /* folha de ações */

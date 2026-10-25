@@ -663,13 +663,56 @@ function ligarAgenda() {
   setInterval(carregarAgendaDaTela, 10000); // a voz e o WhatsApp também mudam a agenda
 }
 
-/* ------------------------------------------------------------------ biblioteca de fontes (janela) */
-// Organizar à mão os arquivos que a Beatriz lê. As regras (que pastas, o que pode) ficam em biblioteca_fontes.py;
-// aqui só se escolhe a pasta, a ação e se mostra a resposta.
-const bib = { dados: null, pasta: null, relogio: null };
+/* ------------------------------------------------------------------ biblioteca (janela) */
+// Organizar à mão o que é fonte (a Beatriz lê) e o que é só arquivo (guardado; ela acha pelo nome, mas não lê), e triar o que
+// chegou pelo WhatsApp. As regras (que pastas, o que pode) ficam em biblioteca_fontes.py; aqui só se escolhe e se mostra.
+const bib = { dados: null, pasta: null, relogio: null, marcados: new Set(), ultimoMarcado: null, filtro: "", visiveis: [] };
 const SIGLAS_TIPO = { pdf: "PDF", apresentacao: "PPT", documento: "DOC", planilha: "XLS", imagem: "IMG", nota: "TXT", pagina: "WEB" };
+const ROTULO_AREA = { fontes: "fonte", arquivos: "só arquivo", recebidos: "recebido" };
 const semAcentos = (texto) => texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const novo = (tag, classe, texto) => { const el = document.createElement(tag); if (classe) el.className = classe; if (texto !== undefined) el.textContent = texto; return el; };
+
+// Busca pelo nome sem precisar ser exato (a mesma ideia do busca_arquivos.py, mais simples): sem acento, pedaço do começo da
+// palavra ("adm"), plural, mesma raiz ("comoriencia" acha "comorientes"), um erro de digitação e números como números ("02" = "2").
+const VAZIAS_DA_BUSCA = new Set(["a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "um", "uma", "com", "para", "pra"]);
+function palavrasDe(texto) {
+  return (semAcentos(texto).replace(/\.[a-z0-9]{2,5}$/, "").replace(/\s*[(\[]\d{1,3}[)\]]/g, " ").match(/[a-z]+|\d+/g) || [])
+    .map((t) => (/^\d+$/.test(t) && t.length <= 6 ? String(Number(t)) : t))
+    .filter((t) => !VAZIAS_DA_BUSCA.has(t));
+}
+function quaseIgual(a, b) { // no máximo uma letra a mais, a menos ou trocada
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, erros = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++erros > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return erros + (a.length - i) + (b.length - j) <= 1;
+}
+function notaDaPalavra(q, t) {
+  if (q === t) return 1;
+  if (/^\d+$/.test(q) || /^\d+$/.test(t)) return 0;
+  if (t.startsWith(q)) return 0.9;
+  if (t.length >= 3 && q.startsWith(t) && q.length - t.length <= 3) return 0.85;
+  let comum = 0;
+  while (comum < q.length && q[comum] === t[comum]) comum++;
+  if (comum >= 5 && comum >= 0.7 * Math.min(q.length, t.length)) return 0.8;
+  if (Math.min(q.length, t.length) >= 5 && quaseIgual(q, t)) return 0.75;
+  return 0;
+}
+function notaDaBusca(termos, arquivo) {
+  const nome = palavrasDe(arquivo.nome), pasta = palavrasDe(arquivo.pasta || "");
+  let soma = 0;
+  for (const q of termos) {
+    const noNome = Math.max(0, ...nome.map((t) => notaDaPalavra(q, t)));
+    const naPasta = 0.7 * Math.max(0, ...pasta.map((t) => notaDaPalavra(q, t)));
+    const nota = Math.max(noNome, naPasta, q.length >= 3 && nome.join("").includes(q) ? 0.8 : 0);
+    if (nota < 0.6) return 0; // cada palavra digitada tem de aparecer de algum jeito
+    soma += nota;
+  }
+  return soma / termos.length;
+}
 
 async function abrirBiblioteca(abrir = true) {
   $("#fundo-biblioteca").hidden = !abrir;
@@ -686,68 +729,162 @@ async function carregarBibliotecaJanela() {
   if (!bib.pasta || !bib.dados.pastas.some((p) => p.id === bib.pasta)) {
     bib.pasta = (bib.dados.pastas.find((p) => p.arquivos.length) || bib.dados.pastas[0] || {}).id || null;
   }
+  const existentes = new Set(bib.dados.pastas.flatMap((p) => p.arquivos.map((a) => a.id)));
+  for (const id of [...bib.marcados]) if (!existentes.has(id)) bib.marcados.delete(id);
   renderizarBiblioteca();
 }
+
+function plural(n, um, varios) { return `${n} ${n === 1 ? um : varios}`; }
 
 function renderizarBiblioteca() {
   const dados = bib.dados;
   if (!dados) return;
   const leitura = dados.leitura === "carregando" ? " · lendo as fontes…" : "";
-  $("#bb-resumo").textContent = `${dados.total} arquivos · ${dados.lidas} lidos pela Beatriz${leitura}`;
-  const arvore = $("#bb-arvore");
-  arvore.innerHTML = "";
-  for (const pasta of dados.pastas) {
-    const item = novo("li", `biblio-pasta${pasta.id === bib.pasta ? " ativa" : ""}${pasta.raiz ? " raiz" : ""}`);
-    item.style.paddingLeft = `${8 + pasta.profundidade * 16}px`;
-    item.append(novo("span", "biblio-pasta-nome", pasta.nome), novo("span", "biblio-pasta-conta", String(pasta.arquivos.length)));
-    item.title = pasta.caminho;
-    item.onclick = () => { bib.pasta = pasta.id; $("#bb-busca").value = ""; renderizarBiblioteca(); };
-    // soltar um arquivo arrastado aqui = mover
-    item.addEventListener("dragover", (e) => { e.preventDefault(); item.classList.add("alvo"); });
-    item.addEventListener("dragleave", () => item.classList.remove("alvo"));
-    item.addEventListener("drop", (e) => {
-      e.preventDefault();
-      item.classList.remove("alvo");
-      const arquivo = e.dataTransfer.getData("text/beatriz-arquivo");
-      if (arquivo) acaoBiblioteca(api.biblioteca_mover(arquivo, pasta.id));
-    });
-    arvore.appendChild(item);
-  }
-  const busca = semAcentos($("#bb-busca").value.trim());
+  $("#bb-resumo").textContent = `${plural(dados.fontes, "fonte", "fontes")} (${dados.lidas} lidas) · ${plural(dados.so_arquivos, "só arquivo", "só arquivos")}`
+    + ` · ${plural(dados.recebidos, "recebido", "recebidos")}${leitura}`;
+  $("#bb-repetidos").hidden = !dados.repetidos && bib.filtro !== "repetidos";
+  $("#bb-repetidos").textContent = `≡ repetidos · ${dados.repetidos}`;
+  $("#bb-repetidos").classList.toggle("ativo", bib.filtro === "repetidos");
+  renderizarArvore(dados);
+
+  const textoBusca = $("#bb-busca").value.trim();
+  const termos = palavrasDe(textoBusca);
   const atual = dados.pastas.find((p) => p.id === bib.pasta);
-  const arquivos = busca
-    ? dados.pastas.flatMap((p) => p.arquivos.filter((a) => semAcentos(a.nome).includes(busca)).map((a) => ({ ...a, pasta: p.caminho })))
-    : (atual ? atual.arquivos : []);
-  $("#bb-titulo").textContent = busca ? `Busca: “${$("#bb-busca").value.trim()}”` : (atual ? atual.caminho : "");
-  $("#bb-apagar-pasta").hidden = busca || !atual || atual.raiz || atual.arquivos.length > 0
+  const todos = () => dados.pastas.flatMap((p) => p.arquivos.map((a) => ({ ...a, pasta: p.caminho })));
+  let arquivos, titulo;
+  if (termos.length) {
+    arquivos = todos().map((a) => [notaDaBusca(termos, a), a]).filter(([nota]) => nota > 0)
+      .sort((x, y) => y[0] - x[0] || y[1].modificado - x[1].modificado).map(([, a]) => a);
+    titulo = `Busca: “${textoBusca}”`;
+  } else if (bib.filtro === "repetidos") {
+    arquivos = todos().filter((a) => a.repetido.length).sort((x, y) => x.tamanho - y.tamanho || x.nome.localeCompare(y.nome));
+    titulo = "Cópias com o mesmo conteúdo";
+  } else {
+    arquivos = atual ? atual.arquivos : [];
+    titulo = atual ? atual.caminho : "";
+  }
+  const listaGeral = termos.length || bib.filtro === "repetidos";
+  bib.visiveis = arquivos.map((a) => a.id);
+  $("#bb-titulo").textContent = titulo;
+  const area = !listaGeral && atual ? dados.areas.find((a) => a.id === atual.area) : null;
+  $("#bb-explica").textContent = area ? `${area.nome}: ${area.descricao}` : (bib.filtro === "repetidos" && !termos.length ? "apague as que sobram" : "");
+  $("#bb-apagar-pasta").hidden = listaGeral || !atual || atual.raiz || atual.arquivos.length > 0
     || dados.pastas.some((p) => p.id.startsWith(`${atual.id}/`));
   $("#bb-nova-pasta").disabled = !atual || !atual.pode_criar_pasta;
   const linhas = $("#bb-linhas");
   linhas.innerHTML = "";
-  for (const arquivo of arquivos) linhas.appendChild(linhaDaBiblioteca(arquivo, busca));
+  for (const arquivo of arquivos) linhas.appendChild(linhaDaBiblioteca(arquivo, listaGeral));
   if (!arquivos.length) {
     const tr = novo("tr", "vazia");
-    const td = novo("td", "", busca ? "Nenhum arquivo com esse nome." : atual && atual.raiz ? "Os arquivos estão nas pastas de dentro." : "Pasta vazia. Use “+ adicionar arquivos”.");
-    td.colSpan = 5;
+    const td = novo("td", "", termos.length ? "Nenhum arquivo com esse nome." : atual && atual.raiz && !atual.arquivos.length
+      ? "Os arquivos estão nas pastas de dentro." : "Pasta vazia. Use “+ adicionar arquivos” ou arraste arquivos para cá.");
+    td.colSpan = 6;
     tr.appendChild(td);
     linhas.appendChild(tr);
   }
+  $("#bb-todos").checked = arquivos.length > 0 && arquivos.every((a) => bib.marcados.has(a.id));
+  renderizarSelecao();
 }
 
-function linhaDaBiblioteca(arquivo, busca) {
-  const tr = novo("tr");
+// A árvore por área: cabeçalho (FONTES, SÓ ARQUIVOS, RECEBIDOS) e as pastas de cada uma. Soltar arquivos num cabeçalho troca
+// de área mantendo a pasta do assunto; soltar numa pasta move para ela.
+function renderizarArvore(dados) {
+  const arvore = $("#bb-arvore");
+  arvore.innerHTML = "";
+  for (const area of dados.areas) {
+    const pastas = dados.pastas.filter((p) => p.area === area.id);
+    const raizes = pastas.filter((p) => p.raiz);
+    const unica = raizes.length === 1 ? raizes[0] : null; // "Só arquivos" e "Recebidos": o cabeçalho é a própria pasta
+    const cabeca = novo("li", `biblio-area area-${area.id}${unica && unica.id === bib.pasta ? " ativa" : ""}`);
+    const nome = novo("span", "biblio-area-nome", area.nome);
+    nome.appendChild(novo("b", "", String(area.arquivos)));
+    cabeca.append(nome, novo("span", "biblio-area-desc", area.descricao));
+    cabeca.title = area.id === "recebidos" ? "Chegaram pelo WhatsApp, pelo celular ou pelo scanner: decida se viram fonte ou só arquivo"
+      : `Solte arquivos aqui para virarem ${area.id === "fontes" ? "fonte" : "só arquivo"} (ficam na pasta do mesmo assunto)`;
+    if (unica) cabeca.onclick = () => escolherPasta(unica.id);
+    const acao = { fontes: "virar_fonte", arquivos: "so_arquivo" }[area.id];
+    if (acao) soltarAqui(cabeca, (ids) => acaoBiblioteca(api.biblioteca_lote(acao, ids, "")));
+    arvore.appendChild(cabeca);
+    for (const pasta of pastas) {
+      if (pasta === unica) continue;
+      const escolhida = pasta.id === bib.pasta && !bib.filtro && !$("#bb-busca").value.trim();
+      const item = novo("li", `biblio-pasta${escolhida ? " ativa" : ""}${pasta.raiz ? " raiz" : ""}`);
+      item.style.paddingLeft = `${14 + pasta.profundidade * 14}px`;
+      item.append(novo("span", "biblio-pasta-nome", pasta.nome), novo("span", "biblio-pasta-conta", String(pasta.arquivos.length || "")));
+      item.title = pasta.caminho;
+      item.onclick = () => escolherPasta(pasta.id);
+      soltarAqui(item, (ids) => acaoBiblioteca(ids.length === 1 ? api.biblioteca_mover(ids[0], pasta.id) : api.biblioteca_lote("mover", ids, pasta.id)));
+      arvore.appendChild(item);
+    }
+  }
+}
+
+function escolherPasta(id) {
+  bib.pasta = id;
+  bib.filtro = "";
+  $("#bb-busca").value = "";
+  renderizarBiblioteca();
+}
+
+function soltarAqui(elemento, aoSoltar) {
+  elemento.addEventListener("dragover", (e) => { e.preventDefault(); elemento.classList.add("alvo"); });
+  elemento.addEventListener("dragleave", () => elemento.classList.remove("alvo"));
+  elemento.addEventListener("drop", (e) => {
+    e.preventDefault();
+    elemento.classList.remove("alvo");
+    let ids = [];
+    try { ids = JSON.parse(e.dataTransfer.getData("text/beatriz-arquivos") || "[]"); } catch (erro) { ids = []; }
+    if (ids.length) aoSoltar(ids);
+  });
+}
+
+function opcoesDePastas(select, rotulo) {
+  select.add(new Option(rotulo, ""));
+  for (const area of bib.dados.areas) {
+    const grupo = document.createElement("optgroup");
+    grupo.label = area.nome;
+    for (const p of bib.dados.pastas.filter((x) => x.area === area.id)) {
+      grupo.appendChild(new Option(`${" ".repeat(p.profundidade * 2)}${p.nome}`, p.id));
+    }
+    select.appendChild(grupo);
+  }
+}
+
+function linhaDaBiblioteca(arquivo, listaGeral) {
+  const tr = novo("tr", bib.marcados.has(arquivo.id) ? "marcada" : "");
   tr.draggable = true;
-  tr.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/beatriz-arquivo", arquivo.id); e.dataTransfer.effectAllowed = "move"; });
+  tr.addEventListener("dragstart", (e) => {
+    // arrastar uma linha marcada leva todas as marcadas
+    const ids = bib.marcados.has(arquivo.id) ? [...bib.marcados] : [arquivo.id];
+    e.dataTransfer.setData("text/beatriz-arquivos", JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = "move";
+  });
+  const marca = novo("td", "c-marca");
+  const caixa = novo("input");
+  caixa.type = "checkbox";
+  caixa.checked = bib.marcados.has(arquivo.id);
+  caixa.title = "Marcar (Shift marca de onde parou até aqui)";
+  caixa.onclick = (e) => marcar(arquivo.id, caixa.checked, e.shiftKey);
+  marca.appendChild(caixa);
+
   const nome = novo("td");
   const rotulo = novo("div", "biblio-nome");
   rotulo.append(novo("span", `biblio-tipo ${arquivo.tipo}`, SIGLAS_TIPO[arquivo.tipo] || "ARQ"), novo("span", "", arquivo.nome));
-  if (busca && arquivo.pasta) rotulo.appendChild(novo("small", "", arquivo.pasta));
+  if (arquivo.repetido.length) {
+    const iguais = arquivo.repetido.map((id) => id.split("/").slice(0, -1).join(" › ") + " › " + id.split("/").pop());
+    const selo = novo("span", "biblio-repetido", "≡ repetido");
+    selo.title = `Mesmo conteúdo que:\n${iguais.join("\n")}`;
+    rotulo.appendChild(selo);
+  }
+  if (listaGeral && arquivo.pasta) rotulo.appendChild(novo("small", "", arquivo.pasta));
   nome.appendChild(rotulo);
   nome.title = "Clique duas vezes para abrir";
   nome.ondblclick = () => api.biblioteca_abrir(arquivo.id, false);
   const tamanho = arquivo.tamanho > 1048576 ? `${(arquivo.tamanho / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(arquivo.tamanho / 1024))} KB`;
   const data = new Date(arquivo.modificado * 1000).toLocaleDateString("pt-BR");
-  const estado = novo("td", `biblio-estado ${semAcentos(arquivo.estado).replace(/\s+/g, "-")}`, arquivo.estado);
+  const situacao = novo("td", "biblio-situacao");
+  situacao.appendChild(novo("span", `biblio-area-selo ${arquivo.area}`, ROTULO_AREA[arquivo.area] || arquivo.area));
+  if (arquivo.area === "fontes") situacao.appendChild(novo("span", `biblio-estado ${semAcentos(arquivo.estado).replace(/\s+/g, "-")}`, arquivo.estado));
   const celulaAcoes = novo("td");
   const acoes = novo("div", "biblio-acoes");
   celulaAcoes.appendChild(acoes);
@@ -765,21 +902,47 @@ function linhaDaBiblioteca(arquivo, busca) {
     if (nomeNovo && nomeNovo.trim() && nomeNovo.trim() !== base) acaoBiblioteca(api.biblioteca_renomear(arquivo.id, nomeNovo.trim()));
   });
   const mover = novo("select", "biblio-mover");
-  mover.title = "Mover para outra pasta";
-  mover.add(new Option("mover para…", ""));
-  for (const p of bib.dados.pastas) mover.add(new Option(`${"  ".repeat(p.profundidade)}${p.nome}`, p.id));
+  mover.title = "Mover para outra pasta (de qualquer área)";
+  opcoesDePastas(mover, "mover para…");
   mover.onchange = () => { if (mover.value) acaoBiblioteca(api.biblioteca_mover(arquivo.id, mover.value)); };
   acoes.appendChild(mover);
-  botao("tirar", "Tirar da biblioteca (vai para documentos_arquivados › fora_da_biblioteca)", () => {
-    if (confirm(`Tirar “${arquivo.nome}” da biblioteca? Ele continua no PC, em documentos_arquivados › fora_da_biblioteca.`)) {
-      acaoBiblioteca(api.biblioteca_tirar(arquivo.id));
-    }
-  });
+  if (arquivo.area !== "fontes") {
+    botao("virar fonte", "A Beatriz passa a ler (vai para a pasta do mesmo assunto nas fontes)", () => acaoBiblioteca(api.biblioteca_virar_fonte(arquivo.id)), "fonte");
+  }
+  if (arquivo.area !== "arquivos") {
+    botao("só arquivo", "Fica guardado e ela acha pelo nome, mas não lê (vai para Só arquivos, na pasta do mesmo assunto)",
+          () => acaoBiblioteca(api.biblioteca_so_arquivo(arquivo.id)));
+  }
   botao("apagar", "Mandar para a Lixeira do Windows", () => {
     if (confirm(`Apagar “${arquivo.nome}”? Ele vai para a Lixeira do Windows (dá para restaurar de lá).`)) acaoBiblioteca(api.biblioteca_apagar(arquivo.id));
   }, "perigo");
-  tr.append(nome, novo("td", "", tamanho), novo("td", "", data), estado, celulaAcoes);
+  tr.append(marca, nome, novo("td", "", tamanho), novo("td", "", data), situacao, celulaAcoes);
   return tr;
+}
+
+function marcar(id, ligado, intervalo) {
+  const lista = bib.visiveis;
+  const ate = lista.indexOf(id), de = lista.indexOf(bib.ultimoMarcado);
+  const ids = intervalo && de >= 0 && ate >= 0 ? lista.slice(Math.min(de, ate), Math.max(de, ate) + 1) : [id];
+  for (const x of ids) { if (ligado) bib.marcados.add(x); else bib.marcados.delete(x); }
+  bib.ultimoMarcado = id;
+  renderizarBiblioteca();
+}
+
+function renderizarSelecao() {
+  const n = bib.marcados.size;
+  $("#bb-selecao").hidden = n === 0;
+  if (!n) return;
+  $("#bb-marcados").textContent = `${plural(n, "marcado", "marcados")}`;
+  const areas = new Set(bib.dados.pastas.flatMap((p) => p.arquivos).filter((a) => bib.marcados.has(a.id)).map((a) => a.area));
+  $("#bb-lote-fonte").hidden = areas.size === 1 && areas.has("fontes");
+  $("#bb-lote-arquivo").hidden = areas.size === 1 && areas.has("arquivos");
+  const mover = $("#bb-lote-mover");
+  if (mover.dataset.versao !== String(bib.dados.pastas.length) + bib.dados.pastas.map((p) => p.id).join("|")) {
+    mover.innerHTML = "";
+    opcoesDePastas(mover, "mover para…");
+    mover.dataset.versao = String(bib.dados.pastas.length) + bib.dados.pastas.map((p) => p.id).join("|");
+  }
 }
 
 async function acaoBiblioteca(promessa) {
@@ -789,6 +952,14 @@ async function acaoBiblioteca(promessa) {
     sons.tocar(resposta.ok ? "ping" : "erro");
   }
   await carregarBibliotecaJanela();
+}
+
+async function acaoNosMarcados(acao, pasta = "") {
+  const ids = [...bib.marcados];
+  if (!ids.length) return;
+  if (acao === "apagar" && !confirm(`Apagar ${plural(ids.length, "arquivo", "arquivos")}? Eles vão para a Lixeira do Windows (dá para restaurar de lá).`)) return;
+  bib.marcados.clear();
+  await acaoBiblioteca(api.biblioteca_lote(acao, ids, pasta));
 }
 
 function ligarBiblioteca() {
@@ -801,6 +972,17 @@ function ligarBiblioteca() {
     if (nome && nome.trim()) acaoBiblioteca(api.biblioteca_criar_pasta(bib.pasta, nome.trim()));
   };
   $("#bb-apagar-pasta").onclick = () => { if (bib.pasta) acaoBiblioteca(api.biblioteca_apagar_pasta(bib.pasta)); };
+  $("#bb-repetidos").onclick = () => { bib.filtro = bib.filtro === "repetidos" ? "" : "repetidos"; $("#bb-busca").value = ""; renderizarBiblioteca(); };
+  $("#bb-todos").onclick = () => {
+    const ligar = $("#bb-todos").checked;
+    for (const id of bib.visiveis) { if (ligar) bib.marcados.add(id); else bib.marcados.delete(id); }
+    renderizarBiblioteca();
+  };
+  $("#bb-lote-fonte").onclick = () => acaoNosMarcados("virar_fonte");
+  $("#bb-lote-arquivo").onclick = () => acaoNosMarcados("so_arquivo");
+  $("#bb-lote-apagar").onclick = () => acaoNosMarcados("apagar");
+  $("#bb-lote-mover").onchange = (e) => { if (e.target.value) acaoNosMarcados("mover", e.target.value); e.target.value = ""; };
+  $("#bb-lote-limpar").onclick = () => { bib.marcados.clear(); renderizarBiblioteca(); };
 }
 
 /* ------------------------------------------------------------------ comandos */
@@ -971,34 +1153,73 @@ function criarApiDemonstracao() {
     biblioteca_renomear: async () => ({ ok: true, mensagem: "(demonstração) No painel de verdade, eu renomearia o arquivo." }),
     biblioteca_criar_pasta: async (pasta, nome) => ({ ok: true, mensagem: `(demonstração) Criaria a pasta “${nome}”.` }),
     biblioteca_apagar_pasta: async () => ({ ok: true, mensagem: "(demonstração) Apagaria a pasta vazia." }),
-    biblioteca_tirar: async () => ({ ok: true, mensagem: "(demonstração) Tiraria o arquivo da biblioteca." }),
-    biblioteca_apagar: async () => ({ ok: true, mensagem: "(demonstração) Mandaria o arquivo para a Lixeira." }),
+    biblioteca_so_arquivo: async (id) => trocarDeAreaNaDemonstracao(id, "arquivos"),
+    biblioteca_virar_fonte: async (id) => trocarDeAreaNaDemonstracao(id, "fontes"),
+    biblioteca_lote: async (acao, ids, pasta) => loteNaDemonstracao(acao, ids, pasta),
+    biblioteca_apagar: async (id) => apagarNaDemonstracao(id),
     biblioteca_adicionar: async () => ({ ok: false, mensagem: "(demonstração) No painel de verdade, abre a escolha de arquivos." }),
     biblioteca_abrir: async () => ({ ok: true, mensagem: "" }),
   };
 }
 
+// Biblioteca de mentira para mexer no visual no navegador: as três áreas, uma cópia repetida e o que chegou pelo WhatsApp.
+const pastaDemo = (id, nome, area, profundidade, arquivos = []) => ({
+  id, nome, area, profundidade, raiz: profundidade === 0, pode_criar_pasta: profundidade < 3, arquivos,
+  caminho: { documentos: "Documentos", obsidian: "Obsidian", arquivos: "Só arquivos", recebidos: "Recebidos" }[id.split("/")[0]]
+    + id.split("/").slice(1).map((p) => ` › ${p}`).join(""),
+});
+const arquivoDemo = (pasta, nome, tipo, tamanho, dias, estado) => ({
+  id: `${pasta}/${nome}`, nome, tipo, tamanho, modificado: Date.now() / 1000 - dias * 86400, estado, repetido: [],
+  area: { documentos: "fontes", obsidian: "fontes", arquivos: "arquivos", recebidos: "recebidos" }[pasta.split("/")[0]],
+});
 const BIBLIOTECA_DEMONSTRACAO = {
   pastas: [
-    { id: "documentos", nome: "Documentos", caminho: "Documentos", profundidade: 0, raiz: true, pode_criar_pasta: true, arquivos: [] },
-    { id: "documentos/direito", nome: "direito", caminho: "Documentos › direito", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
-      { id: "documentos/direito/Constituição comentada.pdf", nome: "Constituição comentada.pdf", tamanho: 4823000, modificado: 1760000000, tipo: "pdf", estado: "lida" },
-      { id: "documentos/direito/Aula 3 - contratos.pptx", nome: "Aula 3 - contratos.pptx", tamanho: 912000, modificado: 1760500000, tipo: "apresentacao", estado: "ainda não lida" },
-    ] },
-    { id: "documentos/faculdade", nome: "faculdade", caminho: "Documentos › faculdade", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
-      { id: "documentos/faculdade/foto do quadro.jpg", nome: "foto do quadro.jpg", tamanho: 1300000, modificado: 1760700000, tipo: "imagem", estado: "sem texto" },
-    ] },
-    { id: "obsidian", nome: "Obsidian", caminho: "Obsidian", profundidade: 0, raiz: true, pode_criar_pasta: true, arquivos: [] },
-    { id: "obsidian/direito", nome: "direito", caminho: "Obsidian › direito", profundidade: 1, raiz: false, pode_criar_pasta: true, arquivos: [
-      { id: "obsidian/direito/Resumo CDC.md", nome: "Resumo CDC.md", tamanho: 8200, modificado: 1760800000, tipo: "nota", estado: "lida" },
-    ] },
-    { id: "obsidian/direito/OAB", nome: "OAB", caminho: "Obsidian › direito › OAB", profundidade: 2, raiz: false, pode_criar_pasta: true, arquivos: [] },
+    pastaDemo("documentos", "Documentos", "fontes", 0),
+    pastaDemo("documentos/direito", "direito", "fontes", 1, [
+      arquivoDemo("documentos/direito", "pessoa natural comorientes.pdf", "pdf", 412000, 3, "lida"),
+      arquivoDemo("documentos/direito", "resumo pessoa desaparecida e ausente.pdf", "pdf", 230000, 2, "lida"),
+      arquivoDemo("documentos/direito", "Material Apelação.docx (1).pdf", "pdf", 980000, 1, "ainda não lida"),
+    ]),
+    pastaDemo("obsidian", "Obsidian", "fontes", 0),
+    pastaDemo("obsidian/direito", "direito", "fontes", 1, [
+      arquivoDemo("obsidian/direito", "AULA 1 DIREITO ADMINISTRATIVO (1).pptx", "apresentacao", 2100000, 9, "lida"),
+      arquivoDemo("obsidian/direito", "AULA 1 DIREITO ADMINISTRATIVO (2).pptx", "apresentacao", 2100000, 9, "lida"),
+      arquivoDemo("obsidian/direito", "trabalho de tcc direito internacional.docx", "documento", 640000, 20, "lida"),
+    ]),
+    pastaDemo("obsidian/referencias", "referencias", "fontes", 1, [
+      arquivoDemo("obsidian/referencias", "Aula 02 Embargos à exeução.pdf", "pdf", 1500000, 6, "lida"),
+      arquivoDemo("obsidian/referencias", "Aula 03 - embargos de terceiro.pdf", "pdf", 1320000, 5, "lida"),
+      arquivoDemo("obsidian/referencias", "Atividade 1 - nome do aluno (1).pdf", "pdf", 310000, 12, "lida"),
+      arquivoDemo("obsidian/referencias", "foto do quadro.jpg", "imagem", 1300000, 4, "sem texto"),
+    ]),
+    pastaDemo("arquivos", "Só arquivos", "arquivos", 0),
+    pastaDemo("arquivos/2026-10", "2026-10", "arquivos", 1, [
+      arquivoDemo("arquivos/2026-10", "comprovante matrícula.pdf", "pdf", 88000, 8, "só arquivo"),
+    ]),
+    pastaDemo("recebidos", "Recebidos", "recebidos", 0),
+    pastaDemo("recebidos/2026-10-19", "2026-10-19", "recebidos", 1, [
+      arquivoDemo("recebidos/2026-10-19", "01. DIREITO TRIBUTÁRIO - UNIDADE I - 2026.pdf", "pdf", 2400000, 2, "recebido"),
+    ]),
+    pastaDemo("recebidos/2026-10-20", "2026-10-20", "recebidos", 1, [
+      arquivoDemo("recebidos/2026-10-20", "image.jpg", "imagem", 540000, 1, "recebido"),
+    ]),
   ],
 };
+const AREAS_DEMONSTRACAO = [
+  { id: "fontes", nome: "Fontes", descricao: "a Beatriz lê e usa nas respostas" },
+  { id: "arquivos", nome: "Só arquivos", descricao: "guardados: ela não lê, mas acha pelo nome" },
+  { id: "recebidos", nome: "Recebidos", descricao: "chegaram pelo WhatsApp, pelo celular ou pelo scanner" },
+];
 function bibliotecaDemonstracao() {
   const pastas = BIBLIOTECA_DEMONSTRACAO.pastas;
   const arquivos = pastas.flatMap((p) => p.arquivos);
-  return { pastas, total: arquivos.length, lidas: arquivos.filter((a) => a.estado === "lida").length, leitura: "" };
+  for (const a of arquivos) { // cópias: mesmo tamanho (no de verdade, mesmo conteúdo)
+    a.repetido = arquivos.filter((b) => b !== a && b.tamanho === a.tamanho).map((b) => b.id);
+  }
+  const conta = (area) => arquivos.filter((a) => a.area === area).length;
+  return { areas: AREAS_DEMONSTRACAO.map((a) => ({ ...a, arquivos: conta(a.id) })), pastas, total: arquivos.length,
+           fontes: conta("fontes"), lidas: arquivos.filter((a) => a.estado === "lida").length, so_arquivos: conta("arquivos"),
+           recebidos: conta("recebidos"), repetidos: arquivos.filter((a) => a.repetido.length).length, leitura: "" };
 }
 function moverNaDemonstracao(id, destino) {
   const pastas = BIBLIOTECA_DEMONSTRACAO.pastas;
@@ -1007,8 +1228,41 @@ function moverNaDemonstracao(id, destino) {
   if (!origem || !alvo || origem === alvo) return { ok: false, mensagem: "O arquivo já está nessa pasta." };
   const arquivo = origem.arquivos.find((a) => a.id === id);
   origem.arquivos = origem.arquivos.filter((a) => a !== arquivo);
-  alvo.arquivos.push({ ...arquivo, id: `${alvo.id}/${arquivo.nome}`, estado: "ainda não lida" });
+  const estado = { fontes: "ainda não lida", arquivos: "só arquivo", recebidos: "recebido" }[alvo.area];
+  alvo.arquivos.push({ ...arquivo, id: `${alvo.id}/${arquivo.nome}`, area: alvo.area, estado });
   return { ok: true, mensagem: `Movi “${arquivo.nome}” para ${alvo.caminho}.` };
+}
+function trocarDeAreaNaDemonstracao(id, area) {
+  const pastas = BIBLIOTECA_DEMONSTRACAO.pastas;
+  const origem = pastas.find((p) => p.arquivos.some((a) => a.id === id));
+  if (!origem) return { ok: false, mensagem: "Esse arquivo não existe mais." };
+  const assunto = origem.raiz || origem.area === "recebidos" ? "" : origem.nome;
+  let alvo = pastas.find((p) => p.area === area && !p.raiz && p.nome === assunto)
+    || pastas.find((p) => p.area === area && p.raiz);
+  if (assunto && area === "arquivos" && alvo.raiz) {
+    alvo = pastaDemo(`arquivos/${assunto}`, assunto, "arquivos", 1);
+    pastas.splice(pastas.indexOf(pastas.find((p) => p.id === "arquivos")) + 1, 0, alvo);
+  }
+  const resposta = moverNaDemonstracao(id, alvo.id);
+  if (!resposta.ok) return resposta;
+  const nome = id.split("/").pop();
+  return { ok: true, mensagem: area === "fontes" ? `“${nome}” virou fonte, em ${alvo.caminho}: a Beatriz vai lê-lo.`
+    : `“${nome}” agora é só arquivo, em ${alvo.caminho}: a Beatriz não usa o conteúdo dele, mas acha pelo nome.` };
+}
+function loteNaDemonstracao(acao, ids, pasta) {
+  let feitos = 0;
+  for (const id of ids) {
+    const r = acao === "mover" ? moverNaDemonstracao(id, pasta) : acao === "apagar" ? apagarNaDemonstracao(id)
+      : trocarDeAreaNaDemonstracao(id, acao === "virar_fonte" ? "fontes" : "arquivos");
+    if (r.ok) feitos++;
+  }
+  return { ok: feitos > 0, mensagem: `(demonstração) ${feitos} de ${ids.length} feitos.` };
+}
+function apagarNaDemonstracao(id) {
+  const origem = BIBLIOTECA_DEMONSTRACAO.pastas.find((p) => p.arquivos.some((a) => a.id === id));
+  if (!origem) return { ok: false, mensagem: "Esse arquivo não existe mais." };
+  origem.arquivos = origem.arquivos.filter((a) => a.id !== id);
+  return { ok: true, mensagem: `(demonstração) Mandei “${id.split("/").pop()}” para a Lixeira.` };
 }
 
 const AGENDA_DEMONSTRACAO = [

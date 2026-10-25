@@ -1,4 +1,4 @@
-"""Abrir pastas por voz: "abre a pasta da OAB", "abre meus downloads", "mostra a pasta de estudos".
+"""Abrir pastas e arquivos por voz: "abre a pasta da OAB", "abre meus downloads", "abre o PDF de embargos de terceiro".
 
 - Índice das pastas do PC (Área de Trabalho, Documentos, Downloads, Imagens, Vídeos, Músicas, a pasta do projeto e o que
   estiver em `PASTAS_RAIZ`), refeito a cada 10 min ou quando a busca não acha nada. Não olha dentro de arquivos.
@@ -7,18 +7,23 @@
 - Uma candidata clara abre na hora. Se duas ou mais empatam ("OAB" em Documentos e em Downloads), ela diz quais são e
   pergunta qual ("a primeira", "a segunda", "a de downloads"). O que ela abre sai sempre do índice (nunca de um caminho
   ditado), e `os.startfile` numa pasta só abre o Explorador.
+- Arquivos: verbo + tipo ("abre o PDF/o slide/a planilha/o arquivo de X", "onde está o documento do TCC") procura pelo nome
+  aproximado em `busca_arquivos` (as pastas da Beatriz e Área de Trabalho, Documentos e Downloads; nunca programas). Empate
+  pergunta "qual deles?" como nas pastas, e a escolha também fica lembrada. "Onde está" mostra o arquivo no Explorador.
 """
 import ctypes
 import json
 import logging
 import os
 import re
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
+import busca_arquivos
 import siglas
 from config import NOTELOOKLM_PATH, PALAVRAS_ATIVACAO, PASTAS_RAIZ
 
@@ -91,6 +96,7 @@ class Pasta:
     nome: str
     tokens: list[str]
     profundidade: int
+    arquivo: bool = False  # um arquivo achado por busca_arquivos (abre no programa dele)
 
     @property
     def junto(self) -> str:
@@ -190,6 +196,21 @@ LIGACAO_DA_RESPOSTA = {"a", "o", "as", "os", "de", "da", "do", "das", "dos", "e"
 RE_VERBO = re.compile(r"\b(abr\w*|mostr\w*|exib\w*|me leva\w*|leva\w* (?:eu|me)|ir para|vai para|va para|acess\w*|navega\w*|"
                       r"quero ver|localiz\w*|procur\w*|ach(?:e|ar|a)|encontr\w*|onde (?:esta|fica))\b")
 RE_PASTA = re.compile(r"\b(pastas?|diretorios?|folders?)\b")
+# Tipo de arquivo dito no pedido: (padrão, extensões (vazio = qualquer uma), nome para falar)
+TIPOS_DE_ARQUIVO = (
+    (re.compile(r"\bpdfs?\b"), {".pdf"}, "PDF"),
+    (re.compile(r"\b(?:word|docx?)\b"), {".doc", ".docx", ".odt", ".rtf"}, "documento do Word"),
+    (re.compile(r"\b(?:planilhas?|excel|xlsx)\b"), {".xls", ".xlsx", ".xlsm", ".csv", ".ods"}, "planilha"),
+    (re.compile(r"\b(?:apresentac(?:ao|oes)|slides?|power ?point|pptx?)\b"), {".ppt", ".pptx", ".odp"}, "apresentação"),
+    (re.compile(r"\b(?:fotos?|imagens?|figuras?|prints?)\b"), {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"}, "imagem"),
+    (re.compile(r"\b(?:arquivos?|documentos?|textos?)\b"), set(), "arquivo"),
+)
+# Sem o tipo, coisas que só podem ser arquivo também valem ("abre a aula 2 de ato administrativo", "abre o resumo de X"),
+# mas aí, sem achar, ela fica quieta e o pedido segue (pode ser um app ou um site).
+RE_COISA_DE_ARQUIVO = re.compile(r"\b(?:aulas?|atividades?|apostilas?|resumos?|materia(?:l|is)|trabalhos?|tcc|contratos?|"
+                                 r"peticao|peticoes|fichas?|provas?|simulados?|exercicios?|transcricao|transcricoes|livros?|"
+                                 r"boletos?|comprovantes?|curriculo|certificados?|declarac(?:ao|oes))\b")
+RE_NOME_COM_EXTENSAO = re.compile(r"\w\.[a-z0-9]{2,4}\b")  # "relatorio.pdf": o nome exato fica com a busca antiga, no disco todo
 RE_ONDE = re.compile(r"\bonde (?:esta|fica|ficam)\b")
 ORDINAIS = {"primeira": 0, "primeiro": 0, "um": 0, "1": 0, "segunda": 1, "segundo": 1, "dois": 1, "2": 1, "terceira": 2, "terceiro": 2,
             "tres": 2, "3": 2, "quarta": 3, "quarto": 3, "quatro": 3, "4": 3, "ultima": -1, "ultimo": -1}
@@ -209,9 +230,11 @@ class AgentePastas:
     """`responder(texto)` devolve a resposta falada ou None (o roteamento segue)."""
 
     def __init__(self, indice: IndiceDePastas | None = None, abrir=None, lugares=None, relogio=time.time,
-                 preferencias: str | None = None):
+                 preferencias: str | None = None, arquivos: busca_arquivos.IndiceDeArquivos | None = None, mostrar=None):
         self.indice = indice or IndiceDePastas()
+        self.arquivos = arquivos or busca_arquivos.IndiceDeArquivos(relogio=relogio)
         self._abrir = abrir or os.startfile
+        self._mostrar = mostrar or (lambda caminho: subprocess.Popen(["explorer", "/select,", os.path.normpath(caminho)]))
         self._lugares = lugares
         self.relogio = relogio
         self.pergunta: Pergunta | None = None
@@ -245,6 +268,7 @@ class AgentePastas:
         """Monta o índice antes do primeiro pedido (chamado em segundo plano na abertura)."""
         try:
             self.indice.garantir()
+            self.arquivos.garantir()
         except Exception as exc:
             logger.warning("Índice de pastas indisponível: %s", exc)
 
@@ -253,6 +277,11 @@ class AgentePastas:
         c = siglas.sem_acento(siglas.corrigir_siglas(texto))
         if self.pergunta and self.relogio() > self.pergunta.ate:
             self.pergunta = None
+        pedido_de_arquivo = self._pedido_de_arquivo(c)
+        if pedido_de_arquivo is not None:
+            resposta = self._abrir_arquivo_pedido(*pedido_de_arquivo)
+            if resposta is not None:
+                return resposta
         pedido = self._pedido(c)
         if pedido is None and self.pergunta is not None:
             return self._responder_pergunta(c)
@@ -279,6 +308,51 @@ class AgentePastas:
         tokens = re.findall(r"[a-z0-9]+", c)
         palavras = [t for t in tokens if t not in PALAVRAS_DE_LIGACAO and not RE_VERBO.fullmatch(t)]
         return palavras, bool(RE_ONDE.search(c))
+
+    def _pedido_de_arquivo(self, c: str):
+        """(palavras, extensões, nome do tipo, "onde está") para "abre o PDF de X"; None se não é pedido de arquivo."""
+        if not RE_VERBO.search(c) or RE_NOME_COM_EXTENSAO.search(c) or re.search(r"[a-z]:\\", c):
+            return None
+        tipo = next(((achado, extensoes, nome) for padrao, extensoes, nome in TIPOS_DE_ARQUIVO
+                     for achado in [padrao.search(c)] if achado), None)
+        if tipo is None and RE_COISA_DE_ARQUIVO.search(c):
+            tipo = (RE_COISA_DE_ARQUIVO.search(c), set(), "")
+        if tipo is None:
+            return None
+        if self._lugar([t for t in re.findall(r"[a-z0-9]+", c) if t not in PALAVRAS_DE_LIGACAO and not RE_VERBO.fullmatch(t)]):
+            return None  # "abre documentos gerados", "abre minhas fotos": é o lugar
+        achado, extensoes, nome = tipo
+        pasta = RE_PASTA.search(c)
+        if pasta and pasta.start() < achado.start():
+            return None  # "abre a pasta dos PDFs": é a pasta
+        palavras = busca_arquivos.palavras_do_pedido(c, vazias=PALAVRAS_DE_LIGACAO | {"pdfs", "print", "prints", "power", "point"})
+        if not palavras:
+            return None  # "abre o word", "abre meus documentos": outras rotas
+        return palavras, extensoes, nome, bool(RE_ONDE.search(c))
+
+    def _abrir_arquivo_pedido(self, palavras: list[str], extensoes: set, tipo: str, onde: bool) -> str | None:
+        achados = self.arquivos.buscar(palavras, extensoes)
+        if not achados:
+            # "abre o arquivo da OAB" pode ser a pasta, e "abre a aula X", um site: o pedido segue
+            return None if tipo in ("arquivo", "") else f"Não achei nenhum {tipo} com “{' '.join(palavras)}”."
+        self.pergunta = None
+        candidatos = [self._como_pasta(a) for a in busca_arquivos.empatados(achados)]
+        if len(candidatos) == 1:
+            return self._abrir_pasta(candidatos[0], onde)
+        chave = "arquivo:" + " ".join(sorted(palavras))
+        acao = (lambda escolhido: self._abrir_pasta(escolhido, onde))
+        preferida = next((p for p in candidatos if p.caminho == self._preferidas.get(chave)), None)
+        if preferida is not None:  # da outra vez você escolheu este: abre sem perguntar e deixa corrigir
+            self._abrir_pasta(preferida, onde)
+            self.pergunta = Pergunta(candidatos, self.relogio() + VALIDADE_DA_PERGUNTA, chave, preferida, acao)
+            return f"Abri “{preferida.nome}”, o que você escolheu da outra vez. Se não era esse, diga “o outro”."
+        self.pergunta = Pergunta(candidatos, self.relogio() + VALIDADE_DA_PERGUNTA, chave, None, acao)
+        nomes = [self.descrever(p, candidatos) for p in candidatos]
+        return f"Achei {len(nomes)} arquivos: " + "; ".join(nomes[:-1]) + f" e {nomes[-1]}. Qual deles?"
+
+    @staticmethod
+    def _como_pasta(arquivo: busca_arquivos.Arquivo) -> Pasta:
+        return Pasta(arquivo.caminho, arquivo.titulo, arquivo.palavras, 0, arquivo=True)
 
     # -- lugares conhecidos (downloads, documentos...)
     def _todos_os_lugares(self) -> dict:
@@ -350,6 +424,13 @@ class AgentePastas:
         return f"Achei {len(nomes)} pastas: " + "; ".join(nomes[:-1]) + f" e {nomes[-1]}. Qual delas?"
 
     def _abrir_pasta(self, pasta: Pasta, onde: bool = False) -> str:
+        if pasta.arquivo:
+            lugar = os.path.basename(os.path.dirname(pasta.caminho))
+            if onde:
+                self._mostrar(pasta.caminho)
+                return f"“{pasta.nome}” fica na pasta {lugar}. Abri a pasta com ele marcado."
+            self._abrir(pasta.caminho)
+            return f"Abri “{pasta.nome}”."
         self._abrir(pasta.caminho)
         lugar = os.path.basename(os.path.dirname(pasta.caminho))
         return f"A pasta {pasta.nome} fica em {lugar}. Já abri para você." if onde else f"Abri a pasta {pasta.nome}."
@@ -373,17 +454,22 @@ class AgentePastas:
             if not re.search(r"\b(nao|outra|outro|errada|errado)\b", c):
                 return None
             restantes = [p for p in pergunta.candidatas if p is not pergunta.aberta]
-            pergunta = self.pergunta = Pergunta(restantes, pergunta.ate, pergunta.chave)
+            acao = pergunta.acao if restantes and restantes[0].arquivo else None
+            pergunta = self.pergunta = Pergunta(restantes, pergunta.ate, pergunta.chave, None, acao)
             palavras = [p for p in palavras if p not in {"nao", "outra", "outro", "errada", "errado", "era", "essa", "esse", "isso", "nada"}]
             if not palavras:
                 if len(restantes) == 1:
                     self.pergunta = None
                     self._lembrar(pergunta.chave, restantes[0])
-                    return self._abrir_pasta(restantes[0])
+                    return pergunta.acao(restantes[0]) if pergunta.acao is not None else self._abrir_pasta(restantes[0])
                 nomes = [self.descrever(p, restantes) for p in restantes]
+                if restantes[0].arquivo:
+                    return "Então são estes: " + "; ".join(nomes[:-1]) + f" e {nomes[-1]}. Qual deles?"
                 return "Então são estas: " + "; ".join(nomes[:-1]) + f" e {nomes[-1]}. Qual delas?"
         if RE_CANCELAR.search(c):
             self.pergunta = None
+            if pergunta.candidatas and pergunta.candidatas[0].arquivo:
+                return "Tudo bem, não abri nenhum."
             return "Tudo bem, deixei como estava." if pergunta.acao is not None else "Tudo bem, não abri nenhuma."
         escolhida = None
         for palavra in palavras:

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import busca_arquivos
 from agenda_linguagem import NUMEROS, preparar
 from impressora import (EXTENSOES_EXCEL, EXTENSOES_IMAGEM, EXTENSOES_IMPRIMIVEIS, EXTENSOES_POWERPOINT,
                         EXTENSOES_TEXTO, EXTENSOES_WORD, ErroImpressora, nome_curto)
@@ -528,8 +529,8 @@ class AgenteImpressora:
     def _termos(resto: str) -> list[str]:
         sem_opcoes = RE_PRETO_E_BRANCO.sub(" ", RE_COPIAS.sub(" ", resto))
         sem_opcoes = re.sub(r"\bpaginas?\s+\d+(?:\s*(?:,|e|a|ate|-)\s*\d+)*", " ", sem_opcoes)
-        palavras = re.findall(r"[a-z0-9]+", sem_opcoes)
-        return [p for p in palavras if p not in PALAVRAS_VAZIAS and len(p) >= 3 and not p.isdigit()]
+        # "aula dois" vira "aula 2": o número do nome conta (a aula 2 não é a 3).
+        return busca_arquivos.palavras_do_pedido(sem_opcoes, vazias=PALAVRAS_VAZIAS)
 
     def _pastas(self, resto: str) -> list[tuple[str, int]]:
         """(pasta, profundidade) onde procurar, conforme o pedido."""
@@ -585,26 +586,26 @@ class AgenteImpressora:
         return self._melhor_arquivo(termos, extensoes, resto, self._pastas(resto))
 
     def _melhor_arquivo(self, termos: list[str], extensoes: set, resto: str, pastas) -> str | None:
-        candidatos = []  # (acertos, prioridade, data, caminho)
+        candidatos = []
         for pasta, caminho in self._arquivos(pastas):
             nome = os.path.basename(caminho)
             extensao = os.path.splitext(nome)[1].lower()
             if extensao not in extensoes or nome.startswith("~$") or self._arquivo_interno(nome, resto):
                 continue
             # O nome das pastas conta: as tarefas dos agentes ficam em documentos_gerados/<data>_<tema>/.
-            texto_busca = preparar(os.path.relpath(caminho, pasta))[1]
-            acertos = sum(1 for termo in termos if termo in texto_busca or termo.rstrip("s") in texto_busca)
-            if termos and acertos * 2 < len(termos):
-                continue
-            try:
-                data = os.path.getmtime(caminho)
-            except OSError:
-                continue
-            prioridade = 0 if extensao in EXTENSOES_TEXTO else 1  # entre iguais, o documento de verdade
-            candidatos.append((acertos, prioridade, data, caminho))
+            arquivo = busca_arquivos.arquivo_de(caminho, pasta)
+            if arquivo.modificado:
+                candidatos.append(arquivo)
         if not candidatos:
             return None
-        return max(candidatos)[3]
+        if termos:  # pelo nome aproximado (busca_arquivos); no empate, o mais novo
+            achados = busca_arquivos.ordenar(termos, candidatos)
+            if not achados:
+                return None
+            empatados = [a for nota, a in achados if achados[0][0] - nota < 0.02]
+            # entre iguais, o documento de verdade (não o .txt/.md) e o mais novo
+            return max(empatados, key=lambda a: (os.path.splitext(a.nome)[1].lower() not in EXTENSOES_TEXTO, a.modificado)).caminho
+        return max(candidatos, key=lambda a: (os.path.splitext(a.nome)[1].lower() not in EXTENSOES_TEXTO, a.modificado)).caminho
 
     # ============================================================== impressão
     def _pergunta(self, documentos: list, opcoes: Opcoes) -> str:
@@ -752,10 +753,11 @@ class AgenteImpressora:
 
 def criar_agente_impressora(respostas_recentes=None, texto_agenda=None, avisar=None) -> AgenteImpressora:
     """Agente com a impressora e as pastas do .env (config.py)."""
-    from config import (CAMINHO_DOCUMENTOS, IMPRESSORA_CONFIRMAR, IMPRESSORA_DPI, IMPRESSORA_NOME,
-                        PASTA_DOCUMENTOS_GERADOS)
+    from config import (CAMINHO_DOCUMENTOS, IMPRESSORA_CONFIRMAR, IMPRESSORA_DPI, IMPRESSORA_NOME, PASTA_ARQUIVADOS,
+                        PASTA_DOCUMENTOS_GERADOS, PASTA_RECEBIDOS, VAULT_OBSIDIAN)
     from impressora import ImpressoraWindows
 
-    return AgenteImpressora(ImpressoraWindows(IMPRESSORA_NOME, IMPRESSORA_DPI), pastas_busca=[CAMINHO_DOCUMENTOS],
+    pastas = [CAMINHO_DOCUMENTOS, VAULT_OBSIDIAN, PASTA_ARQUIVADOS, PASTA_RECEBIDOS]  # fontes, só arquivos e recebidos
+    return AgenteImpressora(ImpressoraWindows(IMPRESSORA_NOME, IMPRESSORA_DPI), pastas_busca=pastas,
                             pasta_gerados=PASTA_DOCUMENTOS_GERADOS, confirmar=IMPRESSORA_CONFIRMAR,
                             respostas_recentes=respostas_recentes, texto_agenda=texto_agenda, avisar=avisar)

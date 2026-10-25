@@ -5,6 +5,7 @@ from agentes.orquestrador import (
     TIPOS_DE_ESTUDO,
     Orquestrador,
     PainelCompartilhado,
+    descricao_do_arquivo_pedido,
     pede_envio,
     pedido_de_arquivo,
     planejar,

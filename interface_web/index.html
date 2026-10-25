@@ -137,28 +137,41 @@
   </div>
 </div>
 
-<!-- Biblioteca de fontes: organizar à mão. Arraste um arquivo para uma pasta da árvore para mover. -->
+<!-- Biblioteca: o que é fonte (a Beatriz lê), o que é só arquivo e o que chegou. Arraste arquivos para uma pasta ou área. -->
 <div class="fundo-modal" id="fundo-biblioteca" hidden>
-  <div class="janela-sistema janela-biblioteca" id="janela-biblioteca" role="dialog" aria-label="Biblioteca de fontes">
+  <div class="janela-sistema janela-biblioteca" id="janela-biblioteca" role="dialog" aria-label="Biblioteca">
     <div class="cabecalho-janela">◢ biblioteca<button class="fechar" data-fechar="biblioteca" aria-label="Fechar">×</button></div>
     <div class="biblio-barra">
-      <input id="bb-busca" placeholder="Buscar pelo nome…" autocomplete="off" aria-label="Buscar arquivo">
+      <input id="bb-busca" placeholder="Buscar pelo nome (não precisa ser exato)…" autocomplete="off" aria-label="Buscar arquivo">
       <button class="pequeno" id="bb-adicionar">+ adicionar arquivos</button>
       <button class="pequeno" id="bb-nova-pasta">+ nova pasta</button>
+      <button class="pequeno biblio-filtro" id="bb-repetidos" hidden title="Arquivos com o mesmo conteúdo em mais de um lugar">≡ repetidos</button>
       <span class="biblio-resumo" id="bb-resumo"></span>
     </div>
     <div class="biblio-corpo">
-      <ul class="biblio-arvore" id="bb-arvore" aria-label="Pastas"></ul>
+      <ul class="biblio-arvore" id="bb-arvore" aria-label="Áreas e pastas"></ul>
       <div class="biblio-arquivos">
-        <div class="biblio-titulo"><span id="bb-titulo"></span><button class="pequeno" id="bb-apagar-pasta" hidden>apagar pasta vazia</button></div>
+        <div class="biblio-titulo">
+          <span id="bb-titulo"></span><span class="biblio-explica" id="bb-explica"></span>
+          <button class="pequeno" id="bb-apagar-pasta" hidden>apagar pasta vazia</button>
+        </div>
+        <div class="biblio-selecao" id="bb-selecao" hidden>
+          <span id="bb-marcados"></span>
+          <button class="pequeno fonte" id="bb-lote-fonte" title="A Beatriz passa a ler (cada um vai para a pasta do mesmo assunto)">virar fonte</button>
+          <button class="pequeno" id="bb-lote-arquivo" title="Ficam guardados e ela acha pelo nome, mas não lê">só arquivo</button>
+          <select id="bb-lote-mover" title="Mover os marcados para uma pasta"></select>
+          <button class="pequeno perigo" id="bb-lote-apagar">apagar</button>
+          <button class="pequeno" id="bb-lote-limpar">desmarcar</button>
+        </div>
         <div class="biblio-rolagem">
           <table class="biblio-tabela">
-            <colgroup><col><col class="c-tamanho"><col class="c-data"><col class="c-estado"><col class="c-acoes"></colgroup>
-            <thead><tr><th>Nome</th><th>Tamanho</th><th>Modificado</th><th>Na biblioteca</th><th></th></tr></thead>
+            <colgroup><col class="c-marca"><col><col class="c-tamanho"><col class="c-data"><col class="c-estado"><col class="c-acoes"></colgroup>
+            <thead><tr><th><input type="checkbox" id="bb-todos" aria-label="Marcar todos" title="Marcar todos"></th><th>Nome</th><th>Tamanho</th><th>Modificado</th><th>Situação</th><th></th></tr></thead>
             <tbody id="bb-linhas"></tbody>
           </table>
         </div>
-        <p class="biblio-dica">Arraste um arquivo para uma pasta à esquerda para movê-lo. Apagar manda para a Lixeira do Windows.</p>
+        <p class="biblio-dica"><b>Fonte</b>: a Beatriz lê e usa nas respostas. <b>Só arquivo</b>: fica guardado e ela acha pelo nome (“abre o PDF de…”), mas não lê.
+          Arraste para uma pasta, ou para FONTES / SÓ ARQUIVOS (fica na pasta do mesmo assunto). Marque vários para mexer de uma vez.</p>
       </div>
     </div>
     <p class="agenda-resposta" id="bb-resposta" aria-live="polite"></p>

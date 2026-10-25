@@ -171,7 +171,7 @@ def test_janela_da_biblioteca_mexe_nas_fontes_e_pede_nova_leitura(monkeypatch, t
     api = pw.ApiPainel(None, compartilhado, None)
     api._biblioteca = BibliotecaDeFontes(raizes={"docs": ("Documentos", str(fontes))}, pessoais=[],
                                          ao_mudar=api._pedir_leitura_da_biblioteca, estado_do_indice=lambda: {},
-                                         lixeira=lambda caminho: None, fora_da_biblioteca=str(tmp_path / "fora"))
+                                         lixeira=lambda caminho: None, arquivos=str(tmp_path / "fora"), recebidos=None)
     dados = api.biblioteca()
     assert dados["total"] == 1 and dados["leitura"] == "carregando"
 

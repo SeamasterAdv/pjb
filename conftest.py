@@ -74,10 +74,13 @@ def biometria_isolada(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def pastas_sem_varredura(monkeypatch):
-    """O aquecimento do índice (thread da abertura) não varre as pastas do PC nos testes."""
+    """O aquecimento do índice (thread da abertura) não varre as pastas do PC nos testes, e a busca de arquivos só olha as
+    pastas que o teste der (sem raízes, o índice padrão fica vazio)."""
     import agente_pastas
+    import busca_arquivos
 
     monkeypatch.setattr(agente_pastas.AgentePastas, "aquecer", lambda self: None)
+    monkeypatch.setattr(busca_arquivos, "raizes_padrao", lambda: [])
     yield
 
 

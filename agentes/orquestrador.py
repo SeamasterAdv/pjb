@@ -388,6 +388,13 @@ def pedido_de_arquivo(comando: str):
     return next((ext for chave, ext in EXTENSOES_PEDIDAS.items() if palavra.startswith(chave)), ())
 
 
+def descricao_do_arquivo_pedido(comando: str) -> str:
+    """O que vem depois de "manda o PDF": "da aula de embargos pro zap" (vazio se não for pedido de arquivo)."""
+    texto = re.sub(r"^(beatriz|beatris|biatriz)[\s,]+", "", normalizar(comando))
+    achado = RE_PEDIDO_DE_ARQUIVO.search(texto)
+    return texto[achado.end():].strip() if achado else ""
+
+
 def _numero_br(valor: float) -> str:
     """1234.5 -> '1.234,50'."""
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")

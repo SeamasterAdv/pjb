@@ -470,7 +470,7 @@ def com_biblioteca(tmp_path, pastas):
         raizes={"documentos": ("Documentos", str(documentos)), "obsidian": ("Obsidian", str(obsidian))},
         pessoais=[str(obsidian / "geral")], ao_mudar=lambda: None, estado_do_indice=lambda: {},
         lixeira=lambda caminho: (lixo.append(os.path.basename(caminho)), os.remove(caminho)),
-        fora_da_biblioteca=str(tmp_path / "fora"), limite_mb=1)
+        arquivos=str(tmp_path / "arquivados"), recebidos=None, limite_mb=1)
     canal, aparelhos = CanalApp(), Aparelhos(str(tmp_path / "aparelhos.json"))
     app = criar_servidor(canal, aparelhos, dados=lambda: {}, biblioteca=biblioteca,
                          recursos=lambda: {"cpu": 30, "ram": 60, "disco": 70})
@@ -488,7 +488,7 @@ def test_biblioteca_e_recursos_exigem_a_chave(com_biblioteca):
 def test_biblioteca_pelo_app_lista_move_baixa_e_apaga(com_biblioteca):
     cliente, cabecalho, lixo, _ = com_biblioteca
     lista = cliente.get("/api/biblioteca", headers=cabecalho).json()
-    assert [p["id"] for p in lista["pastas"]] == ["documentos", "documentos/direito", "obsidian", "obsidian/estudos"]
+    assert [p["id"] for p in lista["pastas"]] == ["documentos", "documentos/direito", "obsidian", "obsidian/estudos", "arquivos"]
     assert lista["total"] == 1  # a memória do usuário (geral) não aparece
 
     movido = cliente.post("/api/biblioteca/mover", headers=cabecalho,
@@ -502,6 +502,12 @@ def test_biblioteca_pelo_app_lista_move_baixa_e_apaga(com_biblioteca):
     assert errado["ok"] is False and errado["mensagem"]
     assert cliente.post("/api/biblioteca/formatar", headers=cabecalho, json={}).status_code == 404
 
+    guardado = cliente.post("/api/biblioteca/so_arquivo", headers=cabecalho, json={"arquivo": "obsidian/estudos/lei.pdf"}).json()
+    assert guardado["ok"] and "Só arquivos › estudos" in guardado["mensagem"]
+    lote = cliente.post("/api/biblioteca/lote", headers=cabecalho,
+                        json={"acao": "virar_fonte", "arquivos": ["arquivos/estudos/lei.pdf"]}).json()
+    assert lote == {"ok": True, "mensagem": "1 arquivo virou fonte: a Beatriz vai ler."}
+    assert cliente.post("/api/biblioteca/lote", headers=cabecalho, json={"acao": "apagar", "arquivos": "x"}).status_code == 400
     apagado = cliente.post("/api/biblioteca/apagar", headers=cabecalho, json={"arquivo": "obsidian/estudos/lei.pdf"}).json()
     assert apagado["ok"] and lixo == ["lei.pdf"]
 

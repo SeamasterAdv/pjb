@@ -32,8 +32,8 @@ from collections import deque
 from datetime import datetime
 from urllib.parse import unquote
 
-from config import (APP_HOST, APP_PORTA, CAMINHO_APP_CELULAR, LIMITE_DO_ARQUIVO_MB, PASTA_DOCUMENTOS_GERADOS,
-                    PASTA_RECEBIDOS)
+from config import (APP_HOST, APP_PORTA, CAMINHO_APP_CELULAR, CAMINHO_DOCUMENTOS, LIMITE_DO_ARQUIVO_MB, PASTA_ARQUIVADOS,
+                    PASTA_DOCUMENTOS_GERADOS, PASTA_RECEBIDOS, PASTAS_OBSIDIAN, VAULT_OBSIDIAN)
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,10 @@ MENSAGENS_GUARDADAS = 200
 LIMITE_DA_VOZ_MB = 15.0
 FALAS_GUARDADAS = 12  # áudios das respostas (gerados quando o app pede para falar) que ficam no disco
 CABECALHO_DA_CHAVE = "X-Chave-Beatriz"
-# Só arquivos destas pastas podem ser oferecidos ao celular (os que a Beatriz gerou e os que chegaram).
-PASTAS_QUE_SAEM = (PASTA_DOCUMENTOS_GERADOS, PASTA_RECEBIDOS)
+# Só arquivos destas pastas podem ser oferecidos ao celular: os que a Beatriz gerou, os que chegaram e os da biblioteca (fontes e
+# só arquivos, como na janela da biblioteca), nunca as notas pessoais nem os arquivos de dados.
+PASTAS_QUE_SAEM = (PASTA_DOCUMENTOS_GERADOS, PASTA_RECEBIDOS, CAMINHO_DOCUMENTOS, VAULT_OBSIDIAN, PASTA_ARQUIVADOS)
+PASTAS_QUE_NAO_SAEM = tuple(p for p in (PASTAS_OBSIDIAN.get("geral"), PASTAS_OBSIDIAN.get("diario")) if p)
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("text/javascript", ".js")
@@ -70,6 +72,12 @@ def _imagem_permitida(endereco: str) -> bool:
 
 def _hash(chave: str) -> str:
     return hashlib.sha256(chave.encode("utf-8")).hexdigest()
+
+
+def pode_sair(caminho: str) -> bool:
+    """Se o arquivo pode ir para o celular (veja PASTAS_QUE_SAEM)."""
+    return (_dentro_de(caminho, PASTAS_QUE_SAEM) and not _dentro_de(caminho, PASTAS_QUE_NAO_SAEM)
+            and not caminho.lower().endswith((".json", ".jsonl")))
 
 
 def _dentro_de(caminho: str, pastas) -> bool:
@@ -253,7 +261,7 @@ class CanalApp:
     def oferecer(self, caminho: str, nome: str = "") -> dict | None:
         """Registra um arquivo que pode ser baixado pelo celular (só das pastas permitidas) e devolve {id, nome, tamanho}."""
         caminho = str(caminho)
-        if not os.path.isfile(caminho) or not _dentro_de(caminho, PASTAS_QUE_SAEM):
+        if not os.path.isfile(caminho) or not pode_sair(caminho):
             logger.warning("Arquivo fora das pastas permitidas não vai para o celular: %s", caminho)
             return None
         with self._mudou:
@@ -551,7 +559,7 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
     @app.get("/api/arquivo/{arquivo_id}")
     def baixar(arquivo_id: str, quem: dict = Depends(aparelho)):
         caminho = canal.caminho_do_arquivo(arquivo_id)
-        if not caminho or not os.path.isfile(caminho) or not _dentro_de(caminho, PASTAS_QUE_SAEM):
+        if not caminho or not os.path.isfile(caminho) or not pode_sair(caminho):
             raise HTTPException(404, "Esse arquivo não está disponível.")
         return FileResponse(caminho, filename=os.path.basename(caminho))
 
@@ -603,9 +611,17 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
                 "renomear": (biblioteca.renomear, corpo.get("arquivo"), corpo.get("nome")),
                 "pasta": (biblioteca.criar_pasta, corpo.get("pasta"), corpo.get("nome")),
                 "apagar_pasta": (biblioteca.apagar_pasta, corpo.get("pasta")),
-                "tirar": (biblioteca.tirar, corpo.get("arquivo")),
+                "so_arquivo": (biblioteca.so_arquivo, corpo.get("arquivo")),
+                "tirar": (biblioteca.so_arquivo, corpo.get("arquivo")),  # nome antigo
+                "virar_fonte": (biblioteca.virar_fonte, corpo.get("arquivo")),
                 "apagar": (biblioteca.apagar, corpo.get("arquivo")),
             }
+            if acao == "lote":  # {"acao", "arquivos": [ids], "pasta"}
+                ids = corpo.get("arquivos")
+                if not isinstance(ids, list):
+                    raise ValueError
+                return await run_in_threadpool(resultado, biblioteca.em_lote, str(corpo.get("acao") or ""),
+                                               [str(i) for i in ids], str(corpo.get("pasta") or ""))
         except (ValueError, AttributeError):
             raise HTTPException(400, "Pedido inválido.")
         if acao not in pedidos:
@@ -781,7 +797,7 @@ def _demonstracao(porta: int):
         raizes={"documentos": ("Documentos", os.path.join(raiz_demo, "documentos")), "obsidian": ("Obsidian", os.path.join(raiz_demo, "obsidian"))},
         pessoais=[], estado_do_indice=lambda: {c: "lida" for c in lidos},
         lixeira=lambda caminho: shutil.move(caminho, os.path.join(pasta, os.path.basename(caminho))),
-        fora_da_biblioteca=os.path.join(pasta, "fora"))
+        arquivos=os.path.join(raiz_demo, "arquivados"), recebidos=os.path.join(raiz_demo, "recebidos"))
     import random
 
     amostra = os.path.join(os.path.dirname(os.path.abspath(__file__)), "documentos_gerados", "amostras_voz", "1_atual_thalita.mp3")

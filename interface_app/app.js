@@ -906,7 +906,7 @@ function folha({ titulo, codigo = "", texto = "", campo = null, botoes = [] }) {
   });
 }
 
-// ------------------------------------------------------------------ biblioteca de fontes
+// ------------------------------------------------------------------ biblioteca (fontes, só arquivos e recebidos)
 const biblio = { dados: null, abertas: null, destinoDoUpload: "", relogio: null };
 const SIGLAS_DE_TIPO = { pdf: "PDF", apresentacao: "PPT", documento: "DOC", planilha: "XLS", imagem: "IMG", nota: "TXT", pagina: "WEB" };
 const semAcento = (texto) => texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -927,16 +927,27 @@ function mostrarBiblioteca() {
   if (!dados || !biblio.abertas) return;
   $("biblio-contagem").textContent = `${dados.total} arquivos`;
   $("biblio-resumo").textContent = dados.total
-    ? `${dados.lidas} de ${dados.total} já lidos pela Beatriz. Toque num arquivo para organizar.`
+    ? `${dados.fontes} fontes (${dados.lidas} lidas) · ${dados.so_arquivos} só arquivos · ${dados.recebidos} recebidos. Toque num arquivo para organizar.`
     : "Nenhuma fonte ainda. Use o + de uma pasta para mandar arquivos.";
-  const busca = semAcento($("biblio-busca").value.trim());
+  // cada palavra digitada tem de estar no nome, em qualquer ordem e sem acento ("embargos terceiro")
+  const palavras = semAcento($("biblio-busca").value.trim()).split(/\s+/).filter(Boolean);
+  const busca = palavras.length > 0;
   const lista = $("biblio-pastas");
   lista.textContent = "";
-  let algum = false;
+  let algum = false, areaAtual = "";
   dados.pastas.forEach((pasta, i) => {
-    const arquivos = busca ? pasta.arquivos.filter((a) => semAcento(a.nome).includes(busca)) : pasta.arquivos;
+    const arquivos = busca ? pasta.arquivos.filter((a) => palavras.every((p) => semAcento(a.nome).includes(p))) : pasta.arquivos;
     if (busca && !arquivos.length) return;
     algum = true;
+    if (pasta.area && pasta.area !== areaAtual) { // FONTES, SÓ ARQUIVOS, RECEBIDOS
+      areaAtual = pasta.area;
+      const area = (dados.areas || []).find((a) => a.id === pasta.area);
+      if (area) {
+        const cabeca = elemento("div", `biblio-area area-${area.id}`);
+        cabeca.append(elemento("span", "biblio-area-nome", `${area.nome} · ${area.arquivos}`), elemento("span", "biblio-area-desc", area.descricao));
+        lista.appendChild(cabeca);
+      }
+    }
     const caixa = elemento("div", `pasta holo${busca || biblio.abertas.has(pasta.id) ? " aberta" : ""}`);
     caixa.dataset.i = String(i + 2);
     const cabeca = elemento("div", "pasta-cabeca");
@@ -984,16 +995,15 @@ function linhaDoArquivo(arquivo) {
 }
 
 async function acoesDoArquivo(arquivo) {
-  const { escolha } = await folha({
-    titulo: arquivo.nome, codigo: arquivo.estado,
-    botoes: [
-      { rotulo: "Baixar / abrir no celular", valor: "baixar" },
-      { rotulo: "Renomear", valor: "renomear" },
-      { rotulo: "Mover para outra pasta", valor: "mover" },
-      { rotulo: "Tirar da biblioteca (fica guardado no PC)", valor: "tirar" },
-      { rotulo: "Apagar (vai para a Lixeira do PC)", valor: "apagar", classe: "perigo" },
-    ],
-  });
+  const botoes = [
+    { rotulo: "Baixar / abrir no celular", valor: "baixar" },
+    { rotulo: "Renomear", valor: "renomear" },
+    { rotulo: "Mover para outra pasta", valor: "mover" },
+  ];
+  if (arquivo.area !== "fontes") botoes.push({ rotulo: "Virar fonte (a Beatriz passa a ler)", valor: "virar_fonte", classe: "principal" });
+  if (arquivo.area !== "arquivos") botoes.push({ rotulo: "Só arquivo (fica guardado; ela acha pelo nome, mas não lê)", valor: "so_arquivo" });
+  botoes.push({ rotulo: "Apagar (vai para a Lixeira do PC)", valor: "apagar", classe: "perigo" });
+  const { escolha } = await folha({ titulo: arquivo.nome, codigo: arquivo.estado, botoes });
   if (escolha === "baixar") return baixarDaBiblioteca(arquivo);
   if (escolha === "renomear") {
     const base = arquivo.nome.replace(/\.[^.]+$/, "");
@@ -1005,15 +1015,11 @@ async function acoesDoArquivo(arquivo) {
     const pastas = biblio.dados.pastas;
     const { escolha: destino } = await folha({
       titulo: "Mover para…", texto: arquivo.nome,
-      botoes: pastas.map((p) => ({ rotulo: p.nome, valor: p.id, recuo: p.profundidade })),
+      botoes: pastas.map((p) => ({ rotulo: p.caminho, valor: p.id, recuo: p.profundidade })),
     });
     if (destino) return acaoDaBiblioteca("mover", { arquivo: arquivo.id, pasta: destino });
   }
-  if (escolha === "tirar") {
-    const { escolha: ok } = await folha({ titulo: "Tirar da biblioteca?", texto: `“${arquivo.nome}” sai das fontes e vai para documentos_arquivados › fora_da_biblioteca, no PC.`,
-                                          botoes: [{ rotulo: "Tirar da biblioteca", valor: true, classe: "principal" }] });
-    if (ok) return acaoDaBiblioteca("tirar", { arquivo: arquivo.id });
-  }
+  if (escolha === "virar_fonte" || escolha === "so_arquivo") return acaoDaBiblioteca(escolha, { arquivo: arquivo.id }); // dá para desfazer
   if (escolha === "apagar") {
     const { escolha: ok } = await folha({ titulo: "Apagar?", texto: `“${arquivo.nome}” vai para a Lixeira do Windows. Dá para restaurar de lá.`,
                                           botoes: [{ rotulo: "Apagar", valor: true, classe: "perigo" }] });

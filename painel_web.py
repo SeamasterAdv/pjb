@@ -248,7 +248,7 @@ class ApiPainel:
 
     # ------------------------------------------------------------------ janela da biblioteca de fontes
     def biblioteca(self) -> dict:
-        """As pastas de fontes com os arquivos e o estado de cada um (lida, sem texto, ainda não lida)."""
+        """As áreas (fontes, só arquivos, recebidos) e as pastas com os arquivos e o estado de cada um."""
         dados = self._biblioteca.listar()
         dados["leitura"] = (self._compartilhado("painel").get("indexacao") or {}).get("status", "")
         return dados
@@ -265,8 +265,15 @@ class ApiPainel:
     def biblioteca_apagar_pasta(self, pasta: str) -> dict:
         return resultado_da_biblioteca(self._biblioteca.apagar_pasta, pasta)
 
-    def biblioteca_tirar(self, arquivo: str) -> dict:
-        return resultado_da_biblioteca(self._biblioteca.tirar, arquivo)
+    def biblioteca_so_arquivo(self, arquivo: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.so_arquivo, arquivo)
+
+    def biblioteca_virar_fonte(self, arquivo: str) -> dict:
+        return resultado_da_biblioteca(self._biblioteca.virar_fonte, arquivo)
+
+    def biblioteca_lote(self, acao: str, arquivos: list, pasta: str = "") -> dict:
+        """A mesma ação (mover, so_arquivo, virar_fonte, apagar) nos arquivos marcados, com uma nova leitura só."""
+        return resultado_da_biblioteca(self._biblioteca.em_lote, acao, [str(a) for a in arquivos or []], pasta or "")
 
     def biblioteca_apagar(self, arquivo: str) -> dict:
         return resultado_da_biblioteca(self._biblioteca.apagar, arquivo)

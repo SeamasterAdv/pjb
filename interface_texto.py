@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 from tkinter import filedialog, ttk
 
+import camadas_personalidade
 import memory
 from agente_agenda import criar_agente_agenda
 from agente_controle import criar_agente_controle
@@ -314,6 +315,8 @@ class JanelaComandos(tk.Tk):
         # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
         self.leis = AgenteLeis(
             avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")))
+        # "me chama de…", "fala mais curto": camadas de personalidade (o mesmo arquivo da voz e do painel web)
+        self.camadas = camadas_personalidade.AgenteCamadas(llm=llm_clients)
         self.pastas = AgentePastas()  # "abre a pasta da OAB"
         threading.Thread(target=self.pastas.aquecer, daemon=True).start()
         self.tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa, não esta
@@ -1329,6 +1332,12 @@ class JanelaComandos(tk.Tk):
             if hasattr(self, "indicador_voz"):
                 self._definir_indicador(self.indicador_voz, descricao_da_voz(), COR_DESTAQUE)
             self._finalizar_resposta(resposta_troca_voz)
+            return
+
+        resposta_camadas = self.camadas.responder(comando)
+        if resposta_camadas:  # vira camada de personalidade
+            self._inicio_processamento = time.perf_counter()
+            self._finalizar_resposta(resposta_camadas)
             return
 
         resposta_impressora = self.impressora.responder(comando)

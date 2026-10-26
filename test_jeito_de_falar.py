@@ -58,6 +58,7 @@ def test_categoria_aceita_a_descricao_no_lugar_do_rotulo():
 
 def test_risada_escrita_e_outros_alfabetos_saem_da_fala():
     assert main.limpar_texto_para_fala("Ahah, que bom! Hahaha essa foi boa, kkkk.") == "Que bom! essa foi boa."
+    assert main.limpar_texto_para_fala("Excesso de problemas. Risos. Outra?") == "Excesso de problemas. Outra?"
     assert main.limpar_texto_para_fala("Que legal! 这是 tá ótimo, o 1º lugar") == "Que legal! tá ótimo, o 1º lugar."
 
 

@@ -43,6 +43,16 @@ def sem_internet_para_as_leis(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def personalidade_isolada(tmp_path, monkeypatch):
+    """A personalidade editada pelo painel (banco_memoria/personalidade.json) nunca entra nos testes: vale o padrão."""
+    import config
+
+    monkeypatch.setattr(config, "CAMINHO_PERSONALIDADE", str(tmp_path / "personalidade_teste.json"))
+    monkeypatch.setattr(config, "CAMINHO_CAMADAS", str(tmp_path / "camadas_teste.json"))  # nem as camadas aprendidas
+    yield
+
+
+@pytest.fixture(autouse=True)
 def vade_mecum_isolado(tmp_path, monkeypatch):
     """O vade-mécum de cada teste é um banco temporário, e nada é baixado do Planalto nem dos tribunais."""
     import config

@@ -509,6 +509,104 @@ select { background: #0a0a0a; color: var(--texto); border: 1px solid var(--linha
   .biblio-tabela .c-acoes { width: 236px; }
 }
 
+/* ---------------------------------------------------------------- personalidade (janela) */
+/* Fundo preto sólido: é um editor de texto, e o painel atrás atrapalharia a leitura. */
+.janela-personalidade { width: min(1180px, 94vw); height: min(760px, 90vh); display: flex; flex-direction: column; user-select: text; background: #000; }
+.janela-personalidade.ampliada { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; animation: none; }
+.cabecalho-janela .ampliar {
+  position: absolute; right: 30px; top: 50%; transform: translateY(-50%);
+  background: none; border: 1px solid rgba(0, 0, 0, .35); color: #000; padding: 0 6px;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; line-height: 15px;
+}
+.cabecalho-janela .ampliar:hover { background: #000; color: var(--claro); }
+.ps-barra { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.ps-espaco { flex: 1; }
+.aba-ps.ativo { background: var(--claro); color: #000; border-color: var(--claro); }
+.ps-estado { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--suave); }
+.ps-estado.mudou { color: var(--ouro); }
+.ps-corpo { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; flex: 1; min-height: 0; }
+.ps-editor { display: flex; flex-direction: column; min-height: 0; }
+.ps-aba { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.ps-aba[hidden] { display: none; }
+.ps-explica { margin: 0 0 8px; font-size: 12.5px; line-height: 1.5; color: var(--suave); }
+.ps-explica b { color: var(--texto); font-weight: 400; font-family: var(--mono); font-size: 11.5px; }
+.janela-personalidade textarea {
+  width: 100%; flex: 1; min-height: 0; resize: none; outline: none; user-select: text;
+  background: transparent; color: var(--texto); border: 1px solid var(--linha-forte); padding: 12px 14px;
+  font: inherit; font-size: 14px; line-height: 1.65; tab-size: 2;
+  scrollbar-width: thin; scrollbar-color: #333 transparent;
+}
+.janela-personalidade textarea:focus { border-color: var(--claro); }
+.janela-personalidade.ampliada textarea { font-size: 15px; }
+.ps-contagem { margin: 6px 0 0; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; color: var(--apagado); text-align: right; }
+.ps-frases {
+  flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; display: grid; gap: 10px; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); scrollbar-width: thin; scrollbar-color: #333 transparent;
+}
+.ps-frase { border: 1px solid var(--linha); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 5px; }
+.ps-frase header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ps-frase b { font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--cor); }
+.ps-frase small { font-size: 11.5px; line-height: 1.4; color: var(--suave); }
+.ps-frase .pequeno { padding: 2px 7px; font-size: 9.5px; }
+.janela-personalidade .ps-frase textarea { flex: none; min-height: 72px; resize: vertical; padding: 6px 8px; font-size: 13px; line-height: 1.55; }
+.ps-lado { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; border-left: 1px solid var(--linha); padding-left: 18px; }
+.ps-lado .pequeno { align-self: flex-start; }
+.ps-lado .pequeno.perigo { border-color: rgba(255, 107, 107, .5); color: var(--vermelho); }
+.ps-lado .pequeno.perigo:hover { background: var(--vermelho); color: #000; }
+.ps-dica { margin: 0; font-size: 12px; line-height: 1.5; color: var(--suave); }
+.ps-lado input {
+  width: 100%; padding: 7px 10px; outline: none; user-select: text;
+  background: transparent; color: var(--texto); font: inherit; font-size: 13px; border: 1px solid var(--linha-forte);
+}
+.ps-lado input:focus { border-color: var(--claro); }
+.ps-lado input::placeholder { color: var(--apagado); }
+.ps-resposta { min-height: 92px; border-left: 1px solid var(--cor); padding: 4px 0 4px 10px; font-size: 13.5px; line-height: 1.55; color: var(--claro); }
+.ps-resposta:empty { border-left-color: var(--linha); }
+.ps-resposta.pensando { color: var(--suave); font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; animation: piscar 1.4s ease-in-out infinite; }
+.ps-resposta small { display: block; margin-top: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; color: var(--suave); }
+.ps-resposta .erro, #ps-mensagem.erro { color: var(--vermelho); }
+.ps-acoes { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--linha); }
+.ps-acoes .agenda-resposta { margin: 0 0 0 8px; }
+.pequeno.principal { background: var(--claro); border-color: var(--claro); color: #000; }
+.pequeno.principal:hover { background: transparent; color: var(--claro); }
+.janela-personalidade .pequeno:disabled { opacity: .35; cursor: default; }
+.janela-personalidade .pequeno.principal:disabled { background: transparent; color: var(--texto); border-color: var(--linha-forte); }
+/* Camadas (aba da janela de personalidade) */
+.cm-barra, .cm-nova { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.cm-chave { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--texto); cursor: pointer; }
+.cm-chave input, .cm-ativa input { accent-color: #fff; width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.cm-resumo { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; color: var(--suave); }
+.cm-nova select { max-width: 150px; }
+.cm-nova input, .cm-texto {
+  flex: 1; min-width: 0; padding: 6px 9px; outline: none; user-select: text;
+  background: transparent; color: var(--texto); font: inherit; font-size: 13px; border: 1px solid var(--linha-forte);
+}
+.cm-nova input:focus, .cm-texto:focus { border-color: var(--claro); }
+.cm-nova input::placeholder { color: var(--apagado); }
+.cm-lista { list-style: none; margin: 0; padding: 0 4px 0 0; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+            scrollbar-width: thin; scrollbar-color: #333 transparent; }
+.cm-camada { border: 1px solid var(--linha); border-left: 2px solid var(--claro); padding: 7px 8px 7px 10px; display: flex; flex-direction: column; gap: 4px; }
+.cm-camada.fixada { border-left-color: var(--cor); background: rgba(255, 255, 255, .04); }
+.cm-camada.desligada { border-left-color: var(--apagado); opacity: .55; }
+.cm-topo { display: flex; align-items: center; gap: 8px; }
+.janela-personalidade textarea.cm-texto { flex: 1; border-color: transparent; padding: 3px 6px; font-size: 13.5px; line-height: 1.45;
+  resize: none; overflow: hidden; min-height: 0; }
+.janela-personalidade textarea.cm-texto:hover { border-color: var(--linha); }
+.janela-personalidade textarea.cm-texto:focus { border-color: var(--claro); }
+.cm-selo { flex: none; width: 104px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--suave); }
+.cm-selo.tipo-estilo { color: var(--claro); }
+.cm-ativa { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--suave); cursor: pointer; }
+.cm-camada .pequeno { padding: 2px 7px; font-size: 9.5px; }
+.cm-camada .pequeno.ativo { background: var(--cor); border-color: var(--cor); color: #000; }
+.cm-camada .tirar { background: none; border: 0; color: var(--suave); font-size: 16px; line-height: 1; padding: 0 2px; }
+.cm-camada .tirar:hover { color: var(--vermelho); }
+.cm-meta { margin-left: 112px; font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--suave); }
+.cm-evidencia { margin-left: 112px; font-size: 11.5px; color: var(--apagado); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-vazia { color: var(--suave); font-size: 13px; padding: 14px 4px; }
+@media (max-width: 1100px) {
+  .ps-corpo { grid-template-columns: minmax(0, 1fr) 240px; }
+}
+
 /* ---------------------------------------------------------------- barra de comando */
 .comando {
   position: relative; z-index: 6; display: flex; align-items: center; gap: 10px;

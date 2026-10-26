@@ -15,8 +15,10 @@ import queue
 import threading
 import time
 
+import camadas_personalidade
 import memory
 import niveis_voz
+import personalidade
 from agente_agenda import criar_agente_agenda
 from agente_controle import criar_agente_controle
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
@@ -95,6 +97,11 @@ class ApiPainel:
         self._ultimas_respostas = []  # mais nova primeiro, para "imprime isso"
         # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
         self._leis = AgenteLeis(avisar=self._responder)
+        # Camadas de personalidade: os pedidos diretos do chat ("me chama de…") e a aba "camadas" da janela; o
+        # aprendizado de tempos em tempos roda no processo principal (aqui, só o "aprender agora").
+        self._aprendiz = camadas_personalidade.Aprendiz(llm=llm_clients)
+        self._camadas = camadas_personalidade.AgenteCamadas(
+            llm=llm_clients, ultima_resposta=lambda: (self._ultimas_respostas or [""])[0], aprendiz=self._aprendiz)
         self._impressora = criar_agente_impressora(
             respostas_recentes=lambda: list(self._ultimas_respostas),
             texto_agenda=lambda t: texto_da_agenda(self._agenda, t),
@@ -308,6 +315,63 @@ class ApiPainel:
             os.startfile(caminho)
         return {"ok": True, "mensagem": ""}
 
+    # ------------------------------------------------------------------ personalidade (janela)
+    def personalidade(self) -> dict:
+        """Quem ela é, os exemplos de conversa e as frases prontas de agora, com o padrão para comparar."""
+        return personalidade.para_a_janela()
+
+    def personalidade_salvar(self, dados: dict) -> dict:
+        """Grava o que está na janela; a próxima resposta (aqui e no processo principal) já sai com ela."""
+        return personalidade.resultado(personalidade.salvar, dados)
+
+    def personalidade_padrao(self) -> dict:
+        return personalidade.resultado(personalidade.restaurar_padrao)
+
+    def personalidade_anterior(self) -> dict:
+        return personalidade.resultado(personalidade.recuperar_anterior)
+
+    def personalidade_testar(self, pergunta: str, texto: str = "", exemplos: str = "") -> dict:
+        """A resposta dela à pergunta com o rascunho da janela, sem salvar: pela IA local, sem histórico,
+        como na conversa por voz."""
+        pergunta = (pergunta or "").strip()
+        if not pergunta:
+            return {"ok": False, "resposta": "", "mensagem": "Escreva uma pergunta para testar."}
+        from llm_clients import llm_clients
+
+        inicio = time.time()
+        try:
+            sistema = llm_clients._sistema_beatriz(personalidade.contexto_da_conversa_falada(exemplos),
+                                                   texto_da_personalidade=(texto or "").strip() or None)
+            resposta = llm_clients.chat(pergunta, system_prompt=sistema, usar_historico=False)
+        except Exception as exc:
+            logger.warning("Teste da personalidade: %s", exc)
+            return {"ok": False, "resposta": "", "mensagem": f"A IA local não respondeu: {exc}"}
+        return {"ok": True, "resposta": resposta, "segundos": round(time.time() - inicio, 1), "mensagem": ""}
+
+    # ------------------------------------------------------------------ camadas de personalidade (aba da janela)
+    def camadas(self) -> dict:
+        return camadas_personalidade.para_a_janela()
+
+    def camadas_nova(self, tipo: str, texto: str) -> dict:
+        return camadas_personalidade.resultado(camadas_personalidade.adicionar, tipo, texto, "manual")
+
+    def camadas_editar(self, camada_id: str, campos: dict) -> dict:
+        campos = {k: v for k, v in (campos or {}).items() if k in ("texto", "tipo", "ativa", "fixada")}
+        return camadas_personalidade.resultado(camadas_personalidade.editar, camada_id, **campos)
+
+    def camadas_apagar(self, camada_id: str) -> dict:
+        return camadas_personalidade.resultado(camadas_personalidade.apagar, camada_id)
+
+    def camadas_aprendizado(self, ligado: bool) -> dict:
+        return camadas_personalidade.resultado(camadas_personalidade.definir_aprender, bool(ligado))
+
+    def camadas_aprender(self) -> dict:
+        """Uma rodada agora, com as últimas trocas da conversa (pela IA local; leva alguns segundos)."""
+        novas = self._aprendiz.aprender_agora(forcar=True)
+        mensagem = (f"{len(novas)} {'camada nova' if len(novas) == 1 else 'camadas novas'}." if novas
+                    else "Nada novo nas últimas conversas (ou a IA local não respondeu).")
+        return {"ok": True, "mensagem": mensagem, "dados": camadas_personalidade.para_a_janela()}
+
     def _pedir_leitura_da_biblioteca(self):
         if self._audio_config is not None:
             try:
@@ -356,6 +420,9 @@ class ApiPainel:
             resposta_troca_voz = responder_troca_de_voz(comando)
             if resposta_troca_voz:  # "usa a voz da Siri": vale aqui e na voz (a escolha fica num arquivo)
                 return self._responder(resposta_troca_voz)
+            resposta_camadas = self._camadas.responder(comando)
+            if resposta_camadas:  # "me chama de…", "fala mais curto": vira camada de personalidade
+                return self._responder(resposta_camadas)
             resposta_impressora = self._impressora.responder(comando)
             if resposta_impressora:
                 return self._responder(resposta_impressora)

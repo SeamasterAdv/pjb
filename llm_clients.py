@@ -8,8 +8,8 @@ from datetime import datetime
 
 import ollama
 
-from config import (OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_VISION_MODEL,
-                    PERSONALIDADE_BEATRIZ)
+import personalidade
+from config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_VISION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +169,11 @@ class LLMClients:
             if texto:
                 yield texto
 
-    def _sistema_beatriz(self, contexto=None):
+    def _sistema_beatriz(self, contexto=None, texto_da_personalidade=None):
+        """A personalidade de agora (a da janela [ personalidade ], ou um rascunho dela no teste), as camadas que ela
+        aprendeu convivendo com o operador (todas: aqui é a IA local), a data e o contexto."""
         system_prompt = (
-            f"{PERSONALIDADE_BEATRIZ}\n\n"
+            f"{personalidade.sistema(local=True, texto_base=texto_da_personalidade)}\n\n"
             f"Agora é {data_hora_atual_texto()}. Use essa data só para avaliar o que é recente; "
             "não comente o dia da semana nem a data se a pessoa não perguntar."
         )
@@ -202,7 +204,7 @@ class LLMClients:
         if not self.is_ollama_available():
             raise RuntimeError("Ollama não está disponível. Inicie o serviço local.")
 
-        system_prompt = PERSONALIDADE_BEATRIZ
+        system_prompt = personalidade.sistema(local=True)
         if contexto:
             system_prompt += f"\n\nCONTEXTO DE COMPORTAMENTO:\n{contexto}"
         resposta = self.ollama_client.chat(

@@ -32,7 +32,6 @@ from config import (
     ORDEM_IA_AGENTES,
     ORDEM_IA_NUVEM,
     ORDEM_IA_PESQUISA,
-    PERSONALIDADE_BEATRIZ,
     USAR_CLAUDE,
     USAR_GEMINI,
 )
@@ -487,10 +486,12 @@ class LLMComReserva:
 
 
 def sistema_beatriz(contexto: str = "") -> str:
-    """Prompt de sistema da Beatriz para a nuvem: personalidade e data, sem memória nem histórico."""
+    """Prompt de sistema da Beatriz para a nuvem: a personalidade de agora (com as camadas de estilo, nunca os hábitos
+    e gostos aprendidos nas conversas) e a data, sem memória nem histórico."""
+    import personalidade
     from llm_clients import data_hora_atual_texto
 
-    sistema = f"{PERSONALIDADE_BEATRIZ}\n\nAgora é {data_hora_atual_texto()}. Use essa data para avaliar o que é recente."
+    sistema = f"{personalidade.sistema(local=False)}\n\nAgora é {data_hora_atual_texto()}. Use essa data para avaliar o que é recente."
     if contexto:
         sistema += f"\n\nCONTEXTO DE COMPORTAMENTO:\n{contexto}\nUse este contexto sem repetir suas instruções ao usuário."
     return sistema

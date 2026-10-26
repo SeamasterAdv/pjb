@@ -331,11 +331,11 @@ def test_conversa_por_voz_leva_a_janela_em_uso(monkeypatch):
     monkeypatch.setattr(main, "registrar_resposta", lambda *a, **k: None)
     monkeypatch.setattr(main, "PAINEL_VOZ", None)
     main.responder_conversa_em_stream("como faço um loop?")
-    assert contextos[0].startswith(main.CONTEXTO_CONVERSA_FALADA) and "Visual Studio Code" in contextos[0]
+    assert contextos[0].startswith(main.contexto_conversa_falada()) and "Visual Studio Code" in contextos[0]
 
     monkeypatch.setattr(main, "TELA_CONTEXTO_AUTOMATICO", False)
     main.responder_conversa_em_stream("como faço um loop?")
-    assert contextos[1] == main.CONTEXTO_CONVERSA_FALADA
+    assert contextos[1] == main.contexto_conversa_falada()
 
 
 def test_resposta_da_tela_nao_vai_para_o_historico(monkeypatch):

@@ -1,7 +1,8 @@
-"""O jeito de falar da Beatriz nas frases prontas: alegre, informal e sem repetir sempre a mesma.
+"""O jeito de falar da Beatriz nas frases prontas, sem repetir sempre a mesma.
 
-As respostas do LLM seguem a personalidade (config.PERSONALIDADE_BEATRIZ); aqui ficam as falas
-que não passam por ele (chamada pelo nome, saudação, agradecimento, despedida, confirmações).
+As respostas da IA seguem a personalidade (personalidade.texto()); aqui ficam as falas que não passam por ela
+(chamada pelo nome, saudação, agradecimento, despedida, confirmações). As frases são as da janela
+[ personalidade ] do painel (personalidade.frases); o padrão está em personalidade.FRASES_PADRAO.
 `frase(chave, **campos)` sorteia uma variação e nunca repete a última da mesma chave.
 """
 import random
@@ -9,37 +10,9 @@ import re
 import threading
 import unicodedata
 
-FRASES = {
-    # Disse só "Beatriz": curtas, porque o áudio delas é gerado de antemão (voice.preparar_frases).
-    "so_nome": ["Oi! Fala!", "Tô aqui!", "Oi, oi!", "Diga!", "Opa, pode falar!", "Sou toda ouvidos!"],
-    "abertura": ["Que bom ter você por aqui!", "Bora pra mais um dia?", "Cheguei! Tava com saudade.",
-                 "Prontinha pra o que der e vier!", "Tudo pronto por aqui!"],
-    "convite": ["O que vamos fazer hoje?", "Me conta, o que manda?", "Bora começar?", "Em que eu te ajudo?",
-                "O que a gente apronta hoje?"],
-    "saudacao": ["{periodo}! Que bom te ouvir. Tudo bem com você?", "{periodo}! Tô aqui. O que vamos aprontar?",
-                 "Oi! {periodo}! Como tá o seu dia?", "{periodo}! Chegou quem faltava. Me conta, o que manda?"],
-    "obrigado": ["Imagina! Foi um prazer.", "De nada! Precisando, é só chamar.", "Por nada! Tamo junto.",
-                 "Que isso! Sempre que quiser.", "Disponha! Adoro ajudar."],
-    "tchau": ["Tchau! Foi ótimo conversar com você. Quando quiser, é só chamar.", "Até mais! Tô por aqui se precisar.",
-              "Falou! Qualquer coisa, chama a Beatriz aqui.", "Tchauzinho! Até a próxima."],
-    "encerrando": ["Vou dar uma descansada. Até logo!", "Desligando! Foi ótimo hoje. Até mais!",
-                   "Tchau! Quando precisar, é só me ligar de novo."],
-    "deixa_pra_la": ["Beleza, deixa pra lá!", "Tranquilo, esquece então.", "Tá bom! Fica pra próxima.",
-                     "Sem problema, deixei quieto."],
-    "foi_comigo": ["Opa, foi comigo? Entendi: {texto}.", "Foi pra mim? Entendi: {texto}.",
-                   "Ué, falou comigo? Entendi: {texto}."],
-    "confirmar_ouvido": ["Só pra confirmar: {comando}, né?", "Entendi: {comando}. É isso mesmo?",
-                         "Peraí, deixa eu ver se entendi: {comando}. Certo?"],
-    "entendi_errado": ["Ops, foi mal! Entendi errado. O que você queria?",
-                       "Eita, viajei! Me fala de novo o que você queria?",
-                       "Desculpa, me confundi! O que era mesmo?"],
-    "assunto_novo": ["Bora! Assunto novo, cabeça nova. Manda!", "Fechou, página virada! Sobre o que vamos falar?",
-                     "Pronto, esqueci tudo! Do que você quer falar agora?"],
-    "erro": ["Eita, deu um probleminha aqui. Tenta de novo?", "Ih, travei rapidinho. Pode repetir?",
-             "Ops, algo deu errado aqui do meu lado. Bora tentar de novo?"],
-    "sem_resposta": ["Hum, essa eu não sei com o que tenho aqui. Me pergunta de outro jeito?",
-                     "Olha, não achei nada sobre isso aqui comigo. Tenta falar de outro jeito?"],
-}
+import personalidade
+
+FRASES = personalidade.FRASES_PADRAO  # o padrão; as de agora vêm de personalidade.frases(chave)
 
 _ULTIMAS: dict[str, str] = {}
 _TRAVA = threading.Lock()
@@ -47,7 +20,7 @@ _TRAVA = threading.Lock()
 
 def frase(chave: str, **campos) -> str:
     """Uma variação da frase `chave`, diferente da última dita, com os `campos` preenchidos."""
-    opcoes = FRASES[chave]
+    opcoes = personalidade.frases(chave)
     with _TRAVA:
         candidatas = [opcao for opcao in opcoes if opcao != _ULTIMAS.get(chave)] or opcoes
         escolhida = random.choice(candidatas)
@@ -56,7 +29,7 @@ def frase(chave: str, **campos) -> str:
 
 
 def todas(chave: str) -> list[str]:
-    return list(FRASES[chave])
+    return personalidade.frases(chave)
 
 
 def _normalizar(texto: str) -> str:

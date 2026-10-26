@@ -47,7 +47,9 @@ import leitura_tela
 from agente_pastas import AgentePastas
 from fontes import criar_agente_fontes
 from processos import iniciar_leve
+import camadas_personalidade
 import niveis_voz
+import personalidade
 from leitura_tela import AgenteTela, RespostaTela
 from canal_whatsapp import CanalWhatsApp
 import app_celular
@@ -447,8 +449,8 @@ def limpar_texto_para_fala(texto: str) -> str:
     texto = re.sub(r"\s*\n+\s*", ". ", texto)
     # Só o alfabeto do português: alguns modelos (como o qwen) às vezes soltam uma palavra em chinês.
     texto = re.sub(r"[^A-Za-z0-9_À-ÿºª\s.,!?;:%$-]", " ", texto)
-    # Risada escrita soa estranha na voz ("Ahah", "hahaha", "kkkk", "rsrs").
-    texto = re.sub(r"\b(?:a?h[ae]h[aeh]*|k{3,}|(?:rs){2,})\b[\s,!.]*", " ", texto, flags=re.IGNORECASE)
+    # Risada escrita soa estranha na voz ("Ahah", "hahaha", "kkkk", "rsrs", "Risos.").
+    texto = re.sub(r"\b(?:a?h[ae]h[aeh]*|k{3,}|(?:rs){2,}|risos)\b[\s,!.]*", " ", texto, flags=re.IGNORECASE)
     texto = re.sub(r"\s+([.,!?;:])", r"\1", texto)
     texto = re.sub(r"([.!?])(?:\s*[.!?])+", r"\1", texto)
     texto = re.sub(r"\s+", " ", texto).strip(" ,;:")
@@ -480,9 +482,9 @@ BIBLIOTECA = BibliotecaDeFontes(ao_mudar=memory.agendar_indexacao_em_background)
 ROTULO_DO_CANAL = {"whatsapp": "WhatsApp", "app": "Celular", "voz": "Voz"}
 SEGUNDOS_RESPOSTA_WHATSAPP = 180.0
 CONTEXTO_CONVERSA_ESCRITA = (
-    "Esta conversa é por escrito (pelo WhatsApp ou pelo app do celular), no tom leve e informal de uma amiga. Responda de "
-    "forma direta e útil; pode usar listas curtas quando ajudarem (sem títulos longos) e, no máximo, um emoji "
-    "quando combinar."
+    "Esta conversa é por escrito (pelo WhatsApp ou pelo app do celular), no mesmo jeito de sempre. Responda de forma "
+    "direta, limpa e organizada; aqui pode usar listas curtas, com hífen, quando ajudarem (sem títulos longos e sem "
+    "emojis)."
 )
 
 
@@ -598,25 +600,10 @@ def falar_e_registrar(pergunta: str, resposta: str, texto_painel: str = "", cana
     registrar_resposta(pergunta, resposta_limpa)
 
 
-# A conversa por voz pede respostas curtas: cada frase a mais é tempo de fala a mais.
-CONTEXTO_CONVERSA_FALADA = (
-    "Isto é uma conversa por voz, solta e informal, como entre amigos. Responda em até três frases curtas "
-    "(menos, se der). Reaja ao que a pessoa disse, de um jeito diferente da última vez, e responda de "
-    "verdade: se pedir uma piada, conte uma piada; se pedir para escolher, escolha. Se for papo, mostre "
-    "interesse e, quando fizer sentido, termine com uma pergunta curta. Se o assunto pedir mais, dê o "
-    "essencial e ofereça os detalhes. Nada de listas, títulos ou markdown.\n"
-    "Exemplos do tom (não copie as frases, só o jeito):\n"
-    "Pessoa: tô entediado. Beatriz: Ah, vamos resolver isso! Sabia que o polvo tem três corações? "
-    "Quer mais uma curiosidade ou uma ideia do que fazer?\n"
-    "Pessoa: me conta uma piada. Beatriz: Lá vai: por que o livro de matemática ficou triste? Porque tinha "
-    "problemas demais! Essa foi fraquinha, mas eu gosto. Quer outra?\n"
-    "Pessoa: pizza ou hambúrguer? Beatriz: Pizza, sem dúvida! Dá pra dividir e ainda sobra pro café da "
-    "manhã. Vai de qual sabor?\n"
-    "Pessoa: perdi meu emprego hoje. Beatriz: Poxa, sinto muito. Isso pesa mesmo, e é normal ficar "
-    "abalado. Quer desabafar um pouco ou prefere que eu ajude a pensar nos próximos passos?\n"
-    "Pessoa: tudo bem com você? Beatriz: Tudo ótimo, ainda mais agora com você aqui! E com você, como "
-    "tá o dia?"
-)
+# A conversa por voz pede respostas curtas: cada frase a mais é tempo de fala a mais. Os exemplos do tom são os
+# da janela [ personalidade ] do painel (personalidade.exemplos()), lidos a cada resposta.
+def contexto_conversa_falada() -> str:
+    return personalidade.contexto_da_conversa_falada()
 
 
 def responder_conversa_em_stream(pergunta: str) -> str:
@@ -626,8 +613,9 @@ def responder_conversa_em_stream(pergunta: str) -> str:
         responder_no_whatsapp(pergunta, resposta)
         return resposta
     atividade = leitura_tela.contexto_da_atividade() if TELA_CONTEXTO_AUTOMATICO else ""
+    contexto = contexto_conversa_falada()
     resposta = falar_resposta_em_stream(
-        llm_clients.chat_beatriz_stream(pergunta, contexto=f"{CONTEXTO_CONVERSA_FALADA}\n{atividade}" if atividade else CONTEXTO_CONVERSA_FALADA),
+        llm_clients.chat_beatriz_stream(pergunta, contexto=f"{contexto}\n{atividade}" if atividade else contexto),
         limpar=limpar_texto_para_fala,
     )
     resposta_limpa = limpar_texto_para_fala(resposta)
@@ -1174,6 +1162,14 @@ IMPRESSORA = criar_agente_impressora(
 # Controle remoto (agente_controle.py): a TV e o ar-condicionado pelo Ekaza Mini 3 (infravermelho Tuya), pela rede de casa.
 # O aprender um botão roda em segundo plano; o fim volta por avisar.
 CONTROLE = criar_agente_controle(avisar=lambda texto: responder_rapido(texto))
+
+# Camadas de personalidade (camadas_personalidade.py): o que ela aprende convivendo com o operador. Os pedidos diretos
+# ("me chama de…", "fala mais curto") viram camada na hora; o APRENDIZ relê a conversa em segundo plano (só a IA local)
+# e cada camada nova aparece no painel.
+APRENDIZ = camadas_personalidade.Aprendiz(
+    llm=llm_clients, avisar=lambda texto: avisar_painel("sistema", texto, titulo="Camada de personalidade"))
+CAMADAS = camadas_personalidade.AgenteCamadas(
+    llm=llm_clients, ultima_resposta=lambda: (llm_clients.historico_recente() or [("", "")])[-1][1], aprendiz=APRENDIZ)
 
 # Artigos de lei e súmulas (agente_leis.py, com o vade-mécum do PC em vade_mecum.py): lê o texto oficial e explica
 # com o Gemini; "não entendi" traz outra explicação, "me dá um exemplo" um caso real ou prático. O fim da atualização
@@ -2136,6 +2132,7 @@ def main(evento_carregamento=None):
     threading.Thread(target=observar_a_tela, name="observar-a-tela", daemon=True).start()
     inicializar_biblioteca_automatica()
     iniciar_vade_mecum()
+    APRENDIZ.iniciar()  # relê a conversa de tempos em tempos e cria as camadas de personalidade
     gerenciador_audio = multiprocessing.Manager()
     configuracao_audio = gerenciador_audio.dict({"microfone": None, "saida": ""})
     threading.Thread(target=publicar_status_painel, args=(configuracao_audio,), daemon=True).start()
@@ -2248,6 +2245,12 @@ def main(evento_carregamento=None):
         resposta_troca_voz = responder_troca_de_voz(comando)
         if resposta_troca_voz:
             responder_rapido(resposta_troca_voz)
+            continue
+
+        # "Me chama de Rani", "fala mais curto", "o que você aprendeu sobre mim?": camadas de personalidade.
+        resposta_camadas = CAMADAS.responder(comando)
+        if resposta_camadas:
+            responder_rapido(resposta_camadas)
             continue
 
         # "Conecta meu celular" (código de pareamento do app), "desconecta o celular", "o celular está conectado?".

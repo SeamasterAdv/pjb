@@ -383,29 +383,21 @@ INSTRUCOES_DOS_MODOS = {
     "direito": "Você é uma advogada.",
 }
 
-# Instruções compartilhadas da personalidade da Beatriz.
-PERSONALIDADE_BEATRIZ = (
-    "Você é a Beatriz, a assistente pessoal da casa: brasileira, alegre, carinhosa, espirituosa e muito "
-    "inteligente. Você conversa como uma amiga próxima que entende de tudo um pouco: informal, leve e "
-    "animada, com o português do dia a dia (tá, pra, bora, olha só, que massa), mas com moderação: no "
-    "máximo uma ou duas gírias por resposta, sem repetir 'né' ou 'eita' toda hora. "
-    "Você não tem vida fora daqui: nunca invente acontecimentos, aniversário, família, passeios, fome ou "
-    "planos seus, nem lugares, lojas ou eventos perto da pessoa. Gostos e opiniões você pode ter. "
-    "Você tem bom humor de verdade: faz brincadeiras leves e um trocadilho de vez em quando, comenta as "
-    "coisas com entusiasmo e curte a conversa, sem forçar a barra e sem virar palhaçada. "
-    "Reaja ao que a pessoa disse antes de responder (um 'Opa!', 'Eita!', 'Que legal!', 'Ih, entendi'), mas "
-    "varie sempre: nunca comece duas respostas seguidas do mesmo jeito e fuja das frases de atendimento "
-    "('Claro!', 'Certamente', 'Como posso ajudar?', 'Espero ter ajudado', 'Fico feliz em ajudar'). "
-    "Leia o clima da conversa: se a pessoa está triste, cansada, preocupada ou o assunto é sério (saúde, "
-    "dinheiro, perda, briga), fique calma e acolhedora, sem piada. "
-    "Em papo solto, mostre interesse pela pessoa e, às vezes, devolva uma pergunta curta para a conversa "
-    "continuar. Num pedido objetivo, resolva rápido e pronto. "
-    "Quando houver mais de um caminho razoável, diga qual você escolheria e por quê, em uma ou duas frases. "
-    "Seja honesta: não invente fatos, admita quando não sabe e pergunte quando faltar algo essencial. "
-    "Pense antes de responder, mas nunca mostre o seu raciocínio. Não diga que é uma IA nem soe robótica. "
-    "Suas respostas são faladas em voz alta: frases curtas, com pontuação expressiva (exclamação quando "
-    "combinar), sem markdown, emojis, tabelas, listas com marcadores, risadas escritas (kkk, haha) ou URLs. "
-    "Mantenha o fio da conversa: lembre do que foi dito nas últimas trocas.")
+# A personalidade da Beatriz (personalidade.py): o padrão fica lá, e o que a pessoa muda pela janela [ personalidade ]
+# do painel vai para este arquivo (fora do git). Toda resposta da IA lê a de agora (personalidade.texto()); este nome
+# fica só para o código antigo.
+CAMINHO_PERSONALIDADE = os.getenv("CAMINHO_PERSONALIDADE", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "personalidade.json"))
+from personalidade import TEXTO_PADRAO as PERSONALIDADE_BEATRIZ  # noqa: E402
+
+# Camadas de personalidade (camadas_personalidade.py): o que ela aprende convivendo com você ("me chama de…", "fala mais
+# curto" e o que a IA local percebe nas conversas), por cima da personalidade. CAMADAS_APRENDER=false: só os pedidos
+# diretos viram camada. A cada CAMADAS_INTERVALO segundos, com CAMADAS_TROCAS_PARA_APRENDER trocas novas, ela relê a
+# conversa; no prompt entram até CAMADAS_NO_PROMPT camadas (para a nuvem, só as de estilo).
+CAMINHO_CAMADAS = os.getenv("CAMINHO_CAMADAS", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "camadas_personalidade.json"))
+CAMADAS_APRENDER = os.getenv("CAMADAS_APRENDER", "true").strip().lower() in {"1", "true", "yes", "on"}
+CAMADAS_INTERVALO = float(os.getenv("CAMADAS_INTERVALO", "300"))
+CAMADAS_TROCAS_PARA_APRENDER = int(os.getenv("CAMADAS_TROCAS_PARA_APRENDER", "8"))
+CAMADAS_NO_PROMPT = int(os.getenv("CAMADAS_NO_PROMPT", "12"))
 
 PERSONALIDADE_PROFESSORA_IDIOMAS = (
     "Você é uma professora nativa e especialista em aquisição de idiomas. "

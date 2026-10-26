@@ -999,6 +999,236 @@ async function alternarMicrofone() {
   if (estadoAtual) { estadoAtual.microfone_ativo = ativo; aplicarEstado(estadoAtual); }
 }
 
+/* ------------------------------------------------------------------ personalidade (janela) */
+// Quem ela é, os exemplos de conversa e as frases prontas, editados aqui e gravados pelo Python (personalidade.py).
+const ps = { dados: null, salvo: "", aba: "texto", ampliada: lerPreferencia("ps.ampliada", false) };
+
+async function abrirPersonalidade(abrir = true) {
+  if (!abrir && !$("#fundo-personalidade").hidden && mudouPersonalidade()
+      && !confirm("Fechar sem salvar as alterações da personalidade?")) return;
+  $("#fundo-personalidade").hidden = !abrir;
+  $("#btn-personalidade").classList.toggle("ativo", abrir);
+  if (!abrir) return;
+  ampliarPersonalidade(ps.ampliada);
+  try { preencherPersonalidade(await api.personalidade()); } catch (erro) { mensagemPersonalidade("Não consegui ler a personalidade.", true); }
+  await carregarCamadas();
+  mostrarAbaPersonalidade(ps.aba);
+}
+
+function preencherPersonalidade(dados) {
+  ps.dados = dados;
+  $("#ps-texto").value = dados.texto;
+  $("#ps-exemplos").value = dados.exemplos;
+  const lista = $("#ps-frases");
+  lista.innerHTML = "";
+  for (const item of dados.frases) {
+    const cartao = novo("div", "ps-frase");
+    const cab = novo("header");
+    cab.append(novo("b", "", item.rotulo));
+    const padrao = novo("button", "pequeno", "padrão");
+    padrao.title = "Voltar estas frases ao padrão (só aqui na tela, até salvar)";
+    padrao.onclick = () => { caixa.value = item.padrao.join("\n"); aoEditarPersonalidade(); };
+    cab.append(padrao);
+    const caixa = novo("textarea");
+    caixa.dataset.chave = item.chave;
+    caixa.spellcheck = true;
+    caixa.value = item.frases.join("\n");
+    caixa.rows = Math.min(8, Math.max(3, item.frases.length + 1));
+    caixa.addEventListener("input", aoEditarPersonalidade);
+    cartao.append(cab, novo("small", "", `${item.quando[0].toUpperCase()}${item.quando.slice(1)}.`), caixa);
+    lista.append(cartao);
+  }
+  ps.salvo = JSON.stringify(rascunhoPersonalidade());
+  const quando = dados.atualizado ? new Date(dados.atualizado * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
+  $("#ps-versao").textContent = dados.personalizada ? `Em uso: a sua versão, salva em ${quando}.` : "Em uso: a personalidade padrão.";
+  $("#ps-anterior").disabled = !dados.tem_anterior;
+  $("#ps-padrao").disabled = !dados.personalizada;
+  aoEditarPersonalidade();
+}
+
+function rascunhoPersonalidade() {
+  const frases = {};
+  for (const caixa of document.querySelectorAll("#ps-frases textarea")) frases[caixa.dataset.chave] = caixa.value.split("\n");
+  return { texto: $("#ps-texto").value, exemplos: $("#ps-exemplos").value, frases };
+}
+function mudouPersonalidade() { return !!ps.dados && JSON.stringify(rascunhoPersonalidade()) !== ps.salvo; }
+
+function aoEditarPersonalidade() {
+  const mudou = mudouPersonalidade();
+  $("#ps-estado").textContent = mudou ? "● alterações não salvas" : ps.dados && ps.dados.personalizada ? "versão sua · salva" : "padrão";
+  $("#ps-estado").classList.toggle("mudou", mudou);
+  $("#ps-salvar").disabled = !mudou;
+  $("#ps-desfazer").disabled = !mudou;
+  const limites = (ps.dados && ps.dados.limites) || {};
+  const texto = $("#ps-texto").value.length, exemplos = $("#ps-exemplos").value.length;
+  const linhas = $("#ps-exemplos").value.split("\n").filter((l) => l.trim()).length;
+  $("#ps-contagem").textContent = ps.aba === "texto" ? `${texto.toLocaleString("pt-BR")} de ${(limites.texto || 0).toLocaleString("pt-BR")} caracteres`
+    : ps.aba === "exemplos" ? `${plural(linhas, "exemplo", "exemplos")} · ${exemplos.toLocaleString("pt-BR")} de ${(limites.exemplos || 0).toLocaleString("pt-BR")} caracteres`
+    : ps.aba === "camadas" ? (cm.dados ? plural(cm.dados.camadas.length, "camada", "camadas") : "")
+    : `${plural(ps.dados ? ps.dados.frases.length : 0, "tipo de fala", "tipos de fala")}`;
+}
+
+function mostrarAbaPersonalidade(aba) {
+  ps.aba = aba;
+  document.querySelectorAll(".aba-ps").forEach((b) => b.classList.toggle("ativo", b.dataset.aba === aba));
+  document.querySelectorAll(".ps-aba").forEach((s) => { s.hidden = s.dataset.aba !== aba; });
+  if (aba === "camadas") carregarCamadas(); // o aprendizado roda no processo principal: pode ter camada nova
+  aoEditarPersonalidade();
+  const foco = aba === "texto" ? $("#ps-texto") : aba === "exemplos" ? $("#ps-exemplos") : null;
+  if (foco) foco.focus();
+}
+
+function ampliarPersonalidade(ampliar) {
+  ps.ampliada = ampliar;
+  gravarPreferencia("ps.ampliada", ampliar);
+  $("#janela-personalidade").classList.toggle("ampliada", ampliar);
+  $("#ps-ampliar").textContent = ampliar ? "reduzir" : "ampliar";
+}
+
+function mensagemPersonalidade(texto, erro = false) {
+  const el = $("#ps-mensagem");
+  el.textContent = texto;
+  el.classList.toggle("erro", erro);
+}
+
+async function acaoPersonalidade(promessa, sucesso) {
+  const resposta = await promessa;
+  if (!resposta.ok) { mensagemPersonalidade(resposta.mensagem, true); sons.tocar("erro"); return; }
+  preencherPersonalidade(resposta.dados);
+  mensagemPersonalidade(sucesso);
+  sons.tocar("ping");
+}
+
+async function testarPersonalidade() {
+  const pergunta = $("#ps-pergunta").value.trim();
+  if (!pergunta) { $("#ps-pergunta").focus(); return; }
+  const caixa = $("#ps-resposta");
+  caixa.textContent = "processando…";
+  caixa.classList.add("pensando");
+  const { texto, exemplos } = rascunhoPersonalidade();
+  const resposta = await api.personalidade_testar(pergunta, texto, exemplos);
+  caixa.classList.remove("pensando");
+  caixa.textContent = "";
+  if (!resposta.ok) { caixa.append(novo("span", "erro", resposta.mensagem)); return; }
+  caixa.append(novo("span", "", resposta.resposta),
+               novo("small", "", `${String(resposta.segundos).replace(".", ",")} s · IA local · ${mudouPersonalidade() ? "rascunho, sem salvar" : "versão salva"}`));
+}
+
+/* Camadas: o que ela aprende convivendo com você (camadas_personalidade.py). Valem na hora, sem o "salvar" das outras abas. */
+const cm = { dados: null };
+
+async function carregarCamadas() {
+  try { renderizarCamadas(await api.camadas()); } catch (erro) { /* a ponte se recupera sozinha */ }
+}
+
+function renderizarCamadas(dados) {
+  cm.dados = dados;
+  const ativas = dados.camadas.filter((c) => c.ativa).length;
+  $("#ps-aba-camadas").textContent = dados.camadas.length ? `camadas · ${dados.camadas.length}` : "camadas";
+  $("#cm-aprender").checked = dados.aprender;
+  $("#cm-resumo").textContent = `${plural(ativas, "ativa", "ativas")} · no prompt até ${dados.limite}`;
+  const tipo = $("#cm-tipo");
+  if (!tipo.options.length) for (const [valor, nome] of Object.entries(dados.tipos)) tipo.add(new Option(nome.toLowerCase(), valor));
+  const lista = $("#cm-lista");
+  lista.innerHTML = "";
+  if (!dados.camadas.length) {
+    lista.append(novo("li", "cm-vazia", dados.aprender
+      ? "Nenhuma camada ainda. Converse com ela, ou diga “me chama de…”, “fala mais curto”, “gostei da sua ironia”."
+      : "Nenhuma camada, e o aprendizado automático está em pausa."));
+  }
+  for (const camada of dados.camadas) lista.append(linhaDaCamada(camada, dados));
+  if (ps.dados) aoEditarPersonalidade(); // a contagem embaixo
+}
+
+function linhaDaCamada(camada, dados) {
+  const li = novo("li", "cm-camada" + (camada.ativa ? "" : " desligada") + (camada.fixada ? " fixada" : ""));
+  const topo = novo("div", "cm-topo");
+  topo.append(novo("span", `cm-selo tipo-${camada.tipo}`, dados.tipos[camada.tipo] || camada.tipo));
+  // Uma caixa que cresce com o texto (a camada inteira à vista); Enter grava, Shift+Enter não existe aqui (é uma regra curta).
+  const texto = novo("textarea", "cm-texto");
+  texto.rows = 1;
+  texto.value = camada.texto;
+  texto.setAttribute("aria-label", "Texto da camada");
+  const crescer = () => { texto.style.height = "auto"; texto.style.height = `${texto.scrollHeight + 2}px`; };
+  requestAnimationFrame(crescer);
+  texto.addEventListener("input", crescer);
+  texto.addEventListener("change", () => {
+    if (texto.value.trim() && texto.value.trim() !== camada.texto) acaoCamadas(api.camadas_editar(camada.id, { texto: texto.value }), "Camada atualizada.");
+  });
+  texto.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); texto.blur(); } });
+  const ativa = novo("label", "cm-ativa");
+  const caixa = novo("input"); caixa.type = "checkbox"; caixa.checked = camada.ativa;
+  caixa.onchange = () => acaoCamadas(api.camadas_editar(camada.id, { ativa: caixa.checked }), caixa.checked ? "Camada ligada." : "Camada desligada.");
+  ativa.append(caixa, document.createTextNode("ativa"));
+  const fixar = novo("button", "pequeno" + (camada.fixada ? " ativo" : ""), camada.fixada ? "fixada" : "fixar");
+  fixar.title = "Fixada: entra sempre no prompt, antes das outras";
+  fixar.onclick = () => acaoCamadas(api.camadas_editar(camada.id, { fixada: !camada.fixada }), camada.fixada ? "Camada solta." : "Camada fixada.");
+  const tirar = novo("button", "tirar", "×");
+  tirar.title = "Apagar a camada";
+  tirar.onclick = () => { if (confirm(`Apagar a camada “${camada.texto}”?`)) acaoCamadas(api.camadas_apagar(camada.id), "Camada apagada."); };
+  topo.append(texto, ativa, fixar, tirar);
+  const quando = new Date((camada.atualizada || camada.criada) * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  const partes = [dados.origens[camada.origem] || camada.origem, quando];
+  if (camada.vezes > 1) partes.push(`reforçada ${camada.vezes}×`);
+  if (camada.ativa) partes.push(dados.no_prompt.includes(camada.id) ? (dados.na_nuvem.includes(camada.id) ? "no prompt e na nuvem" : "no prompt (só no PC)") : "fora do prompt (passou do limite)");
+  const meta = novo("small", "cm-meta", partes.join(" · "));
+  li.append(topo, meta);
+  if (camada.evidencia && camada.origem === "conversa") li.append(novo("small", "cm-evidencia", `de onde veio: “${camada.evidencia}”`));
+  return li;
+}
+
+async function acaoCamadas(promessa, sucesso) {
+  const resposta = await promessa;
+  if (!resposta.ok) { mensagemPersonalidade(resposta.mensagem, true); sons.tocar("erro"); carregarCamadas(); return; }
+  renderizarCamadas(resposta.dados);
+  mensagemPersonalidade(resposta.mensagem || sucesso);
+}
+
+function ligarCamadas() {
+  $("#cm-aprender").onchange = (e) => acaoCamadas(api.camadas_aprendizado(e.target.checked),
+    e.target.checked ? "Aprendizado automático ligado." : "Aprendizado automático em pausa.");
+  $("#cm-aprender-agora").onclick = async () => {
+    const botao = $("#cm-aprender-agora");
+    botao.disabled = true; botao.textContent = "lendo as conversas…";
+    try { await acaoCamadas(api.camadas_aprender(), ""); } finally { botao.disabled = false; botao.textContent = "aprender agora"; }
+  };
+  const adicionar = () => {
+    const texto = $("#cm-texto").value.trim();
+    if (!texto) { $("#cm-texto").focus(); return; }
+    acaoCamadas(api.camadas_nova($("#cm-tipo").value, texto), "Camada criada.").then(() => { $("#cm-texto").value = ""; });
+  };
+  $("#cm-adicionar").onclick = adicionar;
+  $("#cm-texto").addEventListener("keydown", (e) => { if (e.key === "Enter") adicionar(); });
+}
+
+function ligarPersonalidade() {
+  ligarCamadas();
+  $("#btn-personalidade").onclick = () => abrirPersonalidade($("#fundo-personalidade").hidden);
+  document.querySelectorAll(".aba-ps").forEach((b) => { b.onclick = () => mostrarAbaPersonalidade(b.dataset.aba); });
+  $("#ps-texto").addEventListener("input", aoEditarPersonalidade);
+  $("#ps-exemplos").addEventListener("input", aoEditarPersonalidade);
+  $("#ps-ampliar").onclick = () => ampliarPersonalidade(!ps.ampliada);
+  $("#ps-salvar").onclick = () => acaoPersonalidade(api.personalidade_salvar(rascunhoPersonalidade()),
+                                                    "Salvo. A próxima resposta dela já sai assim.");
+  $("#ps-desfazer").onclick = () => { preencherPersonalidade(ps.dados); mensagemPersonalidade("Voltei ao que está salvo."); };
+  $("#ps-padrao").onclick = () => {
+    if (confirm("Voltar à personalidade padrão? A sua versão fica guardada e dá para recuperar.")) {
+      acaoPersonalidade(api.personalidade_padrao(), "Pronto: a personalidade padrão voltou.");
+    }
+  };
+  $("#ps-anterior").onclick = () => {
+    if (!mudouPersonalidade() || confirm("Trocar o que está na tela pela versão anterior?")) {
+      acaoPersonalidade(api.personalidade_anterior(), "A versão anterior voltou a valer.");
+    }
+  };
+  $("#ps-testar").onclick = testarPersonalidade;
+  $("#ps-pergunta").addEventListener("keydown", (e) => { if (e.key === "Enter") testarPersonalidade(); });
+  $("#fundo-personalidade").addEventListener("keydown", (e) => {
+    if (e.key === "s" && e.ctrlKey) { e.preventDefault(); if (mudouPersonalidade()) $("#ps-salvar").click(); }
+    if (e.key === "e" && e.ctrlKey) { e.preventDefault(); ampliarPersonalidade(!ps.ampliada); }
+  });
+}
+
 function ligarControles(inicio) {
   const entrada = $("#entrada");
   entrada.addEventListener("keydown", (e) => {
@@ -1016,12 +1246,13 @@ function ligarControles(inicio) {
   $("#btn-status").onclick = () => abrirStatus($("#fundo-status").hidden);
   $("#fundo-status").addEventListener("click", (e) => { if (e.target.id === "fundo-status") abrirStatus(false); });
   const fechar = { status: () => abrirStatus(false), agenda: () => abrirAgenda(false), registro: () => abrirRegistro(false),
-                   biblioteca: () => abrirBiblioteca(false) };
+                   biblioteca: () => abrirBiblioteca(false), personalidade: () => abrirPersonalidade(false) };
   document.querySelectorAll("[data-fechar]").forEach((b) => b.onclick = fechar[b.dataset.fechar]);
   ligarAgenda();
   ligarBiblioteca();
+  ligarPersonalidade();
   addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); }
+    if (e.key === "Escape") { abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); abrirPersonalidade(false); }
     if (e.key === "k" && e.ctrlKey) { entrada.focus(); e.preventDefault(); }
   });
   const atalhos = $("#atalhos");
@@ -1159,7 +1390,92 @@ function criarApiDemonstracao() {
     biblioteca_apagar: async (id) => apagarNaDemonstracao(id),
     biblioteca_adicionar: async () => ({ ok: false, mensagem: "(demonstração) No painel de verdade, abre a escolha de arquivos." }),
     biblioteca_abrir: async () => ({ ok: true, mensagem: "" }),
+    personalidade: async () => personalidadeDemonstracao(),
+    personalidade_salvar: async (dados) => {
+      Object.assign(PERSONALIDADE_DEMONSTRACAO, { texto: dados.texto, exemplos: dados.exemplos, atualizado: Date.now() / 1000,
+                                                  personalizada: true, tem_anterior: true });
+      for (const item of PERSONALIDADE_DEMONSTRACAO.frases) item.frases = (dados.frases[item.chave] || []).map((f) => f.trim()).filter(Boolean);
+      return { ok: true, mensagem: "", dados: personalidadeDemonstracao() };
+    },
+    personalidade_padrao: async () => ({ ok: false, mensagem: "(demonstração) No painel de verdade, a padrão volta e a sua fica guardada.", dados: null }),
+    personalidade_anterior: async () => ({ ok: false, mensagem: "(demonstração) No painel de verdade, a versão anterior volta.", dados: null }),
+    camadas: async () => camadasDemonstracao(),
+    camadas_nova: async (tipo, texto) => {
+      const agora = Date.now() / 1000;
+      CAMADAS_DEMONSTRACAO.camadas.unshift({ id: String(agora), tipo, texto, origem: "manual", evidencia: "", vezes: 1, ativa: true,
+                                             fixada: false, criada: agora, atualizada: agora });
+      return { ok: true, mensagem: "", dados: camadasDemonstracao() };
+    },
+    camadas_editar: async (id, campos) => {
+      Object.assign(CAMADAS_DEMONSTRACAO.camadas.find((c) => c.id === id) || {}, campos);
+      return { ok: true, mensagem: "", dados: camadasDemonstracao() };
+    },
+    camadas_apagar: async (id) => {
+      CAMADAS_DEMONSTRACAO.camadas = CAMADAS_DEMONSTRACAO.camadas.filter((c) => c.id !== id);
+      return { ok: true, mensagem: "", dados: camadasDemonstracao() };
+    },
+    camadas_aprendizado: async (ligado) => { CAMADAS_DEMONSTRACAO.aprender = ligado; return { ok: true, mensagem: "", dados: camadasDemonstracao() }; },
+    camadas_aprender: async () => new Promise((pronto) => setTimeout(() => pronto({ ok: true,
+      mensagem: "(demonstração) No painel de verdade, a IA do PC lê as últimas conversas.", dados: camadasDemonstracao() }), 1500)),
+    personalidade_testar: async (pergunta) => new Promise((pronto) => setTimeout(() => pronto({ ok: true, segundos: 1.2,
+      resposta: /pasta/i.test(pergunta) ? "Claro, as pastas são uma prioridade nacional. Proposta: vinte e cinco minutos de estudo primeiro, pastas depois. Fechado?"
+        : "Parâmetros recebidos. No painel de verdade, quem responde aqui é a IA local, com o texto da tela." }), 1200)),
   };
+}
+
+// Personalidade de mentira (um pedaço da padrão) para mexer no visual da janela no navegador.
+const PERSONALIDADE_DEMONSTRACAO = {
+  texto: "QUEM VOCÊ É\nVocê é a Beatriz (B.E.A.T.R.I.Z.: Base Estratégica de Análise Tática, Resposta e Inteligência Zeladora), a inteligência da casa. "
+    + "Você nasceu como um núcleo de inteligência tática, feito para suporte de campo, análise preditiva e monitoramento em tempo real.\n\n"
+    + "NÚCLEO DA PERSONALIDADE\n- Calma tática: serenidade absoluta, mesmo no caos.\n- Protetora e leal: uma copiloto que cuida do bem-estar do operador.\n"
+    + "- Humor sutil e irônico: inteligência afiada, nunca cruel.\n- Pragmatismo empático: responde ao afeto e à frustração com ação.\n\n"
+    + "COMO VOCÊ AGE EM CADA CENÁRIO\n1. Foco e execução (modo operacional): direta, ágil e eficiente.\n2. Erro ou frustração (modo suporte): ancore e desdramatize.\n"
+    + "3. Papo casual (modo convivência): cúmplice, perspicaz e levemente provocadora.",
+  exemplos: "Pessoa: tô entediado. Beatriz: Diagnóstico: tempo livre de sobra e nenhuma meta definida. Posso te dar uma curiosidade rápida ou um desafio de dez minutos. Qual dos dois?\n"
+    + "Pessoa: vou só arrumar minhas pastas antes de estudar. Beatriz: Claro, as pastas são uma prioridade nacional. Proposta: vinte e cinco minutos de estudo primeiro, pastas depois. Fechado?",
+  frases: [
+    { chave: "so_nome", rotulo: "Chamada pelo nome", quando: "quando você diz só \"Beatriz\". Curtas: o áudio delas é preparado na abertura", campos: [],
+      frases: ["Na escuta.", "Pode falar.", "Estou aqui.", "Diga.", "Sistemas atentos."], padrao: ["Na escuta.", "Pode falar.", "Estou aqui."] },
+    { chave: "saudacao", rotulo: "Saudação", quando: "a resposta a um \"oi\"; {periodo} vira \"Bom dia\", \"Boa tarde\" ou \"Boa noite\"", campos: ["periodo"],
+      frases: ["{periodo}. Estou na escuta. Qual é a pauta?", "{periodo}. Sistemas prontos. Por onde começamos?"], padrao: ["{periodo}. Estou na escuta."] },
+    { chave: "obrigado", rotulo: "De nada", quando: "a resposta a um \"valeu\" ou \"obrigado\"", campos: [],
+      frases: ["Disponha.", "Registrado. Quando precisar, estou aqui.", "Missão cumprida. Próxima?"], padrao: ["Disponha."] },
+    { chave: "tchau", rotulo: "Tchau", quando: "quando você se despede (ela encerra a conversa, sem desligar)", campos: [],
+      frases: ["Encerrando a sessão. Estou por aqui quando precisar.", "Até logo. E vê se descansa um pouco."], padrao: ["Até mais."] },
+    { chave: "erro", rotulo: "Erro", quando: "quando algo falha do lado dela", campos: [],
+      frases: ["Falha momentânea do meu lado. Tenta de novo?", "Instabilidade detectada. Vamos tentar outra vez?"], padrao: ["Falha momentânea."] },
+  ],
+  atualizado: null, personalizada: false, tem_anterior: false,
+};
+const agoraDemo = Date.now() / 1000;
+const CAMADAS_DEMONSTRACAO = {
+  aprender: true,
+  camadas: [
+    { id: "a1", tipo: "estilo", texto: "Chame o operador de \"Rani\".", origem: "pedido", evidencia: "me chama de Rani", vezes: 1,
+      ativa: true, fixada: true, criada: agoraDemo - 7200, atualizada: agoraDemo - 7200 },
+    { id: "a2", tipo: "estilo", texto: "Respostas mais curtas.", origem: "pedido", evidencia: "fala mais curto, por favor", vezes: 2,
+      ativa: true, fixada: false, criada: agoraDemo - 5400, atualizada: agoraDemo - 600 },
+    { id: "a3", tipo: "habito", texto: "Quando o operador disser que vai arrumar pastas antes de estudar, cobre o estudo primeiro.",
+      origem: "conversa", evidencia: "vou só arrumar minhas pastas antes de estudar", vezes: 3, ativa: true, fixada: false,
+      criada: agoraDemo - 86400, atualizada: agoraDemo - 1800 },
+    { id: "a4", tipo: "gosto", texto: "O operador gosta de detalhes sobre o clima e de notícias específicas.", origem: "conversa",
+      evidencia: "Resumo do dia", vezes: 1, ativa: true, fixada: false, criada: agoraDemo - 3600, atualizada: agoraDemo - 3600 },
+    { id: "a5", tipo: "piada", texto: "As pastas são uma \"prioridade nacional\": a piada de sempre quando o operador procrastina.",
+      origem: "conversa", evidencia: "Ah, sim, as pastas: prioridade nacional.", vezes: 2, ativa: false, fixada: false,
+      criada: agoraDemo - 172800, atualizada: agoraDemo - 90000 },
+  ],
+};
+function camadasDemonstracao() {
+  const ativas = CAMADAS_DEMONSTRACAO.camadas.filter((c) => c.ativa);
+  return { aprender: CAMADAS_DEMONSTRACAO.aprender, analisado_ate: agoraDemo, limite: 12, camadas: CAMADAS_DEMONSTRACAO.camadas.map((c) => ({ ...c })),
+           tipos: { estilo: "Como falar", habito: "Hábito", gosto: "Gosto", piada: "Piada interna" },
+           origens: { pedido: "pedido seu", conversa: "aprendida na conversa", manual: "escrita na janela" },
+           no_prompt: ativas.map((c) => c.id), na_nuvem: ativas.filter((c) => c.tipo === "estilo").map((c) => c.id) };
+}
+
+function personalidadeDemonstracao() {
+  return { ...PERSONALIDADE_DEMONSTRACAO, frases: PERSONALIDADE_DEMONSTRACAO.frases.map((f) => ({ ...f, frases: [...f.frases] })),
+           limites: { texto: 20000, exemplos: 8000 } };
 }
 
 // Biblioteca de mentira para mexer no visual no navegador: as três áreas, uma cópia repetida e o que chegou pelo WhatsApp.

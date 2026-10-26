@@ -23,6 +23,7 @@
   <div class="acoes-topo">
     <button class="botao-sistema" id="btn-agenda">agenda</button>
     <button class="botao-sistema" id="btn-biblioteca">biblioteca</button>
+    <button class="botao-sistema" id="btn-personalidade">personalidade</button>
     <button class="botao-sistema" id="btn-status">status</button>
     <button class="botao-sistema" id="btn-registro">registro</button>
     <div class="relogio"><span id="hora">--:--</span><span id="data"></span></div>
@@ -175,6 +176,78 @@
       </div>
     </div>
     <p class="agenda-resposta" id="bb-resposta" aria-live="polite"></p>
+  </div>
+</div>
+
+<!-- Personalidade: quem ela é, os exemplos de conversa e as frases prontas, para mudar sem mexer no código. -->
+<div class="fundo-modal" id="fundo-personalidade" hidden>
+  <div class="janela-sistema janela-personalidade" id="janela-personalidade" role="dialog" aria-label="Personalidade">
+    <div class="cabecalho-janela">◢ personalidade
+      <button class="ampliar" id="ps-ampliar" title="Ocupar a tela inteira (Ctrl+E)">ampliar</button>
+      <button class="fechar" data-fechar="personalidade" aria-label="Fechar">×</button>
+    </div>
+    <div class="ps-barra">
+      <button class="pequeno aba-ps ativo" data-aba="texto">quem ela é</button>
+      <button class="pequeno aba-ps" data-aba="exemplos">exemplos de conversa</button>
+      <button class="pequeno aba-ps" data-aba="frases">frases prontas</button>
+      <button class="pequeno aba-ps" data-aba="camadas" id="ps-aba-camadas">camadas</button>
+      <span class="ps-espaco"></span>
+      <span class="ps-estado" id="ps-estado"></span>
+    </div>
+    <div class="ps-corpo">
+      <div class="ps-editor">
+        <section class="ps-aba" data-aba="texto">
+          <p class="ps-explica">O prompt de sistema: vale para toda resposta da IA, no PC e na nuvem (Claude e Gemini).
+            Escreva como se falasse com ela: quem ela é, como age em cada situação, o que fazer e o que não fazer.</p>
+          <textarea id="ps-texto" spellcheck="true" aria-label="Quem ela é"></textarea>
+        </section>
+        <section class="ps-aba" data-aba="exemplos" hidden>
+          <p class="ps-explica">Uma conversa por linha, no formato <b>Pessoa: … Beatriz: …</b>. Na conversa por voz, a IA
+            copia o jeito desses exemplos (não as frases): eles pesam muito no tom.</p>
+          <textarea id="ps-exemplos" spellcheck="true" aria-label="Exemplos de conversa"></textarea>
+        </section>
+        <section class="ps-aba" data-aba="frases" hidden>
+          <p class="ps-explica">As falas que não passam pela IA. Uma por linha: ela sorteia e não repete a última.
+            Os campos entre chaves, como <b>{periodo}</b>, são trocados na hora.</p>
+          <div class="ps-frases" id="ps-frases"></div>
+        </section>
+        <section class="ps-aba" data-aba="camadas" hidden>
+          <p class="ps-explica">O que ela aprende convivendo com você: os seus pedidos diretos (<b>me chama de…</b>, <b>fala mais curto</b>)
+            e o que a IA do PC percebe nas conversas. Valem na hora, por cima do texto, sem precisar salvar. Para a nuvem vão só
+            as de <b>como falar</b>; hábitos, gostos e piadas ficam no PC.</p>
+          <div class="cm-barra">
+            <label class="cm-chave"><input type="checkbox" id="cm-aprender"> aprender sozinha durante as conversas</label>
+            <button class="pequeno" id="cm-aprender-agora" title="Lê as últimas conversas agora, pela IA do PC">aprender agora</button>
+            <span class="ps-espaco"></span>
+            <span class="cm-resumo" id="cm-resumo"></span>
+          </div>
+          <div class="cm-nova">
+            <select id="cm-tipo" aria-label="Tipo da camada"></select>
+            <input id="cm-texto" placeholder="Nova camada… ex.: Quando eu disser que estou cansado, sugira uma pausa curta." autocomplete="off" aria-label="Nova camada">
+            <button class="pequeno" id="cm-adicionar">+ adicionar</button>
+          </div>
+          <ul class="cm-lista" id="cm-lista"></ul>
+        </section>
+        <p class="ps-contagem" id="ps-contagem"></p>
+      </div>
+      <aside class="ps-lado">
+        <div class="agenda-secao">TESTAR</div>
+        <p class="ps-dica">Mande uma frase e veja como ela responde com o texto e os exemplos da tela, mesmo sem salvar
+          (pela IA local, como na conversa por voz).</p>
+        <input id="ps-pergunta" placeholder="ex.: vou arrumar minhas pastas antes de estudar" autocomplete="off" aria-label="Frase para testar">
+        <button class="pequeno" id="ps-testar">testar</button>
+        <div class="ps-resposta" id="ps-resposta" aria-live="polite"></div>
+        <div class="agenda-secao">VERSÕES</div>
+        <p class="ps-dica" id="ps-versao"></p>
+        <button class="pequeno" id="ps-anterior">recuperar a versão anterior</button>
+        <button class="pequeno perigo" id="ps-padrao">voltar ao padrão</button>
+      </aside>
+    </div>
+    <div class="ps-acoes">
+      <button class="pequeno principal" id="ps-salvar" title="Ctrl+S">salvar</button>
+      <button class="pequeno" id="ps-desfazer">desfazer alterações</button>
+      <span class="agenda-resposta" id="ps-mensagem" aria-live="polite"></span>
+    </div>
   </div>
 </div>
 

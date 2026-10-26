@@ -2081,7 +2081,7 @@ def iniciar_app_celular(configuracao):
         servidor = app_celular.criar_servidor(
             canal, APARELHOS, dados=lambda: dados_para_o_app(configuracao), transcrever=transcrever_amostras,
             gerar_fala=gerar_arquivo_de_fala, limpar=limpar_texto_para_fala, agenda_semana=AGENDA.dados_semana,
-            biblioteca=BIBLIOTECA,
+            biblioteca=BIBLIOTECA, controle=CONTROLE,
         )
         app_celular.iniciar_servidor(servidor)
         CANAL_APP = canal

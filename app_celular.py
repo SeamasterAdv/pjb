@@ -443,10 +443,10 @@ def _buscar_imagem(endereco: str) -> tuple[str, bytes]:
 
 def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcrever=None, gerar_fala=None,
                    limpar=lambda texto: texto, pasta_recebidos: str = PASTA_RECEBIDOS, limite_mb: float = LIMITE_DO_ARQUIVO_MB,
-                   agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc):
+                   agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc, controle=None):
     """O app FastAPI. `dados()` -> dict do painel do celular; `transcrever(amostras)` -> (texto, confiança);
     `gerar_fala(texto)` -> caminho do áudio; `agenda_semana(deslocamento)` -> a semana da agenda;
-    `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões."""
+    `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões; `controle` -> o AgenteControle (TV e ar)."""
     from collections import OrderedDict
 
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -641,6 +641,27 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
             raise HTTPException(404, str(exc))
         return FileResponse(caminho, filename=os.path.basename(caminho))
 
+    # -- controle remoto (TV e ar pelo Ekaza): os botões da tela vão direto ao agente, sem passar pela conversa
+    @app.get("/api/controle")
+    def controle_painel(quem: dict = Depends(aparelho)):
+        if controle is None:
+            raise HTTPException(503, "O controle remoto não está disponível.")
+        return controle.painel_do_app()
+
+    @app.post("/api/controle")
+    async def controle_comando(request: Request, quem: dict = Depends(aparelho)):
+        from starlette.concurrency import run_in_threadpool
+
+        if controle is None:
+            raise HTTPException(503, "O controle remoto não está disponível.")
+        try:
+            corpo = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Pedido inválido.")
+        if not isinstance(corpo, dict):
+            raise HTTPException(400, "Pedido inválido.")
+        return await run_in_threadpool(controle.comando_do_app, corpo)  # o aparelho pode levar alguns segundos
+
     @app.get("/api/fala/{mensagem_id}")
     def fala(mensagem_id: int, quem: dict = Depends(aparelho)):
         mensagem = canal.mensagem(mensagem_id)
@@ -690,6 +711,44 @@ def iniciar_servidor(app, host: str = APP_HOST, porta: int = APP_PORTA):
 
 
 # ------------------------------------------------------------------ demonstração
+def _controle_de_mentira(pasta: str):
+    """O agente do controle remoto com uma TV Sony e um ar Daikin de mentira (só esperam um pouco), para a tela de controle."""
+    from agente_controle import AgenteControle
+    from controle_remoto import RegistroDoControle
+
+    class Local:
+        def enviar(self, codigos, intervalo=0):
+            time.sleep(0.25)
+
+        def conferir(self):
+            return "192.168.0.50"
+
+        def tipo_conhecido(self):
+            return True
+
+    class Nuvem:
+        def controles(self):
+            return [{"remote_id": "tv", "remote_name": "TV", "category_id": 2, "brand_name": "Sony"},
+                    {"remote_id": "ar", "remote_name": "Ar", "category_id": 5, "brand_name": "Daikin"}]
+
+        def teclas(self, remote_id):
+            return [{"key": k, "key_id": i} for i, k in enumerate(["Power", "OK", "Up", "Down", "Left", "Right", "Back", "Home",
+                                                                   "input", "Menu", "play"])]
+
+        def faixas_do_ar(self, remote_id):
+            com_temperatura = {"temps": [18, 30], "ventos": [0, 1, 2, 3]}
+            return {"0": com_temperatura, "1": com_temperatura, "2": com_temperatura, "3": {"temps": None, "ventos": [0, 1, 2, 3]},
+                    "4": {"temps": None, "ventos": [0]}}
+
+        def apertar(self, remote_id, category_id, tecla, vezes=1):
+            time.sleep(0.6)
+
+        def ar(self, remote_id, ligado, modo="frio", temperatura=23, ventilacao="auto", com_temperatura=True):
+            time.sleep(0.8)
+
+    return AgenteControle(RegistroDoControle(os.path.join(pasta, "controle.json")), local=Local(), nuvem=Nuvem())
+
+
 def _demonstracao(porta: int):
     """Sobe o app com uma Beatriz de mentira (ecoa os pedidos), para ver e ajustar a interface no navegador."""
     import tempfile
@@ -811,7 +870,7 @@ def _demonstracao(porta: int):
 
     app = criar_servidor(canal, aparelhos, dados=dados, transcrever=lambda amostras: ("que horas são?", 0.9), agenda_semana=semana,
                          gerar_fala=fala_de_mentira,
-                         buscar_imagem=poster_de_mentira, biblioteca=biblioteca,
+                         buscar_imagem=poster_de_mentira, biblioteca=biblioteca, controle=_controle_de_mentira(pasta),
                          recursos=lambda: {"cpu": random.randint(12, 48), "ram": random.randint(58, 66), "disco": 71})
     codigo = aparelhos.novo_codigo()
     print(f"Demonstração em http://127.0.0.1:{porta}  |  código de pareamento: {codigo} (vale 5 min)", flush=True)

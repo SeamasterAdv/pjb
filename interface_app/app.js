@@ -135,7 +135,12 @@ function mostrarTela(nome) {
   document.querySelectorAll(".doca-botao[data-tela]").forEach((b) => b.classList.toggle("ativa", b.dataset.tela === nome));
   document.querySelector(".doca").hidden = nome === "parear";
   if (nome === "agenda") carregarAgenda();
+  if (nome === "controle") {
+    controle.alvo = null;
+    carregarControle();
+  }
   if (["inicio", "missoes", "sistema"].includes(nome)) carregarPainel();
+  if (nome === "inicio") carregarControle();
   acompanharAtividade(nome === "sistema");
   clearInterval(biblio.relogio);
   if (nome === "biblioteca") {
@@ -152,6 +157,7 @@ const ATALHOS = {
   agenda: () => mostrarTela("agenda"),
   missoes: () => mostrarTela("missoes"),
   biblioteca: () => mostrarTela("biblioteca"),
+  controle: () => mostrarTela("controle"),
   arquivos: () => $("escolher-arquivo").click(),
   foto: () => $("tirar-foto").click(),
   estudos: () => sugerir(["Quero estudar responsabilidade civil para a OAB", "Resumo da matéria de processo civil",
@@ -1090,6 +1096,170 @@ async function baixarDaBiblioteca(arquivo) {
   }
 }
 
+// ------------------------------------------------------------------ controle remoto (a TV e o ar pelo Ekaza)
+// Cada botão vai direto ao agente do controle (/api/controle), sem passar pela conversa. O infravermelho não tem volta:
+// o estado mostrado é o do último comando. Com o ar desligado, mexer na temperatura e no modo só prepara, e o "Ligar"
+// manda tudo junto; com ele ligado, cada mudança vai na hora (a temperatura espera você parar de tocar).
+const NOMES_DOS_MODOS = { frio: "Frio", quente: "Quente", auto: "Auto", ventilar: "Ventilar", seco: "Seco" };
+const NOMES_DOS_VENTOS = { auto: "Auto", baixa: "Baixa", media: "Média", alta: "Alta" };
+const controle = { painel: null, alvo: null, relogio: null, canal: "" };
+
+async function carregarControle() {
+  try {
+    const resposta = await api("/api/controle");
+    mostrarControle(await resposta.json());
+    marcarOnline(true);
+  } catch (erro) {
+    if (erro.message === "nao_pareado") return;
+    $("controle-vazio").hidden = false;
+    $("controle-vazio").textContent = erro.message === "Failed to fetch" ? "Não consegui falar com o PC." : erro.message;
+  }
+}
+
+function horaCurta(segundos) {
+  return segundos ? new Date(segundos * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
+function mostrarControle(p) {
+  controle.painel = p;
+  const tv = p.tv || {}, ar = p.ar || {};
+  const vazio = $("controle-vazio");
+  vazio.hidden = p.configurado && (tv.disponivel || ar.disponivel);
+  vazio.textContent = !p.configurado ? p.motivo || "O controle remoto não está configurado."
+    : "Cadastre a TV e o ar no app Smart Life, dentro do Ekaza, e diga à Beatriz “atualiza os controles da nuvem”.";
+  $("controle-tv").hidden = !p.configurado || !tv.disponivel;
+  $("controle-ar").hidden = !p.configurado || !ar.disponivel;
+  $("controle-aviso").textContent = p.configurado ? p.aviso || "" : "";
+
+  $("tv-nome").textContent = tv.nome || "TV";
+  $("tv-estado").textContent = tv.ligada == null ? "sem comando ainda" : `${tv.ligada ? "ligada" : "desligada"} · ${horaCurta(tv.quando)}`;
+  const botoes = new Set(tv.botoes || []);
+  document.querySelectorAll("[data-tv]").forEach((b) => { b.hidden = !botoes.has(b.dataset.tv); });
+  const separados = tv.energia_separada;  // códigos só de ligar e só de desligar (a Sony tem): dois botões
+  document.querySelector('[data-tv="ligar"]').hidden = !separados;
+  document.querySelector('[data-tv="desligar"]').hidden = !separados;
+  document.querySelector('[data-tv="energia"]').hidden = separados || !botoes.has("energia");
+  $("tv-cruz").hidden = !["cima", "baixo", "esquerda", "direita", "ok"].some((b) => botoes.has(b));
+  $("tv-numeros").hidden = !botoes.has("digito_1");
+
+  $("ar-nome").textContent = ar.nome || "Ar-condicionado";
+  if (!controle.alvo) controle.alvo = { temperatura: ar.temperatura, modo: ar.modo, ventilacao: ar.ventilacao };
+  desenharAr();
+  mostrarCasa(p);
+}
+
+// O quadro "TV e ar" da tela inicial: o estado do último comando e um botão que faz o contrário do que está.
+function mostrarCasa(p) {
+  const tv = p.tv || {}, ar = p.ar || {};
+  $("w-casa").hidden = !p.configurado || !(tv.disponivel || ar.disponivel);
+  $("casa-ar").hidden = !ar.disponivel;
+  $("casa-ar").classList.toggle("ligado", !!ar.ligado);
+  $("casa-ar-nome").textContent = ar.nome || "Ar";
+  const semTemperatura = ar.modos && ar.modos[ar.modo] && !ar.modos[ar.modo].temps;
+  const ajuste = semTemperatura ? NOMES_DOS_MODOS[ar.modo] : `${ar.temperatura} °C · ${(NOMES_DOS_MODOS[ar.modo] || "").toLowerCase()}`;
+  $("casa-ar-estado").textContent = ar.ligado ? `${ajuste} · ligado` : ar.quando ? `desligado · último: ${ajuste}` : "sem comando ainda";
+  $("casa-ar-botao").textContent = ar.ligado ? "Desligar" : "Ligar";
+  $("casa-tv").hidden = !tv.disponivel;
+  $("casa-tv").classList.toggle("ligado", !!tv.ligada);
+  $("casa-tv-nome").textContent = tv.nome || "TV";
+  $("casa-tv-estado").textContent = tv.ligada == null ? "sem comando ainda" : `${tv.ligada ? "ligada" : "desligada"} · ${horaCurta(tv.quando)}`;
+  $("casa-tv-botao").textContent = !tv.energia_separada ? "Liga / desliga" : tv.ligada ? "Desligar" : "Ligar";
+}
+
+function tocarCasa(aparelho) {
+  const p = controle.painel || {};
+  if (aparelho === "ar") {
+    apertarControle({ aparelho: "ar", acao: p.ar && p.ar.ligado ? "desligar" : "ligar" }, $("casa-ar-botao"));
+  } else {
+    const tv = p.tv || {};
+    const corpo = !tv.energia_separada ? { aparelho: "tv", acao: "botao", botao: "energia" }
+      : { aparelho: "tv", acao: tv.ligada ? "desligar" : "ligar" };
+    apertarControle(corpo, $("casa-tv-botao"));
+  }
+}
+
+function desenharAr() {
+  const ar = (controle.painel || {}).ar;
+  if (!ar || !ar.modos) return;
+  const alvo = controle.alvo;
+  if (!ar.modos[alvo.modo]) alvo.modo = Object.keys(ar.modos)[0];
+  const modo = ar.modos[alvo.modo] || {};
+  const temps = modo.temps;
+  $("ar-graus").textContent = temps ? alvo.temperatura : "--";
+  $("ar-unidade").hidden = !temps;
+  $("ar-modo-nome").textContent = NOMES_DOS_MODOS[alvo.modo] || alvo.modo;
+  $("ar-menos").disabled = !temps || alvo.temperatura <= temps[0];
+  $("ar-mais").disabled = !temps || alvo.temperatura >= temps[1];
+  $("ar-estado").textContent = ar.ligado ? `ligado · ${horaCurta(ar.quando)}`
+    : ar.quando ? `desligado · ${horaCurta(ar.quando)}` : "sem comando ainda";
+  $("controle-ar").classList.toggle("ligado", ar.ligado);
+  segmentos("ar-modos", Object.keys(ar.modos), NOMES_DOS_MODOS, alvo.modo, (m) => mudarAr({ modo: m }));
+  segmentos("ar-ventos", modo.ventos || [], NOMES_DOS_VENTOS, alvo.ventilacao, (v) => mudarAr({ ventilacao: v }));
+}
+
+function segmentos(id, chaves, nomes, atual, aoEscolher) {
+  const caixa = $(id);
+  caixa.textContent = "";
+  for (const chave of chaves) {
+    const botao = elemento("button", `segmento${chave === atual ? " ativo" : ""}`, nomes[chave] || chave);
+    botao.type = "button";
+    botao.addEventListener("click", () => aoEscolher(chave));
+    caixa.appendChild(botao);
+  }
+}
+
+function mudarAr(mudanca) {
+  const ar = controle.painel.ar;
+  Object.assign(controle.alvo, mudanca);
+  const modo = ar.modos[controle.alvo.modo] || {};
+  if (modo.ventos && modo.ventos.length && !modo.ventos.includes(controle.alvo.ventilacao)) controle.alvo.ventilacao = modo.ventos[0];
+  if (modo.temps) controle.alvo.temperatura = Math.max(modo.temps[0], Math.min(modo.temps[1], controle.alvo.temperatura));
+  desenharAr();
+  if (!ar.ligado) return;  // desligado: só prepara; o "Ligar" manda
+  clearTimeout(controle.relogio);
+  controle.relogio = setTimeout(() => { controle.relogio = null; mandarAr(); }, "temperatura" in mudanca ? 800 : 150);
+}
+
+function mandarAr(ligar = false) {
+  const ar = controle.painel.ar, alvo = controle.alvo;
+  const corpo = { aparelho: "ar", acao: "ajustar" };
+  if (ligar || alvo.temperatura !== ar.temperatura) corpo.temperatura = alvo.temperatura;
+  if (ligar || alvo.modo !== ar.modo) corpo.modo = alvo.modo;
+  if (ligar || alvo.ventilacao !== ar.ventilacao) corpo.ventilacao = alvo.ventilacao;
+  if (Object.keys(corpo).length > 2) apertarControle(corpo, ligar ? $("ar-ligar") : $("ar-visor"));
+}
+
+async function apertarControle(corpo, botao = null) {
+  if (botao) botao.classList.add("enviando");
+  try {
+    const resposta = await api("/api/controle", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo),
+    });
+    const dados = await resposta.json();
+    if (!controle.relogio) controle.alvo = null;  // volta para o estado que o PC guardou
+    mostrarControle(dados.painel);
+    if (dados.ok) {
+      som("enviar");
+      if (botao) { botao.classList.add("feito"); setTimeout(() => botao.classList.remove("feito"), 600); }
+    } else {
+      som("erro");
+      aviso(dados.texto, true);
+    }
+  } catch (erro) {
+    if (erro.message !== "nao_pareado") {
+      som("erro");
+      aviso(erro.message === "Failed to fetch" ? "Não consegui falar com o PC." : erro.message, true);
+    }
+  } finally {
+    if (botao) botao.classList.remove("enviando");
+  }
+}
+
+function digitarCanal(texto) {
+  controle.canal = texto.slice(0, 4);
+  $("tv-canal").textContent = controle.canal;
+}
+
 async function carregarAgenda() {
   let semana;
   try {
@@ -1222,7 +1392,7 @@ function aplicarAtrasos(raiz = document) {
 }
 
 function ondaDeLuz(evento) {
-  const alvo = evento.target.closest(".bloco, .widget, .sugestao, .botao, .anexo");
+  const alvo = evento.target.closest(".bloco, .widget, .sugestao, .botao, .anexo, .tecla, .segmento");
   if (!alvo) return;
   const superficie = alvo.classList.contains("bloco") ? alvo.querySelector(".bloco-icone") : alvo;
   const caixa = superficie.getBoundingClientRect();
@@ -1299,6 +1469,30 @@ function iniciar() {
   });
   $("botao-esquecer").addEventListener("click", desconectarEste);
 
+  // TV e ar: cada botão manda o seu pedido ao controle remoto
+  document.querySelectorAll("[data-tv]").forEach((b) => b.addEventListener("click", () => {
+    const nome = b.dataset.tv;
+    apertarControle({ aparelho: "tv", acao: ["ligar", "desligar"].includes(nome) ? nome : "botao", botao: nome }, b);
+  }));
+  document.querySelectorAll("[data-digito]").forEach((b) => b.addEventListener("click", () => digitarCanal(controle.canal + b.dataset.digito)));
+  $("tv-apagar").addEventListener("click", () => digitarCanal(controle.canal.slice(0, -1)));
+  $("tv-ir").addEventListener("click", () => {
+    if (!controle.canal) return;
+    apertarControle({ aparelho: "tv", acao: "canal", canal: controle.canal }, $("tv-ir"));
+    digitarCanal("");
+  });
+  $("ar-menos").addEventListener("click", () => mudarAr({ temperatura: controle.alvo.temperatura - 1 }));
+  $("ar-mais").addEventListener("click", () => mudarAr({ temperatura: controle.alvo.temperatura + 1 }));
+  $("ar-ligar").addEventListener("click", () => mandarAr(true));
+  $("casa-ar-botao").addEventListener("click", () => tocarCasa("ar"));
+  $("casa-tv-botao").addEventListener("click", () => tocarCasa("tv"));
+  $("w-casa").addEventListener("click", (e) => { if (!e.target.closest("button")) { mostrarTela("controle"); som("abrir"); } });
+  $("ar-desligar").addEventListener("click", () => {
+    clearTimeout(controle.relogio);
+    controle.relogio = null;
+    apertarControle({ aparelho: "ar", acao: "desligar" }, $("ar-desligar"));
+  });
+
   const microfone = $("botao-microfone");
   microfone.addEventListener("pointerdown", comecarGravacao);
   microfone.addEventListener("pointermove", moverGravacao);
@@ -1312,7 +1506,11 @@ function iniciar() {
       carregarPainel();
     }
   });
-  setInterval(() => { if (!document.hidden && estado.chave && estado.tela !== "conversa") carregarPainel(); }, 20000);
+  setInterval(() => {
+    if (document.hidden || !estado.chave || estado.tela === "conversa") return;
+    carregarPainel();
+    if (["inicio", "controle"].includes(estado.tela) && !controle.relogio) carregarControle();  // "liga o ar" pela voz também aparece
+  }, 20000);
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   if (estado.chave) {

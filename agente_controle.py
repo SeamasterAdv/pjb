@@ -1004,6 +1004,124 @@ class AgenteControle:
         self.executar(trabalho)
         return instrucao
 
+    # ================================================================== app do celular
+    def painel_do_app(self) -> dict:
+        """O que a tela de controle do app mostra: o estado lembrado (o do último comando), os botões que dá para apertar
+        e o que o ar aceita."""
+        with self._trava:
+            if not self.ligado:
+                return {"configurado": False, "motivo": "O controle remoto está desligado no .env (CONTROLE_REMOTO=false)."}
+            if not self.configurado:
+                return {"configurado": False, "motivo": MENSAGEM_SEM_CONFIGURACAO}
+            try:
+                controles = self._controles_da_nuvem() if self.nuvem is not None else {}
+            except ErroControle as exc:
+                logger.info("Tela de controle sem a nuvem: %s", exc)
+                controles = {}
+            tv, ar = self.registro.estado("tv"), {**ESTADO_PADRAO_AR, **self.registro.estado("ar")}
+
+            def tem(botoes):
+                try:
+                    return self._achar_botao("tv", botoes) is not None
+                except ErroControle:
+                    return False
+
+            botoes = [b for b in BOTOES_DO_APP if tem([b])]
+            separados = tem(["ligar"]) and tem(["desligar"])  # códigos só de ligar e só de desligar (a Sony tem)
+            def marca(texto):  # a Tuya grava "DaiKin"; siglas como "LG" ficam como estão
+                texto = str(texto or "").strip()
+                return texto if texto.isupper() else texto[:1].upper() + texto[1:].lower()
+
+            marca_tv = marca((controles.get("tv") or {}).get("marca") or ("Sony" if self._marca_da_tv() == "sony" else ""))
+            faixas = (controles.get("ar") or {}).get("faixas") or {}
+            if faixas:
+                modos = {nome: {"temps": faixas[str(valor)]["temps"],
+                                "ventos": [v for v, n in VENTILACOES.items() if n in faixas[str(valor)]["ventos"]]}
+                         for nome, valor in MODOS_DO_AR.items() if str(valor) in faixas}
+            else:
+                modos = {nome: {"temps": None if nome in MODOS_SEM_TEMPERATURA else [self.minima, self.maxima],
+                                "ventos": list(VENTILACOES)} for nome in MODOS_DO_AR}
+            ar_disponivel = bool(controles.get("ar")) or bool(self.registro.botoes("ar"))
+            return {
+                "configurado": True,
+                "tv": {"disponivel": tem(["ligar", "energia"]) or bool(botoes),
+                       "nome": f"TV {marca_tv}".strip(), "ligada": tv.get("ligada"), "quando": tv.get("quando"),
+                       "energia_separada": separados, "botoes": botoes},
+                "ar": {"disponivel": ar_disponivel,
+                       "nome": f"Ar {marca((controles.get('ar') or {}).get('marca'))}".strip(),
+                       "ligado": bool(ar.get("ligado")), "temperatura": ar["temperatura"], "modo": ar["modo"],
+                       "ventilacao": ar["ventilacao"], "temperatura_conhecida": ar.get("temperatura_conhecida", True),
+                       "quando": ar.get("quando"), "modos": modos},
+                "aviso": "O infravermelho não tem volta: o estado é o do último comando que eu mandei.",
+            }
+
+    def _pedido_do_app(self, dados: dict) -> Pedido:
+        """O pedido de um toque no app, validado (o app só manda o que a tela oferece; o resto é recusado)."""
+        aparelho, acao = str(dados.get("aparelho", "")), str(dados.get("acao", ""))
+        if aparelho == "tv":
+            if acao in {"ligar", "desligar"}:
+                return Pedido(acao, ("tv",))
+            if acao == "botao":
+                botao = str(dados.get("botao", ""))
+                if botao not in NOMES_BOTOES and botao not in self.registro.botoes("tv"):
+                    raise ValueError("Esse botão eu não conheço.")
+                vezes = max(1, min(MAXIMO_TOQUES, int(dados.get("vezes", 1) or 1)))
+                return Pedido("botao", ("tv",), botao=botao, vezes=vezes)
+            if acao == "canal":
+                canal = re.sub(r"\D", "", str(dados.get("canal", "")))[:4]
+                if not canal:
+                    raise ValueError("Diga o número do canal.")
+                return Pedido("canal", ("tv",), canal=canal)
+        if aparelho == "ar":
+            if acao in {"ligar", "desligar"}:
+                return Pedido(acao, ("ar",))
+            if acao == "ajustar":
+                temperatura = dados.get("temperatura")
+                modo, ventilacao = dados.get("modo") or None, dados.get("ventilacao") or None
+                if temperatura is not None:
+                    temperatura = int(temperatura)
+                if modo is not None and modo not in MODOS_DO_AR or ventilacao is not None and ventilacao not in VENTILACOES:
+                    raise ValueError("Esse modo ou essa ventilação eu não conheço.")
+                if temperatura is None and modo is None and ventilacao is None:
+                    raise ValueError("Nada para mudar.")
+                return Pedido("ar", ("ar",), temperatura=temperatura, modo=modo, ventilacao=ventilacao)
+        raise ValueError("Pedido desconhecido.")
+
+    def comando_do_app(self, dados: dict) -> dict:
+        """Um toque na tela de controle do app ({"aparelho": "tv", "acao": "botao", "botao": "volume_mais"}). Faz o mesmo
+        que o pedido falado, sem passar pelo texto. Devolve {"ok", "texto", "painel"} (ok False = não mandou nada)."""
+        try:
+            pedido = self._pedido_do_app(dados if isinstance(dados, dict) else {})
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "texto": str(exc) if isinstance(exc, ValueError) else "Pedido inválido.",
+                    "painel": self.painel_do_app()}
+        with self._trava:
+            ok = True
+            try:
+                if not self.configurado:
+                    texto, ok = MENSAGEM_SEM_CONFIGURACAO, False
+                elif pedido.aparelhos == ("tv",) and pedido.acao in {"ligar", "desligar"}:
+                    # Um botão apertado na tela é a ordem: sem o "aperto mesmo assim?" do botão único de energia.
+                    texto = self._tv_energia(pedido.acao == "ligar", perguntar=False, forcar=True)
+                else:
+                    texto = getattr(self, f"_{pedido.acao}")(pedido)
+                # As respostas de quem mandou começam com "Pronto"; "Esse ar vai de 18 a 30 graus." não mandou nada.
+                ok = ok and texto.startswith("Pronto")
+            except (FaltaCodigo, Pergunta) as exc:
+                texto, ok = str(exc), False
+            except ErroControle as exc:
+                texto, ok = f"Não consegui: {exc}.", False
+            except Exception as exc:
+                logger.exception("Falha no controle pelo app")
+                texto, ok = f"Tive um problema com o controle remoto: {exc}", False
+            return {"ok": ok, "texto": texto, "painel": self.painel_do_app()}
+
+
+# Os botões da TV que a tela do app pode mostrar (aparecem só os que dá para apertar).
+BOTOES_DO_APP = ("ligar", "desligar", "energia", "volume_mais", "volume_menos", "mudo", "canal_mais", "canal_menos",
+                 *(f"digito_{n}" for n in range(10)), "ok", "voltar", "inicio", "menu", "entrada", "cima", "baixo",
+                 "esquerda", "direita", "play")
+
 
 def criar_agente_controle(avisar=None) -> AgenteControle:
     """Agente com o controle do .env (config.py) ou do que o wizard do tinytuya gravou em banco_memoria/tuya."""

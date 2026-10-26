@@ -821,3 +821,54 @@ def test_convidado_nao_mexe_na_tv_nem_no_ar():
 def test_main_usa_o_registro_temporario_nos_testes(tmp_path):
     assert main.CONTROLE.registro.caminho.startswith(str(tmp_path))
     assert main.CONTROLE.reconhece("liga a TV")
+
+
+# ------------------------------------------------------------------ app do celular
+def test_painel_do_app_mostra_o_que_da_para_apertar(casa, monkeypatch):
+    nuvem = NuvemFalsa()
+    real = controle_remoto.ControleNuvemTuya("us", "a", "b", "ir1")
+    monkeypatch.setattr(real, "_pedir", lambda caminho, corpo=None: {"key_range": KEY_RANGE_DAIKIN})
+    nuvem.faixas = real.faixas_do_ar("ar1")
+    nuvem.lista[1]["brand_name"] = "DaiKin"  # como a Tuya grava
+    casa.montar(nuvem=nuvem, marca_tv="sony")
+    painel = casa.agente.painel_do_app()
+    assert painel["configurado"] and painel["tv"]["energia_separada"]
+    assert {"ligar", "desligar", "volume_mais", "mudo", "digito_5"} <= set(painel["tv"]["botoes"])
+    assert painel["ar"]["nome"] == "Ar Daikin" and painel["ar"]["modos"]["frio"]["temps"] == [18, 30]
+    assert painel["ar"]["modos"]["seco"] == {"temps": None, "ventos": ["auto"]}
+
+
+def test_comando_do_app_faz_o_mesmo_que_o_pedido_falado(casa):
+    casa.montar(nuvem=True, marca_tv="sony")
+    resposta = casa.agente.comando_do_app({"aparelho": "tv", "acao": "desligar"})
+    assert resposta["ok"] and resposta["texto"] == "Pronto, desliguei a TV."
+    assert casa.local.enviados == [[controle_remoto.codigo_sony("desligar")]]
+    assert resposta["painel"]["tv"]["ligada"] is False
+    assert casa.agente.comando_do_app({"aparelho": "tv", "acao": "botao", "botao": "volume_mais", "vezes": 2})["ok"]
+    assert casa.agente.comando_do_app({"aparelho": "tv", "acao": "canal", "canal": "13"})["texto"] == "Pronto, pus no canal 13."
+    resposta = casa.agente.comando_do_app({"aparelho": "ar", "acao": "ajustar", "temperatura": 22, "modo": "frio"})
+    assert resposta["ok"] and resposta["painel"]["ar"]["ligado"] and resposta["painel"]["ar"]["temperatura"] == 22
+    assert casa.agente.comando_do_app({"aparelho": "ar", "acao": "desligar"})["texto"] == "Pronto, desliguei o ar."
+
+
+def test_comando_do_app_recusa_o_que_a_tela_nao_oferece(casa):
+    casa.montar(nuvem=True)
+    for dados in ({"aparelho": "tv", "acao": "botao", "botao": "rm -rf"}, {"aparelho": "cafeteira", "acao": "ligar"},
+                  {"aparelho": "ar", "acao": "ajustar", "modo": "turbo"}, {"aparelho": "ar", "acao": "ajustar"},
+                  {"aparelho": "tv", "acao": "canal", "canal": "abc"}, "não é um dict"):
+        resposta = casa.agente.comando_do_app(dados)
+        assert resposta["ok"] is False and resposta["texto"], dados
+    assert casa.local.enviados == [] and casa.nuvem.apertos == [] and casa.nuvem.comandos_ar == []
+
+
+def test_comando_do_app_que_nao_manda_nada_nao_conta_como_feito(casa):
+    casa.montar()
+    casa.ensina("ar", "frio_22", "MjI=")
+    resposta = casa.agente.comando_do_app({"aparelho": "ar", "acao": "ajustar", "temperatura": 35})
+    assert resposta["ok"] is False and resposta["texto"] == "Esse ar vai de 16 a 30 graus."
+
+
+def test_painel_do_app_sem_configuracao(casa):
+    casa.montar(local=False)
+    assert casa.agente.painel_do_app() == {"configurado": False, "motivo": MENSAGEM_SEM_CONFIGURACAO}
+    assert casa.agente.comando_do_app({"aparelho": "tv", "acao": "ligar"})["texto"] == MENSAGEM_SEM_CONFIGURACAO

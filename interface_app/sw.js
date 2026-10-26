@@ -1,6 +1,6 @@
 // Service worker do app: guarda a "casca" (página, estilo, código e ícones) para o app abrir na hora, mesmo com o PC
 // fora do alcance. Busca sempre a versão nova primeiro; a guardada só entra sem rede. As chamadas /api/ nunca são guardadas.
-const VERSAO = "beatriz-app-3";
+const VERSAO = "beatriz-app-4";
 const CASCA = ["./", "index.html", "app.css", "app.js", "visual_app.js", "manifest.webmanifest", "icones/icone-180.png", "icones/icone-192.png",
                "/visual/visual_rede.js", "/visual/vendor/three/build/three.module.min.js"];
 

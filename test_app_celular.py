@@ -533,3 +533,50 @@ def test_recursos_do_pc_para_o_grafico(com_biblioteca, ambiente):
     assert sem.get("/api/biblioteca", headers=parear(sem, aparelhos)).status_code == 503
     recursos = app_celular.recursos_do_pc()
     assert set(recursos) >= {"disco"} and all(0 <= v <= 100 for v in recursos.values() if isinstance(v, (int, float)))
+
+
+# ------------------------------------------------------------------ controle remoto (TV e ar)
+class ControleFalso:
+    def __init__(self):
+        self.comandos = []
+
+    def painel_do_app(self):
+        return {"configurado": True, "tv": {"disponivel": True, "botoes": ["ligar", "desligar"]}, "ar": {"disponivel": False}}
+
+    def comando_do_app(self, dados):
+        self.comandos.append(dados)
+        return {"ok": True, "texto": "Pronto, liguei a TV.", "painel": self.painel_do_app()}
+
+
+def test_controle_pelo_app_exige_a_chave_e_vai_direto_ao_agente(tmp_path):
+    canal, aparelhos, controle = CanalApp(), Aparelhos(str(tmp_path / "a.json")), ControleFalso()
+    cliente = TestClient(criar_servidor(canal, aparelhos, controle=controle))
+    assert cliente.get("/api/controle").status_code == 401
+    assert cliente.post("/api/controle", json={"aparelho": "tv", "acao": "ligar"}).status_code == 401
+    chave = parear(cliente, aparelhos)
+    assert cliente.get("/api/controle", headers=chave).json()["tv"]["botoes"] == ["ligar", "desligar"]
+    resposta = cliente.post("/api/controle", headers=chave, json={"aparelho": "tv", "acao": "ligar"})
+    assert resposta.json()["texto"] == "Pronto, liguei a TV."
+    assert controle.comandos == [{"aparelho": "tv", "acao": "ligar"}]
+    assert canal.receber() == ""  # não vira pedido da conversa
+    assert cliente.post("/api/controle", headers=chave, content=b"[1, 2]").status_code == 400
+    assert cliente.post("/api/controle", headers=chave, content=b"isso nao e json").status_code == 400
+
+
+def test_controle_pelo_app_sem_o_agente(ambiente):
+    cliente, _, aparelhos, _ = ambiente
+    chave = parear(cliente, aparelhos)
+    assert cliente.get("/api/controle", headers=chave).status_code == 503
+
+
+def test_main_liga_o_controle_ao_app():
+    codigo = open("main.py", encoding="utf-8").read()
+    inicio = codigo.index("def iniciar_app_celular")
+    assert "controle=CONTROLE" in codigo[inicio:codigo.index("\ndef ", inicio + 10)]
+
+
+def test_tela_do_controle_na_pagina():
+    pagina = open(os.path.join(app_celular.PASTA_APP, "index.html"), encoding="utf-8").read()
+    for trecho in ('id="tela-controle"', 'data-acao="controle"', 'id="w-casa"', 'data-tv="volume_mais"', 'id="ar-ligar"'):
+        assert trecho in pagina, trecho
+    assert 'data-acao="arquivos" role="listitem"' not in pagina  # "Mandar ao PC" ficou só no clipe da barra de baixo

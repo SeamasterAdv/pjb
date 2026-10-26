@@ -110,6 +110,20 @@
         <span class="widget-linha" id="proximo-titulo">Carregando a agenda…</span>
         <span class="widget-linha suave" id="proximo-extra"></span>
       </button>
+      <!-- TV e ar: o estado (do último comando) e o ligar/desligar, sem abrir a tela; tocar fora dos botões abre a tela -->
+      <div class="widget widget-largo holo casa" id="w-casa" data-i="3" hidden>
+        <span class="holo-rotulo"><span>TV e ar</span><span class="holo-codigo">abrir ›</span></span>
+        <div class="casa-linha" id="casa-ar">
+          <span class="casa-icone"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="8" rx="2"/><path d="M6 10h12M8 16.5c0 1.5-1 2.5-1 2.5M12 16.5v3M16 16.5c0 1.5 1 2.5 1 2.5"/></svg></span>
+          <span class="casa-texto"><b id="casa-ar-nome">Ar</b><span id="casa-ar-estado">--</span></span>
+          <button class="tecla tecla-casa" type="button" id="casa-ar-botao">Ligar</button>
+        </div>
+        <div class="casa-linha" id="casa-tv">
+          <span class="casa-icone"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg></span>
+          <span class="casa-texto"><b id="casa-tv-nome">TV</b><span id="casa-tv-estado">--</span></span>
+          <button class="tecla tecla-casa" type="button" id="casa-tv-botao">Ligar</button>
+        </div>
+      </div>
       <button class="widget widget-largo holo" type="button" id="w-missao" data-acao="missoes" data-i="3" hidden>
         <span class="holo-rotulo"><span>Missão em andamento</span><span class="holo-codigo" id="missao-conta"></span></span>
         <span class="widget-linha forte" id="missao-pedido"></span>
@@ -136,9 +150,9 @@
         <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M2 8l10-5 10 5-10 5z"/><path d="M6 10.5V16c0 1.5 2.7 3 6 3s6-1.5 6-3v-5.5M22 8v6"/></svg></span>
         <span class="bloco-nome">Estudos</span>
       </button>
-      <button class="bloco" type="button" data-acao="arquivos" role="listitem" data-i="9">
-        <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M12 18v-6M9 14.5l3-3 3 3"/></svg></span>
-        <span class="bloco-nome">Mandar ao PC</span>
+      <button class="bloco" type="button" data-acao="controle" role="listitem" data-i="9">
+        <span class="bloco-icone"><svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="3"/><circle cx="12" cy="7.5" r="1.6"/><path d="M10 12h4M10 15h4M10 18h4"/></svg></span>
+        <span class="bloco-nome">TV e ar</span>
       </button>
       <button class="bloco" type="button" data-acao="impressora" role="listitem" data-i="10">
         <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/><path d="M17.5 12h.01"/></svg></span>
@@ -223,6 +237,93 @@
     </div>
     <div id="biblio-pastas"></div>
     <p class="vazio" id="biblio-vazio" hidden>Nenhum arquivo com esse nome.</p>
+  </section>
+
+  <!-- Controle remoto: a TV e o ar pelo Ekaza (cada botão vai direto ao agente do controle, sem passar pela conversa) -->
+  <section class="tela" id="tela-controle" aria-label="TV e ar">
+    <div class="titulo-tela" data-i="0"><span>TV e ar</span><span class="linha"></span></div>
+    <p class="vazio" id="controle-vazio" hidden></p>
+
+    <div class="painel holo controle" id="controle-tv" data-i="1" hidden>
+      <div class="holo-rotulo"><span id="tv-nome">TV</span><span class="holo-codigo" id="tv-estado">--</span></div>
+      <div class="energia" id="tv-energia">
+        <button class="tecla tecla-larga" type="button" data-tv="ligar">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg><span>Ligar</span>
+        </button>
+        <button class="tecla tecla-larga" type="button" data-tv="desligar">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg><span>Desligar</span>
+        </button>
+        <button class="tecla tecla-larga" type="button" data-tv="energia" hidden>
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg><span>Liga / desliga</span>
+        </button>
+      </div>
+      <div class="balancas">
+        <div class="balanca">
+          <button class="tecla" type="button" data-tv="volume_mais" aria-label="Aumentar o volume"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></button>
+          <span class="balanca-nome">Vol</span>
+          <button class="tecla" type="button" data-tv="volume_menos" aria-label="Abaixar o volume"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+        </div>
+        <button class="tecla tecla-redonda" type="button" data-tv="mudo" aria-label="Mudo">
+          <svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg>
+        </button>
+        <div class="balanca">
+          <button class="tecla" type="button" data-tv="canal_mais" aria-label="Próximo canal"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+          <span class="balanca-nome">Canal</span>
+          <button class="tecla" type="button" data-tv="canal_menos" aria-label="Canal anterior"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+        </div>
+      </div>
+      <div class="cruz" id="tv-cruz">
+        <button class="tecla cruz-cima" type="button" data-tv="cima" aria-label="Para cima"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+        <button class="tecla cruz-esquerda" type="button" data-tv="esquerda" aria-label="Para a esquerda"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <button class="tecla cruz-ok" type="button" data-tv="ok">OK</button>
+        <button class="tecla cruz-direita" type="button" data-tv="direita" aria-label="Para a direita"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button class="tecla cruz-baixo" type="button" data-tv="baixo" aria-label="Para baixo"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+      <div class="linha-teclas">
+        <button class="tecla tecla-pequena" type="button" data-tv="voltar">Voltar</button>
+        <button class="tecla tecla-pequena" type="button" data-tv="inicio">Início</button>
+        <button class="tecla tecla-pequena" type="button" data-tv="entrada">Entrada</button>
+        <button class="tecla tecla-pequena" type="button" data-tv="menu">Menu</button>
+      </div>
+      <details class="numeros" id="tv-numeros">
+        <summary>Números<span class="numeros-visor" id="tv-canal"></span></summary>
+        <div class="teclado">
+          <button class="tecla" type="button" data-digito="1">1</button><button class="tecla" type="button" data-digito="2">2</button>
+          <button class="tecla" type="button" data-digito="3">3</button><button class="tecla" type="button" data-digito="4">4</button>
+          <button class="tecla" type="button" data-digito="5">5</button><button class="tecla" type="button" data-digito="6">6</button>
+          <button class="tecla" type="button" data-digito="7">7</button><button class="tecla" type="button" data-digito="8">8</button>
+          <button class="tecla" type="button" data-digito="9">9</button>
+          <button class="tecla" type="button" id="tv-apagar" aria-label="Apagar o número"><svg viewBox="0 0 24 24"><path d="M9 6h11v12H9l-6-6z"/><path d="M12 10l4 4M16 10l-4 4"/></svg></button>
+          <button class="tecla" type="button" data-digito="0">0</button>
+          <button class="tecla tecla-ir" type="button" id="tv-ir">Ir</button>
+        </div>
+      </details>
+    </div>
+
+    <div class="painel holo controle" id="controle-ar" data-i="2" hidden>
+      <div class="holo-rotulo"><span id="ar-nome">Ar</span><span class="holo-codigo" id="ar-estado">--</span></div>
+      <div class="ar-visor">
+        <button class="tecla tecla-redonda" type="button" id="ar-menos" aria-label="Abaixar a temperatura"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+        <div class="ar-temp" id="ar-visor">
+          <span class="ar-graus" id="ar-graus">--</span><span class="ar-unidade" id="ar-unidade">°C</span>
+          <span class="ar-modo" id="ar-modo-nome"></span>
+        </div>
+        <button class="tecla tecla-redonda" type="button" id="ar-mais" aria-label="Aumentar a temperatura"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></button>
+      </div>
+      <div class="energia">
+        <button class="tecla tecla-larga" type="button" id="ar-ligar">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg><span>Ligar</span>
+        </button>
+        <button class="tecla tecla-larga" type="button" id="ar-desligar">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg><span>Desligar</span>
+        </button>
+      </div>
+      <p class="controle-rotulo">Modo</p>
+      <div class="segmentos" id="ar-modos"></div>
+      <p class="controle-rotulo">Ventilação</p>
+      <div class="segmentos" id="ar-ventos"></div>
+    </div>
+    <p class="detalhe controle-aviso" id="controle-aviso" data-i="3"></p>
   </section>
 
   <!-- Sistema -->

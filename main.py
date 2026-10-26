@@ -47,7 +47,9 @@ import leitura_tela
 from agente_pastas import AgentePastas
 from fontes import criar_agente_fontes
 from processos import iniciar_leve
+import ajuste_fino
 import camadas_personalidade
+import melhoria_codigo
 import niveis_voz
 import personalidade
 from leitura_tela import AgenteTela, RespostaTela
@@ -709,6 +711,14 @@ def cumprimentar():
         logger.warning("Agenda indisponível na saudação: %s", exc)
         agenda_de_hoje = ""
     saudacao = saudacao_inicial(agenda_de_hoje)
+    try:
+        # O que a madrugada fez: o ajuste fino do modelo e a correção preparada, esperando o "aplica".
+        pendente = " ".join(p for p in (ajuste_fino.relatorio_da_manha(), MELHORIA.saudacao_pendente()) if p)
+    except Exception as exc:
+        logger.warning("Evolução indisponível na saudação: %s", exc)
+        pendente = ""
+    if pendente:
+        saudacao = f"{saudacao} {pendente}"
     falar_async(saudacao)
     avisar_painel("resposta", saudacao)
     abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), saudacao)
@@ -1222,6 +1232,28 @@ FONTES = criar_agente_fontes(avisar=lambda texto, canal: responder_fontes(texto,
                              impressora=IMPRESSORA, pastas=PASTAS, llm=llm_clients)
 
 
+def ultima_interacao() -> float:
+    """Quando foi a última fala com ela (a pessoa ou ela; a conversa da casa ignorada não conta)."""
+    for momento, quem, _ in reversed(REGISTRO_CONVERSA):
+        if quem in ("Usuário", "Beatriz"):
+            return momento
+    return 0.0
+
+
+def ultima_troca() -> str:
+    """A última troca da conversa, para um pedido de melhoria sobre "isso" que acabou de acontecer."""
+    historico = llm_clients.historico_recente()
+    if not historico:
+        return ""
+    pergunta, resposta = historico[-1]
+    return f"Operador: {pergunta}\nBeatriz: {resposta}"
+
+
+# Melhorias do próprio código (melhoria_codigo.py): o Claude prepara num worktree separado, ela roda os testes e só
+# aplica com o "sim" (ou sozinha, com EVOLUCAO_APLICAR_SOZINHA). O fim chega pelo canal do pedido, como o das fontes.
+MELHORIA = melhoria_codigo.AgenteMelhoria(avisar=lambda texto, canal: responder_fontes(texto, canal), contexto=ultima_troca)
+
+
 def responder_tela(resposta: RespostaTela) -> None:
     """Fala a resposta curta e mostra a completa no painel. Não entra no histórico (que alimenta a biblioteca):
     o que estava na tela não deve ficar guardado."""
@@ -1593,7 +1625,8 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
             avisar_painel("ignorado", texto, motivo)
             return ""
         if em_conversa and (tipo_de_encerramento(texto) or LEIS.e_seguimento(texto) or TELA.e_seguimento(texto)
-                            or PASTAS.esperando_resposta() or CONTROLE.esperando_resposta()):
+                            or PASTAS.esperando_resposta() or CONTROLE.esperando_resposta()
+                            or MELHORIA.esperando_resposta()):
             avaliacao = "pedido"  # "valeu!", "tchau", "não entendi", "explica melhor", "a segunda": no meio da conversa, é com ela
         elif FONTES.esperando_resposta() and FONTES.reconhece(texto):
             avaliacao = "pedido"  # acabou de chegar um arquivo (ou escaneou uma folha): "vira fonte", "arquiva", "mais uma"
@@ -1626,6 +1659,9 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
     if normalizado in CORRECOES:
         parar_fala()
         avisar_painel("ouvido", texto, pensando=False)
+        ultima = llm_clients.historico_recente()[-1:]
+        if ultima:  # a troca errada não vira exemplo do ajuste fino; o pedido refeito em seguida vira
+            ajuste_fino.registrar_correcao(*ultima[0])
         pergunta = frase("entendi_errado")
         responder_rapido(pergunta)
         abrir_janela_continuacao(ESTADO_ATIVACAO, time.time(), pergunta)
@@ -2133,6 +2169,8 @@ def main(evento_carregamento=None):
     inicializar_biblioteca_automatica()
     iniciar_vade_mecum()
     APRENDIZ.iniciar()  # relê a conversa de tempos em tempos e cria as camadas de personalidade
+    # De madrugada, parada há 30 min: os erros do log viram correções testadas e, se for a hora, o ajuste fino do modelo.
+    ajuste_fino.RotinaDaMadrugada(melhoria=MELHORIA, ociosa_desde=ultima_interacao).iniciar()
     gerenciador_audio = multiprocessing.Manager()
     configuracao_audio = gerenciador_audio.dict({"microfone": None, "saida": ""})
     threading.Thread(target=publicar_status_painel, args=(configuracao_audio,), daemon=True).start()
@@ -2251,6 +2289,18 @@ def main(evento_carregamento=None):
         resposta_camadas = CAMADAS.responder(comando)
         if resposta_camadas:
             responder_rapido(resposta_camadas)
+            continue
+
+        # "Beatriz, se melhora: …", "aplica a melhoria", "desfaz a última melhoria": o código dela, com o Claude.
+        resposta_melhoria = MELHORIA.responder(comando, CANAL["atual"])
+        if resposta_melhoria:
+            responder_rapido(resposta_melhoria)
+            continue
+
+        # "Como está o seu treino?", "volta pro modelo original", "treina hoje à noite": o ajuste fino da madrugada.
+        resposta_ajuste = ajuste_fino.responder(comando)
+        if resposta_ajuste:
+            responder_rapido(resposta_ajuste)
             continue
 
         # "Conecta meu celular" (código de pareamento do app), "desconecta o celular", "o celular está conectado?".

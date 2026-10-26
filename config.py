@@ -399,6 +399,31 @@ CAMADAS_INTERVALO = float(os.getenv("CAMADAS_INTERVALO", "300"))
 CAMADAS_TROCAS_PARA_APRENDER = int(os.getenv("CAMADAS_TROCAS_PARA_APRENDER", "8"))
 CAMADAS_NO_PROMPT = int(os.getenv("CAMADAS_NO_PROMPT", "12"))
 
+# Evolução (melhoria_codigo.py e ajuste_fino.py). Melhorias do código: o Claude Code prepara num worktree do git numa
+# pasta irmã (PASTA_EVOLUCAO), ela roda a suíte inteira lá e só aplica com o seu "sim"; EVOLUCAO_APLICAR_SOZINHA=true
+# aplica sem perguntar quando tudo passou (vale ao reiniciar; "desfaz a última melhoria" volta).
+CAMINHO_MELHORIAS = os.getenv("CAMINHO_MELHORIAS", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "evolucao", "melhorias.json"))
+PASTA_EVOLUCAO = os.getenv("PASTA_EVOLUCAO", os.path.normpath(NOTELOOKLM_PATH) + "-evolucao")
+EVOLUCAO_APLICAR_SOZINHA = os.getenv("EVOLUCAO_APLICAR_SOZINHA", "false").strip().lower() in {"1", "true", "yes", "on"}
+EVOLUCAO_MODELO_CLAUDE = os.getenv("EVOLUCAO_MODELO_CLAUDE", "").strip()  # vazio = o padrão do plano
+EVOLUCAO_TEMPO_CLAUDE = float(os.getenv("EVOLUCAO_TEMPO_CLAUDE", "1800"))
+EVOLUCAO_TEMPO_TESTES = float(os.getenv("EVOLUCAO_TEMPO_TESTES", "900"))
+# Ajuste fino LoRA/QLoRA de madrugada (ajuste_fino.py + treinar_lora.py no .venv_treino): entre AJUSTE_HORA_INICIO e
+# AJUSTE_HORA_FIM, com a Beatriz parada há 30 min, se faz AJUSTE_DIAS_ENTRE_TREINOS dias do último e há
+# AJUSTE_MINIMO_NOVOS trocas novas. Só troca de modelo se a perda cair AJUSTE_MELHORA_MINIMA e ele passar na conferência.
+PASTA_AJUSTE_FINO = os.getenv("PASTA_AJUSTE_FINO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "evolucao", "ajuste"))
+AJUSTE_FINO = os.getenv("AJUSTE_FINO", "true").strip().lower() in {"1", "true", "yes", "on"}
+AJUSTE_SINTETICOS = os.getenv("AJUSTE_SINTETICOS", "true").strip().lower() in {"1", "true", "yes", "on"}
+AJUSTE_MINIMO_NOVOS = int(os.getenv("AJUSTE_MINIMO_NOVOS", "30"))
+AJUSTE_DIAS_ENTRE_TREINOS = float(os.getenv("AJUSTE_DIAS_ENTRE_TREINOS", "7"))
+AJUSTE_MELHORA_MINIMA = float(os.getenv("AJUSTE_MELHORA_MINIMA", "0.02"))
+AJUSTE_HORA_INICIO = int(os.getenv("AJUSTE_HORA_INICIO", "2"))
+AJUSTE_HORA_FIM = int(os.getenv("AJUSTE_HORA_FIM", "5"))
+AJUSTE_TEMPO_MAXIMO = float(os.getenv("AJUSTE_TEMPO_MAXIMO", str(4 * 3600)))
+# Os pesos originais do modelo de conversa (o treino os carrega em 4 bits; a junção usa os de 16 bits e grava no formato
+# do modelo do Ollama). Têm de ser os mesmos do OLLAMA_MODEL.
+AJUSTE_BASE_HF = os.getenv("AJUSTE_BASE_HF", "Qwen/Qwen2.5-14B-Instruct").strip()
+
 PERSONALIDADE_PROFESSORA_IDIOMAS = (
     "Você é uma professora nativa e especialista em aquisição de idiomas. "
     "Ensina como uma moradora local ensinaria a um amigo: prioriza expressões que "

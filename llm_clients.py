@@ -8,6 +8,7 @@ from datetime import datetime
 
 import ollama
 
+import ajuste_fino
 import personalidade
 from config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_VISION_MODEL
 
@@ -131,9 +132,10 @@ class LLMClients:
         """Carrega o modelo na memória antes da primeira pergunta (senão ela espera ~3 s a mais)."""
         try:
             # Com o mesmo num_ctx das conversas: com outro, a primeira pergunta recarregaria o modelo de novo.
-            self.ollama_client.generate(model=self.model, prompt="", keep_alive=OLLAMA_KEEP_ALIVE,
+            modelo = ajuste_fino.modelo_em_uso(self.model)
+            self.ollama_client.generate(model=modelo, prompt="", keep_alive=OLLAMA_KEEP_ALIVE,
                                         options={"num_ctx": OLLAMA_NUM_CTX})
-            logger.info("Modelo %s carregado no Ollama.", self.model)
+            logger.info("Modelo %s carregado no Ollama.", modelo)
         except Exception as exc:
             logger.warning("Não foi possível pré-carregar o modelo: %s", exc)
 
@@ -148,26 +150,49 @@ class LLMClients:
             messages.extend(self._mensagens_historico())
         messages.append({"role": "user", "content": prompt})
 
-        argumentos = {"model": model or self.model, "messages": messages, "keep_alive": OLLAMA_KEEP_ALIVE}
+        # O modelo ajustado de madrugada (ajuste_fino.py), se um foi aprovado, responde no lugar do base.
+        argumentos = {"model": ajuste_fino.modelo_em_uso(model or self.model), "messages": messages,
+                      "keep_alive": OLLAMA_KEEP_ALIVE}
         # Todo pedido leva o mesmo num_ctx: se ele mudasse entre duas chamadas, o Ollama recarregaria o modelo (8 a 10 s).
         argumentos["options"] = {"num_ctx": OLLAMA_NUM_CTX, **(opcoes or {})}
         if formato:
             argumentos["format"] = formato
         return argumentos
 
+    def _ajustado_sumiu(self, erro, argumentos, model) -> bool:
+        """O Ollama respondeu 404 para o modelo ajustado de madrugada (apagado?): o pedido vai ao modelo base, e o
+        ajustado deixa de ser usado. Devolve se dá para tentar de novo."""
+        base = model or self.model
+        if getattr(erro, "status_code", None) != 404 or argumentos["model"] == base:
+            return False
+        ajuste_fino.modelo_sumiu(argumentos["model"])
+        argumentos["model"] = base
+        return True
+
     def chat(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None, formato=None):
         """Conversa com o Ollama. `formato="json"` força uma resposta em JSON válido."""
         argumentos = self._argumentos_chat(prompt, system_prompt, model, usar_historico, opcoes, formato)
-        response = self.ollama_client.chat(**argumentos)
+        try:
+            response = self.ollama_client.chat(**argumentos)
+        except ollama.ResponseError as erro:
+            if not self._ajustado_sumiu(erro, argumentos, model):
+                raise
+            response = self.ollama_client.chat(**argumentos)
         return response["message"]["content"].strip()
 
     def chat_stream(self, prompt, system_prompt=None, model=None, usar_historico=False, opcoes=None):
         """Como `chat`, mas devolve o texto aos pedaços, conforme o modelo gera."""
         argumentos = self._argumentos_chat(prompt, system_prompt, model, usar_historico, opcoes, None)
-        for parte in self.ollama_client.chat(stream=True, **argumentos):
-            texto = parte["message"]["content"]
-            if texto:
-                yield texto
+        for tentativa in range(2):
+            try:
+                for parte in self.ollama_client.chat(stream=True, **argumentos):
+                    texto = parte["message"]["content"]
+                    if texto:
+                        yield texto
+                return
+            except ollama.ResponseError as erro:  # o 404 vem antes do primeiro pedaço
+                if tentativa or not self._ajustado_sumiu(erro, argumentos, model):
+                    raise
 
     def _sistema_beatriz(self, contexto=None, texto_da_personalidade=None):
         """A personalidade de agora (a da janela [ personalidade ], ou um rascunho dela no teste), as camadas que ela

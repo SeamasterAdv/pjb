@@ -53,6 +53,24 @@ def personalidade_isolada(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def evolucao_isolada(tmp_path, monkeypatch):
+    """Nenhum teste toca o registro de melhorias de verdade, cria worktree ao lado do projeto ou chama o Claude Code."""
+    import config
+
+    monkeypatch.setattr(config, "CAMINHO_MELHORIAS", str(tmp_path / "melhorias_teste.json"))
+    monkeypatch.setattr(config, "PASTA_EVOLUCAO", str(tmp_path / "evolucao"))
+    monkeypatch.setattr(config, "PASTA_AJUSTE_FINO", str(tmp_path / "ajuste"))  # nem o modelo ajustado de verdade
+    import ajuste_fino
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou treinar, juntar ou criar modelo de verdade")
+
+    monkeypatch.setattr(ajuste_fino, "_executar", proibido)  # nada de treino nem de "ollama create" de verdade
+    monkeypatch.setattr(ajuste_fino, "_cliente_ollama", proibido)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def vade_mecum_isolado(tmp_path, monkeypatch):
     """O vade-mécum de cada teste é um banco temporário, e nada é baixado do Planalto nem dos tribunais."""
     import config

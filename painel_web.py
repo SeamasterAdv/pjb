@@ -93,7 +93,8 @@ class ApiPainel:
         from llm_clients import llm_clients
         self._agenda = criar_agente_agenda(llm=llm_clients, ao_abrir=lambda: self._emitir({"tipo": "abrir_agenda"}))
         self._ultimas_respostas = []  # mais nova primeiro, para "imprime isso"
-        self._leis = AgenteLeis()  # artigos de lei: texto oficial e explicação pelo Gemini
+        # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
+        self._leis = AgenteLeis(avisar=self._responder)
         self._impressora = criar_agente_impressora(
             respostas_recentes=lambda: list(self._ultimas_respostas),
             texto_agenda=lambda t: texto_da_agenda(self._agenda, t),

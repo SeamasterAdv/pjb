@@ -43,6 +43,22 @@ def sem_internet_para_as_leis(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def vade_mecum_isolado(tmp_path, monkeypatch):
+    """O vade-mécum de cada teste é um banco temporário, e nada é baixado do Planalto nem dos tribunais."""
+    import config
+    import vade_mecum
+
+    monkeypatch.setattr(config, "CAMINHO_VADE_MECUM", str(tmp_path / "vade_mecum_teste.sqlite3"))
+
+    def proibido(*args, **kwargs):
+        raise OSError("sem internet nos testes")
+
+    for metodo in ("bytes", "texto", "json"):
+        monkeypatch.setattr(vade_mecum.Baixador, metodo, proibido)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def escuta_no_modo_conversa(monkeypatch):
     """Os testes de escuta foram escritos para a janela de 40 s ("conversa"); o padrão do programa é "sempre"."""
     import sys

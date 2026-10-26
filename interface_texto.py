@@ -311,7 +311,9 @@ class JanelaComandos(tk.Tk):
         self._dados_tarefas = audio_config if audio_config is not None else {}
         self.orquestrador = criar_orquestrador(publicar=PainelCompartilhado(self._dados_tarefas))
         self.agenda = criar_agente_agenda(llm=None)  # a mesma agenda local da voz (mesmo arquivo)
-        self.leis = AgenteLeis()  # artigos de lei: texto oficial e explicação pelo Gemini
+        # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
+        self.leis = AgenteLeis(
+            avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")))
         self.pastas = AgentePastas()  # "abre a pasta da OAB"
         threading.Thread(target=self.pastas.aquecer, daemon=True).start()
         self.tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa, não esta

@@ -112,7 +112,7 @@ def _item_juris(item) -> dict | None:
         item = {"tese": item}
     if not isinstance(item, dict) or not (item.get("tese") or item.get("referencia")):
         return None
-    return {"referencia": str(item.get("referencia") or "").strip(), "tese": str(item.get("tese") or "").strip(),
+    return {**item, "referencia": str(item.get("referencia") or "").strip(), "tese": str(item.get("tese") or "").strip(),
             "conferir": bool(item.get("conferir"))}
 
 
@@ -296,6 +296,39 @@ def conferir_lei_seca(ficha: dict, textos=None) -> dict:
     return contagem
 
 
+def conferir_jurisprudencia(ficha: dict, vade=None) -> dict:
+    """Confere no vade-mécum do PC cada súmula citada na jurisprudência ("Súmula 7 do STJ", "SV 11", "OJ 191 da SDI-1").
+
+    Achou: o enunciado oficial entra no item ("texto_oficial"), a marca "conferir" sai e a situação fica (uma súmula
+    cancelada aparece como cancelada). O tribunal tem súmulas no banco, mas não essa: "conferido" False e "conferir".
+    Sem as súmulas daquele tribunal no banco (ou sem número na citação), o item fica como veio.
+    """
+    import vade_mecum
+    from agenda_linguagem import preparar
+    from agente_leis import pedido_de_sumula
+
+    vade = vade or vade_mecum.vade_padrao()
+    total = vade.total()["sumulas"]
+    contagem = {"conferidas": 0, "nao_encontradas": 0, "canceladas": 0}
+    for topico in ficha.get("topicos") or []:
+        for item in topico.get("jurisprudencia") or []:
+            pedido = pedido_de_sumula(preparar(f"{item.get('referencia', '')} {item.get('tese', '')}")[1])
+            if not pedido or not pedido["tribunal"]:
+                continue
+            if not any(chave.startswith(pedido["tribunal"] + "_") for chave in total):
+                continue  # o banco ainda não tem as súmulas desse tribunal
+            sumula = vade.sumula(pedido["tribunal"], pedido["tipo"], pedido["numero"], pedido["orgao"])
+            if not sumula:
+                item.update(conferido=False, conferir=True)
+                contagem["nao_encontradas"] += 1
+                continue
+            item.update(conferido=True, conferir=False, texto_oficial=sumula["texto"], situacao=sumula["situacao"])
+            contagem["conferidas"] += 1
+            if sumula["situacao"] in ("cancelada", "revogada", "superada"):
+                contagem["canceladas"] += 1
+    return contagem
+
+
 # ------------------------------------------------------------------ PDF
 def destacar(texto: str, extras=()) -> str:
     """HTML do texto com marca-texto nas palavras de conflito (as da lista e as do próprio tópico)."""
@@ -417,8 +450,13 @@ def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
         itens = []
         for item in topico["jurisprudencia"]:
             aviso = ' <span class="alerta">CONFERIR O NÚMERO</span>' if item["conferir"] else ""
+            if item.get("situacao") in ("cancelada", "revogada", "superada"):
+                aviso += f' <span class="alerta">SÚMULA {item["situacao"].upper()}</span>'
             ref = f"<b>{html.escape(item['referencia'])}</b>: " if item["referencia"] else ""
-            itens.append(f"<li>{ref}{destacar(item['tese'], extras)}{aviso}</li>")
+            oficial = ""
+            if item.get("texto_oficial"):
+                oficial = f'<br/><span class="citacao">Texto oficial: “{destacar(item["texto_oficial"], extras)}”</span>'
+            itens.append(f"<li>{ref}{destacar(item['tese'], extras)}{aviso}{oficial}</li>")
         partes.append(_caixa("jurisprudencia", rotulos["jurisprudencia"], "<ul>" + "".join(itens) + "</ul>"))
     if topico["pegadinhas"]:
         partes.append(_caixa("pegadinha", "Pegadinhas", _ul(topico["pegadinhas"], extras)))
@@ -598,6 +636,17 @@ def _lista_docx(celula, itens, extras=()):
         _texto_com_destaques(celula.add_paragraph(style="List Bullet"), item, extras)
 
 
+def _item_juris_docx(item: dict) -> str:
+    texto = f"{item['referencia']}: {item['tese']}".strip(": ")
+    if item["conferir"]:
+        texto += " (conferir o número)"
+    if item.get("situacao") in ("cancelada", "revogada", "superada"):
+        texto += f" (súmula {item['situacao']})"
+    if item.get("texto_oficial"):
+        texto += f" Texto oficial: “{item['texto_oficial']}”"
+    return texto
+
+
 def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
     from docx import Document
     from docx.shared import Pt
@@ -664,8 +713,7 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
             _caixa_docx(doc, "lei_seca", rotulos["lei_seca"], lei)
         if topico["jurisprudencia"]:
             _caixa_docx(doc, "jurisprudencia", rotulos["jurisprudencia"], lambda c, t=topico, e=extras: _lista_docx(
-                c, [f"{j['referencia']}: {j['tese']}".strip(": ") + (" (conferir o número)" if j["conferir"] else "")
-                    for j in t["jurisprudencia"]], e))
+                c, [_item_juris_docx(j) for j in t["jurisprudencia"]], e))
         if topico["pegadinhas"]:
             _caixa_docx(doc, "pegadinha", "Pegadinhas", lambda c, t=topico, e=extras: _lista_docx(c, t["pegadinhas"], e))
         if topico["exemplo"]:

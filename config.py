@@ -316,6 +316,14 @@ CONTROLE_VOLUME_PASSOS = int(os.getenv("CONTROLE_VOLUME_PASSOS", "3"))
 # original nem a nuvem. Vazio = a marca do controle virtual cadastrado no app (a do usuário é Sony).
 CONTROLE_TV_MARCA = os.getenv("CONTROLE_TV_MARCA", "").strip().lower()
 
+# Vade-mécum (vade_mecum.py): as leis, os códigos e a Constituição do Planalto e as súmulas do STF, do STJ e do TST num
+# banco do PC, para o agente de leis ler sem internet, achar súmulas pelo assunto e mostrar casos reais. Na primeira
+# abertura ele baixa tudo em segundo plano (~15 min) e depois atualiza a cada VADE_MECUM_DIAS dias; "atualiza o
+# vade-mécum" baixa na hora. VADE_MECUM_AUTOMATICO=false só baixa quando pedir.
+CAMINHO_VADE_MECUM = os.getenv("CAMINHO_VADE_MECUM", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "vade_mecum.sqlite3"))
+VADE_MECUM_AUTOMATICO = os.getenv("VADE_MECUM_AUTOMATICO", "true").strip().lower() in {"1", "true", "yes", "on"}
+VADE_MECUM_DIAS = float(os.getenv("VADE_MECUM_DIAS", "15"))
+
 # Intervalos (em segundos)
 INTERVALO_REINDEXACAO = 3600  # 1 hora
 INTERVALO_CACHE_MEMORIA = 300  # 5 minutos

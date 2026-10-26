@@ -569,10 +569,11 @@ class AgenteEstudos(Agente):
     )
 
     def __init__(self, paralelo: int = FICHAS_EM_PARALELO, conferir_lei=ficha_estudo.conferir_lei_seca,
-                 buscar_lei=None, **kwargs):
+                 buscar_lei=None, conferir_sumulas=ficha_estudo.conferir_jurisprudencia, **kwargs):
         super().__init__(**kwargs)
         self.paralelo = paralelo
         self.conferir_lei = conferir_lei  # busca no Planalto o texto dos artigos da lei seca
+        self.conferir_sumulas = conferir_sumulas  # confere no vade-mécum as súmulas citadas
         self.buscar_lei = buscar_lei if buscar_lei is not None else _texto_oficial_citado  # "resumo do artigo 500 do CC"
         self.ao_progredir = None  # o orquestrador liga aqui a publicação do andamento no painel
 
@@ -706,6 +707,13 @@ class AgenteEstudos(Agente):
                 conferencia = self.conferir_lei(ficha) or {}
             except Exception as exc:
                 logger.warning("Não deu para conferir a lei seca: %s", exc)
+        # As súmulas citadas, conferidas no vade-mécum do PC (número certo, texto oficial e se ainda valem).
+        sumulas = {}
+        if any(t["jurisprudencia"] for t in ficha["topicos"]) and self.conferir_sumulas:
+            try:
+                sumulas = self.conferir_sumulas(ficha) or {}
+            except Exception as exc:
+                logger.warning("Não deu para conferir as súmulas: %s", exc)
 
         ficha["fontes"] = list(dict.fromkeys(tarefa.contexto.get("fontes", [])))
         tarefa.contexto["conteudo"] = ficha
@@ -728,6 +736,12 @@ class AgenteEstudos(Agente):
             resumo += f" Conferiu {conferencia['conferidos']} artigo(s) da lei seca no Planalto."
         if conferencia.get("nao_encontrados"):
             resumo += f" {conferencia['nao_encontrados']} artigo(s) citado(s) não existem na lei: estão marcados para conferir."
+        if sumulas.get("conferidas"):
+            resumo += f" Conferiu {sumulas['conferidas']} súmula(s) no vade-mécum."
+        if sumulas.get("nao_encontradas"):
+            resumo += f" {sumulas['nao_encontradas']} súmula(s) citada(s) não existem: estão marcadas para conferir."
+        if sumulas.get("canceladas"):
+            resumo += f" {sumulas['canceladas']} súmula(s) citada(s) já não valem: estão marcadas na ficha."
         if lacunas:
             resumo += f" O teste de estresse achou {lacunas} lacuna(s) e completou a ficha."
         return resumo

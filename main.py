@@ -1175,9 +1175,10 @@ IMPRESSORA = criar_agente_impressora(
 # O aprender um botão roda em segundo plano; o fim volta por avisar.
 CONTROLE = criar_agente_controle(avisar=lambda texto: responder_rapido(texto))
 
-# Artigos de lei (agente_leis.py): lê o texto oficial do Planalto e explica com o Gemini; "não entendi"
-# traz outra explicação, com outra abordagem.
-LEIS = AgenteLeis()
+# Artigos de lei e súmulas (agente_leis.py, com o vade-mécum do PC em vade_mecum.py): lê o texto oficial e explica
+# com o Gemini; "não entendi" traz outra explicação, "me dá um exemplo" um caso real ou prático. O fim da atualização
+# do vade-mécum ("atualiza o vade-mécum") volta por avisar.
+LEIS = AgenteLeis(avisar=lambda texto: responder_rapido(texto))
 
 # Biometria vocal (biometria_voz.py): cadastrar e esquecer vozes, "quem está falando?". O que um convidado
 # (voz que não é a do dono) pode pedir está em responder_ao_convidado.
@@ -1942,6 +1943,33 @@ def inicializar_biblioteca_automatica():
         return False
 
 
+SEGUNDOS_ANTES_DO_VADE_MECUM = 90  # a abertura (Whisper, biblioteca, painel) termina antes do download começar
+
+
+def iniciar_vade_mecum():
+    """Baixa em segundo plano o que falta ou envelheceu no vade-mécum (VADE_MECUM_DIAS), só neste processo."""
+    import config
+
+    if not config.VADE_MECUM_AUTOMATICO:
+        return False
+    try:
+        import vade_mecum
+
+        vade = vade_mecum.vade_padrao()
+        partes = vade_mecum.precisa_atualizar(vade, config.VADE_MECUM_DIAS)
+    except Exception as exc:
+        logger.warning("Vade-mécum indisponível: %s", exc)
+        return False
+    if not partes:
+        return False
+    logger.info("Vade-mécum: atualizo %s daqui a %d s.", ", ".join(partes), SEGUNDOS_ANTES_DO_VADE_MECUM)
+    temporizador = threading.Timer(SEGUNDOS_ANTES_DO_VADE_MECUM, vade_mecum.atualizar_em_segundo_plano,
+                                   args=(vade, partes))
+    temporizador.daemon = True
+    temporizador.start()
+    return True
+
+
 def anunciar_tarefa_concluida(pedido: str, tarefa, canal: str = "voz", mandar_arquivos: bool = False):
     """Chamado pelo orquestrador (em segundo plano) quando os agentes terminam uma tarefa.
 
@@ -2107,6 +2135,7 @@ def main(evento_carregamento=None):
     threading.Thread(target=PASTAS.aquecer, name="indice-de-pastas", daemon=True).start()
     threading.Thread(target=observar_a_tela, name="observar-a-tela", daemon=True).start()
     inicializar_biblioteca_automatica()
+    iniciar_vade_mecum()
     gerenciador_audio = multiprocessing.Manager()
     configuracao_audio = gerenciador_audio.dict({"microfone": None, "saida": ""})
     threading.Thread(target=publicar_status_painel, args=(configuracao_audio,), daemon=True).start()

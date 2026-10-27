@@ -11,6 +11,7 @@ O método (análise crítica focada na prova), em quatro filtros:
 Fora do direito, os mesmos campos ganham rótulos equivalentes (conceito, regra geral, exceções, números e
 fórmulas, texto-base, posições consolidadas). Nada aqui chama o LLM.
 """
+import contextvars
 import difflib
 import html
 import logging
@@ -35,6 +36,23 @@ CORES = {
     "jurisprudencia": ("#15803D", "#EFFBF3"), "pegadinha": ("#A16207", "#FEFCE8"), "exemplo": ("#475569", "#F8FAFC"),
     "estresse": ("#B91C1C", "#FEF2F2"), "destaque": "#FDE047",
 }
+# As escolhas da janela de estudos para o arquivo que está sendo gerado (preferencias_estudo.visual): cores do tema,
+# letra, partes e marca-texto. Sem elas, o padrão.
+_VISUAL = contextvars.ContextVar("visual_da_ficha", default=None)
+
+
+def _visual() -> dict:
+    return _VISUAL.get() or {}
+
+
+def _cores() -> dict:
+    return _visual().get("cores") or CORES
+
+
+def _parte(chave: str) -> bool:
+    return (_visual().get("partes") or {}).get(chave, True)
+
+
 INCIDENCIAS = {"alta": ("ALTA", "#B91C1C"), "media": ("MÉDIA", "#B45309"), "baixa": ("BAIXA", "#64748B")}
 # Legenda de cores (rótulos curtos, para caber numa linha).
 LEGENDA = {
@@ -333,6 +351,8 @@ def conferir_jurisprudencia(ficha: dict, vade=None) -> dict:
 def destacar(texto: str, extras=()) -> str:
     """HTML do texto com marca-texto nas palavras de conflito (as da lista e as do próprio tópico)."""
     seguro = html.escape(str(texto or ""))
+    if not _visual().get("marca_texto", True):
+        return seguro
     intervalos = [m.span() for m in RE_CONFLITO.finditer(seguro)]
     padroes = [re.escape(html.escape(p.strip())) for p in extras if p and len(p.strip()) > 2]
     if padroes:
@@ -356,13 +376,14 @@ def destacar(texto: str, extras=()) -> str:
 
 
 def _css() -> str:
-    c = CORES
+    c = _cores()
+    letra = 12 if _visual().get("letra") == "grande" else 10.5
     caixas = "\n".join(
         f".{nome} {{ background-color: {fundo}; border-left: 4px solid {borda}; }}\n.{nome} .rot {{ color: {borda}; }}"
         for nome, (borda, fundo) in ((k, v) for k, v in c.items() if isinstance(v, tuple))
     )
     return f"""
-body {{ font-family: sans-serif; font-size: 10.5pt; color: {c['texto']}; line-height: 1.4; }}
+body {{ font-family: sans-serif; font-size: {letra}pt; color: {c['texto']}; line-height: 1.4; }}
 .topo {{ background-color: {c['marca']}; padding: 12pt 14pt; margin-bottom: 8pt; }}
 .titulo {{ color: #FFFFFF; font-size: 21pt; font-weight: bold; margin: 0; }}
 .sub {{ color: {c['ouro']}; font-size: 10pt; margin: 2pt 0 0 0; }}
@@ -412,7 +433,7 @@ def _selo(incidencia: str) -> str:
 def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
     extras = qualificadoras(topico["palavras_de_conflito"])
     partes = [f'<h2><span class="num">{numero}</span> {html.escape(topico["titulo"])} &nbsp;{_selo(topico["incidencia"])}</h2>']
-    if topico["como_cai"]:
+    if topico["como_cai"] and _parte("banca"):
         partes.append(f'<p class="cai-linha"><b>Como cai:</b> {destacar(topico["como_cai"], extras)}</p>')
     if topico["explicacao"]:
         partes.append('<div class="entenda">' + "".join(f"<p>{destacar(p, extras)}</p>" for p in topico["explicacao"]) + "</div>")
@@ -425,12 +446,12 @@ def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
         partes.append(_caixa("regra", rotulos["regra"], f'<p class="regra-texto">{destacar(topico["regra"], extras)}</p>'))
     if topico["excecoes"]:
         partes.append(_caixa("excecoes", rotulos["excecoes"], _ul(topico["excecoes"], extras)))
-    if topico["prazos_e_efeitos"]:
+    if topico["prazos_e_efeitos"] and _parte("prazos"):
         linhas = "".join(f"<tr><td>{destacar(p['item'], extras)}</td><td><b>{destacar(p['valor'], extras)}</b></td>"
                          f"<td>{html.escape(p.get('fundamento') or '')}</td></tr>" for p in topico["prazos_e_efeitos"])
-        partes.append(f'<p class="rot" style="color: {CORES["prazos"][0]}">{html.escape(rotulos["prazos"].upper())}</p>'
+        partes.append(f'<p class="rot" style="color: {_cores()["prazos"][0]}">{html.escape(rotulos["prazos"].upper())}</p>'
                       f'<table class="t-prazos"><tr><th>O quê</th><th>Prazo / efeito</th><th>Fundamento</th></tr>{linhas}</table>')
-    if topico["lei_seca"]:
+    if topico["lei_seca"] and _parte("lei_seca"):
         corpo = ""
         for item in topico["lei_seca"]:
             selo = ""
@@ -446,7 +467,7 @@ def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
             if item.get("pegadinha"):
                 corpo += f"<p><b>Pegadinha:</b> {destacar(item['pegadinha'], extras)}</p>"
         partes.append(_caixa("lei_seca", rotulos["lei_seca"], corpo))
-    if topico["jurisprudencia"]:
+    if topico["jurisprudencia"] and _parte("jurisprudencia"):
         itens = []
         for item in topico["jurisprudencia"]:
             aviso = ' <span class="alerta">CONFERIR O NÚMERO</span>' if item["conferir"] else ""
@@ -458,9 +479,9 @@ def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
                 oficial = f'<br/><span class="citacao">Texto oficial: “{destacar(item["texto_oficial"], extras)}”</span>'
             itens.append(f"<li>{ref}{destacar(item['tese'], extras)}{aviso}{oficial}</li>")
         partes.append(_caixa("jurisprudencia", rotulos["jurisprudencia"], "<ul>" + "".join(itens) + "</ul>"))
-    if topico["pegadinhas"]:
+    if topico["pegadinhas"] and _parte("pegadinhas"):
         partes.append(_caixa("pegadinha", "Pegadinhas", _ul(topico["pegadinhas"], extras)))
-    if topico["exemplo"]:
+    if topico["exemplo"] and _parte("exemplo"):
         partes.append(_caixa("exemplo", "Exemplo", f"<p>{destacar(topico['exemplo'], extras)}</p>"))
     if topico["teste_de_estresse"]:
         partes.append(_caixa("estresse", "Acrescentado no teste de estresse", _ul(topico["teste_de_estresse"], extras)))
@@ -474,6 +495,16 @@ def _html_topico(numero: int, topico: dict, rotulos: dict) -> str:
 LETRAS = "ABCD"
 
 
+COMO_ESTUDAR = [
+    "Comece pelo mapa de incidência: estude primeiro os tópicos de peso alto.",
+    "Em cada tópico, leia o 'Como cai' antes da explicação: você passa a ler procurando a resposta da prova.",
+    "Decore a regra numa linha e gaste o tempo nas exceções: é delas que saem as questões.",
+    "Leia a lei seca em voz alta e repare no marca-texto: a banca copia o artigo trocando uma dessas palavras.",
+    "Faça o teste de estresse sem olhar. Errou? Volte ao tópico indicado e reescreva a tese com as suas palavras.",
+    "Revise pelos flashcards (Anki) e pelo quadro de prazos na véspera.",
+]
+
+
 def html_da_ficha(ficha: dict) -> str:
     rotulos = ROTULOS[ficha.get("area", "geral")]
     partes = [
@@ -484,22 +515,22 @@ def html_da_ficha(ficha: dict) -> str:
     ]
     if ficha.get("visao_geral"):
         partes.append(f"<p>{destacar(ficha['visao_geral'])}</p>")
-    if ficha.get("como_a_banca_cobra"):
+    if ficha.get("como_a_banca_cobra") and _parte("banca"):
         partes.append(_caixa("banca", "Como a banca cobra este assunto", _ul(ficha["como_a_banca_cobra"])))
     topicos = ficha.get("topicos") or []
-    if topicos:
+    if topicos and _parte("mapa"):
         linhas = "".join(f"<tr><td>{n}. {html.escape(t['titulo'])}</td><td>{_selo(t['incidencia'])}</td>"
                          f"<td>{destacar(t['como_cai'])}</td></tr>" for n, t in enumerate(topicos, start=1))
         partes.append(f'<h1>Mapa de incidência</h1><table class="t-padrao"><tr><th>Tópico</th><th>Peso</th>'
                       f"<th>Como vira questão</th></tr>{linhas}</table>")
-    chips = "".join(f'<td><span class="selo" style="background-color: {CORES[k][0]}">{html.escape(v.upper())}</span></td>'
-                    for k, v in LEGENDA[ficha.get("area", "geral")])
+    chips = "".join(f'<td><span class="selo" style="background-color: {_cores()[k][0]}">{html.escape(v.upper())}</span></td>'
+                    for k, v in LEGENDA[ficha.get("area", "geral")] if _parte(k) and (k != "estresse" or ficha.get("questoes")))
     partes.append(f'<p class="pequeno">Como ler: cada cor é sempre a mesma parte da ficha. '
                   f'<span class="mt">Marca-texto</span> = palavra que muda o sentido (pegadinha).</p>'
                   f'<table class="legenda"><tr>{chips}</tr></table>')
     for numero, topico in enumerate(topicos, start=1):
         partes.append(_html_topico(numero, topico, rotulos))
-    prazos = quadro_de_prazos(ficha)
+    prazos = quadro_de_prazos(ficha) if _parte("prazos") else []
     if prazos:
         linhas = "".join(f"<tr><td>{html.escape(p['topico'])}</td><td>{destacar(p['item'])}</td><td><b>{destacar(p['valor'])}</b></td>"
                          f"<td>{html.escape(p.get('fundamento') or '')}</td></tr>" for p in prazos)
@@ -522,28 +553,32 @@ def html_da_ficha(ficha: dict) -> str:
         linhas = "".join(f"<tr><td>{destacar(c['frente'])}</td><td>{destacar(c['verso'])}</td></tr>" for c in flashcards)
         partes.append('<h1>Flashcards</h1><p class="pequeno">Os mesmos cartões estão no arquivo para o Anki, na mesma pasta '
                       f'(Arquivo &gt; Importar).</p><table class="t-padrao"><tr><th>Pergunta</th><th>Resposta</th></tr>{linhas}</table>')
-    if ficha.get("glossario"):
+    if ficha.get("glossario") and _parte("glossario"):
         linhas = "".join(f"<tr><td><b>{html.escape(g['termo'])}</b></td><td>{destacar(g['definicao'])}</td></tr>"
                          for g in ficha["glossario"])
         partes.append(f'<h1>Glossário</h1><table class="t-padrao"><tr><th>Termo</th><th>Definição</th></tr>{linhas}</table>')
     if ficha.get("fora_das_fontes"):
         partes.append("<h1>Complementado além das suas fontes</h1><p class=\"pequeno\">Veio do conhecimento geral da IA, não "
                       "dos seus arquivos: confira no material da aula.</p>" + _ul(ficha["fora_das_fontes"]))
-    partes.append("<h1>Como estudar com esta ficha</h1>" + _ul([
-        "Comece pelo mapa de incidência: estude primeiro os tópicos de peso alto.",
-        "Em cada tópico, leia o 'Como cai' antes da explicação: você passa a ler procurando a resposta da prova.",
-        "Decore a regra numa linha e gaste o tempo nas exceções: é delas que saem as questões.",
-        "Leia a lei seca em voz alta e repare no marca-texto: a banca copia o artigo trocando uma dessas palavras.",
-        "Faça o teste de estresse sem olhar. Errou? Volte ao tópico indicado e reescreva a tese com as suas palavras.",
-        "Revise pelos flashcards (Anki) e pelo quadro de prazos na véspera.",
-    ]))
+    if _parte("como_estudar"):
+        partes.append("<h1>Como estudar com esta ficha</h1>" + _ul(COMO_ESTUDAR))
     fontes = _textos(ficha.get("fontes"))
     if fontes:
         partes.append('<h1>Fontes</h1><ol class="pequeno">' + "".join(f"<li>{html.escape(f)}</li>" for f in fontes) + "</ol>")
     return "".join(partes)
 
 
-def gerar_pdf_ficha(ficha: dict, caminho: str) -> str:
+def gerar_pdf_ficha(ficha: dict, caminho: str, visual: dict = None) -> str:
+    """O PDF da ficha. `visual` (preferencias_estudo.visual) traz as cores, a letra, as partes e o marca-texto; sem ele,
+    vale o que ficou guardado na ficha (`ficha["visual"]`) ou o padrão."""
+    marca = _VISUAL.set(visual if visual is not None else ficha.get("visual"))
+    try:
+        return _gerar_pdf_ficha(ficha, caminho)
+    finally:
+        _VISUAL.reset(marca)
+
+
+def _gerar_pdf_ficha(ficha: dict, caminho: str) -> str:
     import pymupdf
 
     historia = pymupdf.Story(html=html_da_ficha(ficha), user_css=_css())
@@ -620,7 +655,7 @@ def _sombrear(celula, fundo: str, borda: str):
 def _caixa_docx(doc, classe: str, rotulo: str, escrever):
     from docx.shared import Pt
 
-    borda, fundo = CORES[classe]
+    borda, fundo = _cores()[classe]
     tabela = doc.add_table(rows=1, cols=1)
     celula = tabela.cell(0, 0)
     _sombrear(celula, fundo, borda)
@@ -647,25 +682,34 @@ def _item_juris_docx(item: dict) -> str:
     return texto
 
 
-def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
+def gerar_docx_ficha(ficha: dict, caminho: str, visual: dict = None) -> str:
+    """O Word da ficha, com as mesmas escolhas do PDF (veja `gerar_pdf_ficha`)."""
+    marca = _VISUAL.set(visual if visual is not None else ficha.get("visual"))
+    try:
+        return _gerar_docx_ficha(ficha, caminho)
+    finally:
+        _VISUAL.reset(marca)
+
+
+def _gerar_docx_ficha(ficha: dict, caminho: str) -> str:
     from docx import Document
     from docx.shared import Pt
 
     rotulos = ROTULOS[ficha.get("area", "geral")]
     doc = Document()
     doc.styles["Normal"].font.name = "Calibri"
-    doc.styles["Normal"].font.size = Pt(10.5)
+    doc.styles["Normal"].font.size = Pt(12 if _visual().get("letra") == "grande" else 10.5)
     for nivel, tamanho in (("Title", 24), ("Heading 1", 15), ("Heading 2", 13)):
-        doc.styles[nivel].font.color.rgb = _rgb(CORES["marca"])
+        doc.styles[nivel].font.color.rgb = _rgb(_cores()["marca"])
         doc.styles[nivel].font.size = Pt(tamanho)
     doc.add_paragraph(ficha.get("titulo") or "Ficha de estudo", style="Title")
-    _texto_com_destaques(doc.add_paragraph(), "Ficha tática de estudo · análise crítica focada na prova", cor=CORES["ouro"])
+    _texto_com_destaques(doc.add_paragraph(), "Ficha tática de estudo · análise crítica focada na prova", cor=_cores()["ouro"])
     if ficha.get("visao_geral"):
         _texto_com_destaques(doc.add_paragraph(), ficha["visao_geral"])
-    if ficha.get("como_a_banca_cobra"):
+    if ficha.get("como_a_banca_cobra") and _parte("banca"):
         _caixa_docx(doc, "banca", "Como a banca cobra este assunto", lambda c: _lista_docx(c, ficha["como_a_banca_cobra"]))
     topicos = ficha.get("topicos") or []
-    if topicos:
+    if topicos and _parte("mapa"):
         doc.add_heading("Mapa de incidência", level=1)
         tabela = doc.add_table(rows=1, cols=3)
         tabela.style = "Table Grid"
@@ -679,10 +723,10 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
     for n, topico in enumerate(topicos, start=1):
         extras = qualificadoras(topico["palavras_de_conflito"])
         doc.add_heading(f"{n}. {topico['titulo']} (incidência {INCIDENCIAS[topico['incidencia']][0].lower()})", level=2)
-        if topico["como_cai"]:
+        if topico["como_cai"] and _parte("banca"):
             paragrafo = doc.add_paragraph()
             paragrafo.add_run("Como cai: ").bold = True
-            _texto_com_destaques(paragrafo, topico["como_cai"], extras, cor=CORES["banca"][0])
+            _texto_com_destaques(paragrafo, topico["como_cai"], extras, cor=_cores()["banca"][0])
         for texto in topico["explicacao"]:
             _texto_com_destaques(doc.add_paragraph(), texto, extras)
         if topico["natureza"] or topico["requisitos"]:
@@ -696,10 +740,10 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
                         lambda c, t=topico, e=extras: _texto_com_destaques(c.add_paragraph(), t["regra"], e, negrito=True))
         if topico["excecoes"]:
             _caixa_docx(doc, "excecoes", rotulos["excecoes"], lambda c, t=topico, e=extras: _lista_docx(c, t["excecoes"], e))
-        if topico["prazos_e_efeitos"]:
+        if topico["prazos_e_efeitos"] and _parte("prazos"):
             _caixa_docx(doc, "prazos", rotulos["prazos"], lambda c, t=topico, e=extras: _lista_docx(
                 c, [f"{p['item']}: {p['valor']}" + (f" ({p['fundamento']})" if p.get("fundamento") else "") for p in t["prazos_e_efeitos"]], e))
-        if topico["lei_seca"]:
+        if topico["lei_seca"] and _parte("lei_seca"):
             def lei(c, t=topico, e=extras):
                 for item in t["lei_seca"]:
                     selo = {True: " (texto conferido no Planalto)", False: " (não achei no Planalto: confira o número)"}.get(item.get("conferido"), "")
@@ -711,12 +755,12 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
                     if item.get("pegadinha"):
                         _texto_com_destaques(c.add_paragraph(), f"Pegadinha: {item['pegadinha']}", e)
             _caixa_docx(doc, "lei_seca", rotulos["lei_seca"], lei)
-        if topico["jurisprudencia"]:
+        if topico["jurisprudencia"] and _parte("jurisprudencia"):
             _caixa_docx(doc, "jurisprudencia", rotulos["jurisprudencia"], lambda c, t=topico, e=extras: _lista_docx(
                 c, [_item_juris_docx(j) for j in t["jurisprudencia"]], e))
-        if topico["pegadinhas"]:
+        if topico["pegadinhas"] and _parte("pegadinhas"):
             _caixa_docx(doc, "pegadinha", "Pegadinhas", lambda c, t=topico, e=extras: _lista_docx(c, t["pegadinhas"], e))
-        if topico["exemplo"]:
+        if topico["exemplo"] and _parte("exemplo"):
             _caixa_docx(doc, "exemplo", "Exemplo",
                         lambda c, t=topico, e=extras: _texto_com_destaques(c.add_paragraph(), t["exemplo"], e))
         if topico["teste_de_estresse"]:
@@ -725,8 +769,8 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
         for ponto in topico["pontos_chave"]:
             _texto_com_destaques(doc.add_paragraph(style="List Bullet"), ponto, extras)
         if topico["fonte"]:
-            _texto_com_destaques(doc.add_paragraph(), f"Fonte: {topico['fonte']}", cor=CORES["suave"])
-    prazos = quadro_de_prazos(ficha)
+            _texto_com_destaques(doc.add_paragraph(), f"Fonte: {topico['fonte']}", cor=_cores()["suave"])
+    prazos = quadro_de_prazos(ficha) if _parte("prazos") else []
     if prazos:
         doc.add_heading(f"Quadro geral: {rotulos['prazos'].lower()}", level=1)
         tabela = doc.add_table(rows=1, cols=4)
@@ -759,7 +803,7 @@ def gerar_docx_ficha(ficha: dict, caminho: str) -> str:
         for cartao in ficha["flashcards"]:
             celulas = tabela.add_row().cells
             celulas[0].text, celulas[1].text = cartao["frente"], cartao["verso"]
-    if ficha.get("glossario"):
+    if ficha.get("glossario") and _parte("glossario"):
         doc.add_heading("Glossário", level=1)
         for item in ficha["glossario"]:
             paragrafo = doc.add_paragraph()

@@ -151,7 +151,68 @@ function mostrarTela(nome) {
     $("ponto-conversa").hidden = true;
     rolarParaBaixo();
   }
+  if (nome === "estudos" && window.JanelaDeEstudos) {
+    window.JanelaDeEstudos.usar(() => estudosDoApp);
+    window.JanelaDeEstudos.carregar();
+  }
 }
+
+// ------------------------------------------------------------------ estudos
+// A tela Estudos usa o componente da janela [ estudos ] do painel (/visual/estudos.js); aqui só a ponte com o servidor.
+function escolherArquivos(aceita, multiplos = true) {
+  return new Promise((pronto) => {
+    const entrada = document.createElement("input");
+    entrada.type = "file";
+    entrada.accept = aceita;
+    entrada.multiple = multiplos;
+    entrada.addEventListener("change", () => pronto([...entrada.files]));
+    entrada.click();  // ainda dentro do toque: o iPhone só abre a escolha assim
+  });
+}
+
+async function jsonDe(caminho, opcoes = {}) {
+  return (await api(caminho, opcoes)).json();
+}
+
+function postarJson(caminho, dados) {
+  return jsonDe(caminho, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dados || {}) });
+}
+
+const estudosDoApp = {
+  estudos: () => jsonDe("/api/estudos"),
+  estudos_salvar: (dados) => postarJson("/api/estudos", dados),
+  estudos_padrao: () => postarJson("/api/estudos/padrao"),
+  async estudos_fotos_adicionar() {
+    const fotos = await escolherArquivos("image/*");
+    let ultima = { ok: true, mensagem: "", dados: await jsonDe("/api/estudos") };
+    for (const foto of fotos) {
+      ultima = await jsonDe("/api/estudos/foto", { method: "POST", body: foto, headers: { "X-Nome": encodeURIComponent(foto.name) } });
+      if (!ultima.ok) break;
+    }
+    return ultima;
+  },
+  estudos_foto: async (id) => (await jsonDe(`/api/estudos/foto/${encodeURIComponent(id)}`)).src,
+  estudos_foto_apagar: (id) => postarJson(`/api/estudos/foto/${encodeURIComponent(id)}/apagar`),
+  estudos_guia: () => postarJson("/api/estudos/guia"),
+  async estudos_peca_arquivos() {
+    const arquivos = await escolherArquivos("image/*,application/pdf,.doc,.docx,.txt");
+    estudosDoApp._arquivos = arquivos;
+    return arquivos.map((a) => a.name);
+  },
+  async estudos_peca(tipo, fatos) {
+    const ids = [];
+    for (const arquivo of estudosDoApp._arquivos || []) {
+      const resposta = await jsonDe("/api/estudos/peca-arquivo", {
+        method: "POST", body: arquivo, headers: { "X-Nome": encodeURIComponent(arquivo.name) } });
+      ids.push(resposta.id);
+    }
+    estudosDoApp._arquivos = [];
+    const resposta = await postarJson("/api/estudos/peca", { tipo, fatos, arquivos: ids });
+    if (resposta.ok) aviso("A peça entrou na fila; o resultado chega na conversa.");
+    return resposta;
+  },
+  _arquivos: [],
+};
 
 const ATALHOS = {
   agenda: () => mostrarTela("agenda"),
@@ -160,8 +221,7 @@ const ATALHOS = {
   controle: () => mostrarTela("controle"),
   arquivos: () => $("escolher-arquivo").click(),
   foto: () => $("tirar-foto").click(),
-  estudos: () => sugerir(["Quero estudar responsabilidade civil para a OAB", "Resumo da matéria de processo civil",
-                          "Crie aulas de direito tributário", "Faz 20 flashcards de direito penal"], "Quero estudar "),
+  estudos: () => mostrarTela("estudos"),
   impressora: () => {
     sugerir(["Imprime minha agenda de hoje", "Imprime o último PDF", "Cancela a impressão"]);
     enviarPedido("A impressora está ligada?");
@@ -1820,6 +1880,12 @@ function iniciar() {
   }, { passive: true });
 
   document.querySelectorAll("[data-acao]").forEach((b) => b.addEventListener("click", () => ATALHOS[b.dataset.acao]()));
+  // Na tela Estudos, os atalhos de pedido levam à conversa com o começo da frase escrito.
+  document.querySelectorAll("#tela-estudos [data-pedido]").forEach((b) => b.addEventListener("click", () => {
+    mostrarTela("conversa");
+    $("campo").value = b.dataset.pedido;
+    $("campo").focus();
+  }));
   document.querySelectorAll("[data-tela]").forEach((b) => b.addEventListener("click", () => { mostrarTela(b.dataset.tela); som("abrir"); }));
 
   $("form-pedido").addEventListener("submit", (e) => { e.preventDefault(); enviarPedido($("campo").value); });

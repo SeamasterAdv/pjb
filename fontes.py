@@ -29,6 +29,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from agentes.pecas import pedido_de_peca
+
 logger = logging.getLogger(__name__)
 
 VALIDADE_DOS_RECENTES = 20 * 60  # "isso" é o que chegou até 20 min atrás
@@ -252,6 +254,9 @@ RE_CANCELAR = re.compile(r"^(?:nao|deixa|deixa\W+pra\W+la|nada|esquece|cancela|n
 # Só os demonstrativos: "o PDF da OAB" não é "o que acabei de mandar"; "o PDF" sozinho, sem mais nada, é (veja `fala_do_recebido`).
 RE_REFERE = re.compile(r"\b(?:isso|isto|disso|disto|nisso|nisto|esse|essa|este|esta|desse|dessa|deste|desta|nesse|nessa|neste|nesta|nele|nela|dele|dela|ele|ela|eles|elas|o\W+que\W+(?:eu\W+)?(?:mandei|enviei|acabei\W+de\W+\w+)|"
                        r"recebid[oa]s?|todos|todas|tudo|ultim[oa]|aqui)\b")
+# "Faz a peça correspondente", "a peça cabível", "a peça desse caso", "do enunciado": a peça é do caso que acabou de chegar.
+RE_REFERE_AO_CASO = re.compile(r"\b(?:correspondente|cabive\w*|(?:desse|deste|do|nesse|neste)\W+caso|da\W+foto|do\W+enunciado|"
+                               r"da\W+questao|do\W+problema)\b")
 RE_TIPO = re.compile(r"\b(?:pdf|word|docx?|planilha|excel|xlsx?|powerpoint|pptx?|apresentacao|foto|fotos|imagem|imagens|print|arquivos?|"
                      r"documentos?|texto)\b")
 # Pergunta sobre o conteúdo do arquivo: "qual o valor do aluguel e a multa?", "quando vence?", "tem cláusula de reajuste?"
@@ -296,11 +301,13 @@ class AgenteFontes:
     def __init__(self, registro: Registro, pasta_recebidos: str, pasta_arquivados: str, importar_fonte=None, impressora=None,
                  pastas=None, scanner=None, extrair_texto=None, llm=None, enviar_zap=None, avisar=None, relogio=time.time,
                  em_segundo_plano=None, limite_mb: float = 50.0, categoria: str = "fontes_recebidas", nuvem=None,
-                 ia_padrao: str = "auto", pessoal=None, estudar=None):
+                 ia_padrao: str = "auto", pessoal=None, estudar=None, peca=None):
         self.registro, self.pasta_recebidos, self.pasta_arquivados = registro, pasta_recebidos, pasta_arquivados
         # `estudar(caminhos, pedido, canal, ia)` põe a ficha de estudo na fila dos agentes e devolve a mensagem de início
-        # (Orquestrador.enviar_estudo_de_arquivos); o processo que tem o orquestrador liga aqui.
+        # (Orquestrador.enviar_estudo_de_arquivos); o processo que tem o orquestrador liga aqui. `peca(caminhos, pedido,
+        # canal, ia)` faz o mesmo com a peça processual do caso (Orquestrador.enviar_peca).
         self.estudar = estudar
+        self.peca = peca
         self.importar_fonte, self.impressora, self.pastas, self.scanner = importar_fonte, impressora, pastas, scanner
         self.extrair_texto, self.llm, self.enviar_zap = extrair_texto, llm, enviar_zap
         self.avisar = avisar or (lambda texto, canal: None)  # resposta que sai depois (o escaneamento leva ~20 s)
@@ -444,6 +451,9 @@ class AgenteFontes:
             # A ficha no lugar da leitura rápida; "e imprime" e "me manda" ficam para quando ela ficar pronta (o orquestrador
             # oferece a impressão e manda os arquivos), não para o arquivo recebido.
             acoes = [a for a in acoes if a not in ("ler", "imprimir", "enviar")] + ["estudar"]
+        if self.peca is not None and pedido_de_peca(t) is not None:
+            # "Faz a peça desse caso": a peça no lugar da leitura (e da ficha); imprimir e mandar ficam para quando ela ficar pronta.
+            acoes = [a for a in acoes if a not in ("ler", "imprimir", "enviar", "estudar")] + ["peca"]
         return acoes
 
     def _alvos(self, t: str, acoes: list[str]):
@@ -456,6 +466,12 @@ class AgenteFontes:
         so_ler = set(acoes) <= {"ler"}
         recentes_para_ler = [r for r in recentes if self.relogio() - r.recebido_em <= VALIDADE_DA_LEITURA]
 
+        if "peca" in acoes and "escanear" not in acoes:
+            # Com o arquivo citado ("desse caso", "a peça correspondente") ou respondendo a "o que faço com ele?"; sem arquivo
+            # recente, a peça é dos agentes de sempre (com os fatos do próprio pedido).
+            if recentes and (RE_REFERE.search(t) or RE_REFERE_AO_CASO.search(t) or self.esperando_resposta()):
+                return self._rajada(t, recentes), "", False
+            return None, "", False
         if "estudar" in acoes and "escanear" not in acoes:
             # Só com o arquivo citado ("desse PDF", "disso") ou como resposta a "o que faço com ele?": "resumo para a prova de
             # história" sem arquivo é do agente de estudos de sempre.
@@ -522,7 +538,9 @@ class AgenteFontes:
     # ============================================================== execução
     def _aplicar(self, acoes: list[str], alvos: list[Recebido], original: str, t: str, canal: str, ia: str | None = None) -> str:
         falas, pendentes = [], []
-        if "estudar" in acoes:
+        if "peca" in acoes:
+            falas.append(self._peca(alvos, original, canal, ia))
+        elif "estudar" in acoes:
             falas.append(self._estudar(alvos, original, canal, ia))
         elif "ler" in acoes:
             falas.append(self._ler(alvos, original, canal, ia=ia))
@@ -556,6 +574,23 @@ class AgenteFontes:
             return "Não consegui começar a ficha de estudo desse arquivo."
         for alvo in alvos:
             self.registro.atualizar(alvo.id, "ficha de estudo")
+        return resposta
+
+    def _peca(self, alvos: list[Recebido], pedido: str, canal: str, ia: str | None = None) -> str:
+        """A peça processual do caso que chegou (a foto ou o PDF do enunciado, documentos): os fatos vão para o Claude, com o
+        Gemini de reserva (`peca`, ligado ao orquestrador). "Só no PC" no pedido faz a peça no Ollama."""
+        caminhos = [a.caminho for a in alvos if not self._pessoal(a.caminho)]
+        if not caminhos:
+            return "Esse arquivo é pessoal (diário, memória ou dados), então não faço peça com ele."
+        try:
+            resposta = self.peca(caminhos, pedido, canal, ia)
+        except Exception as exc:
+            logger.warning("Não consegui começar a peça: %s", exc)
+            return f"Não consegui começar a peça: {exc}."
+        if not resposta:
+            return "Não consegui começar a peça desse caso."
+        for alvo in alvos:
+            self.registro.atualizar(alvo.id, "peça processual")
         return resposta
 
     def _ler(self, alvos: list[Recebido], pedido: str, canal: str, confirmar_assunto: bool = False, ia: str | None = None) -> str:
@@ -815,7 +850,7 @@ class AgenteFontes:
         n = len(sessao.paginas)
         resultado = f"Escaneei {'a página' if n == 1 else 'mais uma página'}: o PDF tem {n} página{'s' if n != 1 else ''}."
         if depois:
-            acoes = [a for a in depois if a in {"ler", "estudar", "fonte", "arquivar", "imprimir", "enviar"}]
+            acoes = [a for a in depois if a in {"ler", "estudar", "peca", "fonte", "arquivar", "imprimir", "enviar"}]
             extra = self._aplicar(acoes, [recebido], t, t, canal, ia)
             self.avisar(f"{resultado} {extra}".strip(), canal)
             return

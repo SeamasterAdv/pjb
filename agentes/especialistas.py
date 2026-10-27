@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import preferencias_estudo
 from agentes import ficha_estudo, geradores
 from agentes.base import Agente, Tarefa, TarefaImpossivel, normalizar
 
@@ -173,8 +174,10 @@ class AgenteBiblioteca(Agente):
         return f"Encontrou trechos em {len(arquivos)} documento(s) seu(s): {', '.join(a.strip() for a in arquivos[:4])}."
 
     def _guardar_fontes(self, tarefa: Tarefa, caminhos: list, trechos: dict) -> str:
-        """Junta as fontes em `contexto["biblioteca"]`: arquivos inteiros quando cabem; dos grandes, os trechos achados."""
-        if tarefa.fontes_no_claude:
+        """Junta as fontes em `contexto["biblioteca"]`: arquivos inteiros quando cabem; dos grandes, os trechos achados.
+
+        A peça processual também lê os arquivos do caso inteiros: o enunciado e os documentos são a base dela."""
+        if tarefa.fontes_no_claude or tarefa.tipo == "peca":
             if self.limite_fontes is None:
                 from config import LIMITE_FONTES_ESTUDO
                 self.limite_fontes = LIMITE_FONTES_ESTUDO
@@ -576,6 +579,12 @@ class AgenteEstudos(Agente):
         self.conferir_sumulas = conferir_sumulas  # confere no vade-mécum as súmulas citadas
         self.buscar_lei = buscar_lei if buscar_lei is not None else _texto_oficial_citado  # "resumo do artigo 500 do CC"
         self.ao_progredir = None  # o orquestrador liga aqui a publicação do andamento no painel
+        self._preferencias = None  # as escolhas da janela de estudos para a tarefa de agora (tarefa.contexto)
+
+    def _sistema(self, instrucoes: str = None) -> str:
+        """As instruções de cada etapa e, no fim, o que a pessoa escolheu na janela de estudos (tamanho, estilo, foco,
+        partes, instruções e o guia das fotos de exemplo)."""
+        return super()._sistema(instrucoes) + preferencias_estudo.bloco_do_prompt(self._preferencias or None)
 
     def _avisar(self, tarefa: Tarefa, etapa: str):
         tarefa.etapa_atual = etapa
@@ -603,15 +612,17 @@ class AgenteEstudos(Agente):
 
     def _analisar(self, tarefa: Tarefa, materia: bool) -> dict:
         self._avisar(tarefa, "analisando como o assunto cai na prova")
-        escopo = ("Esta análise prepara a ficha de estudo do arquivo que o usuário mandou: cubra todo o conteúdo dele, em 3 a "
-                  "16 tópicos conforme o tamanho." if materia and tarefa.contexto.get("arquivo_recebido") else
-                  "Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em 6 a 16 "
-                  "tópicos." if materia else
-                  "Esta análise prepara a ficha de um assunto, em 2 a 8 tópicos conforme o tamanho dele (um artigo de lei "
-                  "isolado pede de 2 a 4: o caput, os parágrafos e incisos que caem, e os institutos que ele usa).")
+        # Quantos tópicos: pelo tamanho escolhido na janela de estudos (normal: 6 a 16 na matéria, 2 a 8 num assunto).
+        minimo, maximo = preferencias_estudo.faixa_de_topicos(self._preferencias or {}, materia)
+        escopo = (f"Esta análise prepara a ficha de estudo do arquivo que o usuário mandou: cubra todo o conteúdo dele, em 3 a "
+                  f"{maximo} tópicos conforme o tamanho." if materia and tarefa.contexto.get("arquivo_recebido") else
+                  f"Esta análise prepara o resumo completo de uma matéria: cubra a matéria inteira das fontes, em {minimo} a "
+                  f"{maximo} tópicos." if materia else
+                  f"Esta análise prepara a ficha de um assunto, em {minimo} a {maximo} tópicos conforme o tamanho dele (um "
+                  "artigo de lei isolado pede de 2 a 4: o caput, os parágrafos e incisos que caem, e os institutos que ele usa).")
         plano = self.pedir_json(f"{self._base(tarefa, materia)}{_bloco_correcao(tarefa)}", max_tokens=4000,
                                 sistema=self._sistema(f"{self.instrucoes} {escopo}"))
-        topicos = [t for t in plano.get("topicos") or [] if isinstance(t, dict) and t.get("titulo")][:16 if materia else 8]
+        topicos = [t for t in plano.get("topicos") or [] if isinstance(t, dict) and t.get("titulo")][:maximo]
         if not topicos:
             raise ValueError("a análise da matéria veio sem tópicos")
         plano["topicos"] = topicos
@@ -664,6 +675,7 @@ class AgenteEstudos(Agente):
         return json.dumps({"titulo": ficha.get("titulo"), "topicos": enxuto}, ensure_ascii=False)[:limite]
 
     def executar(self, tarefa: Tarefa) -> str:
+        self._preferencias = tarefa.contexto.get("preferencias")
         n_cartoes, n_questoes = tarefa.quantidade_estudo("flashcards"), tarefa.quantidade_estudo("questoes")
         # A matéria inteira, com as fontes, só com o Claude: o modelo local não comporta as fontes inteiras.
         materia = bool(tarefa.materia and tarefa.fontes_no_claude)
@@ -681,23 +693,30 @@ class AgenteEstudos(Agente):
         if not ficha["topicos"]:
             raise ValueError("nenhuma ficha de tópico foi escrita")
 
-        # Revisão espaçada: flashcards e glossário a partir das fichas.
-        self._avisar(tarefa, "preparando os flashcards")
-        fechamento = self.pedir_json(
-            f"FICHAS:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_cartoes} flashcards.",
-            max_tokens=6000, sistema=self._sistema(self.instrucoes_fechamento))
-        ficha["flashcards"] = [c for c in fechamento.get("flashcards") or []
-                               if isinstance(c, dict) and c.get("frente") and c.get("verso")][:n_cartoes]
-        glossario = [g for g in fechamento.get("glossario") or [] if isinstance(g, dict) and g.get("termo") and g.get("definicao")]
-        ficha["glossario"] = glossario or ficha["glossario"]
+        # Revisão espaçada: flashcards e glossário a partir das fichas (sem flashcards nem glossário na janela de
+        # estudos, a chamada nem é feita).
+        partes = (self._preferencias or {}).get("partes") or {}
+        ficha["flashcards"] = []
+        if n_cartoes or partes.get("glossario", True):
+            self._avisar(tarefa, "preparando os flashcards" if n_cartoes else "preparando o glossário")
+            fechamento = self.pedir_json(
+                f"FICHAS:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_cartoes} flashcards.",
+                max_tokens=6000, sistema=self._sistema(self.instrucoes_fechamento))
+            ficha["flashcards"] = [c for c in fechamento.get("flashcards") or []
+                                   if isinstance(c, dict) and c.get("frente") and c.get("verso")][:n_cartoes]
+            glossario = [g for g in fechamento.get("glossario") or [] if isinstance(g, dict) and g.get("termo") and g.get("definicao")]
+            ficha["glossario"] = glossario or ficha["glossario"]
 
-        # 4. Teste de estresse: questões difíceis respondidas só com a ficha; o que faltou entra nela.
-        self._avisar(tarefa, "fazendo o teste de estresse")
-        estresse = self.pedir_json(
-            f"FICHA DE ESTUDO:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_questoes} questões.",
-            max_tokens=8000, sistema=self._sistema(self.instrucoes_estresse))
-        ficha["questoes"] = [q for q in map(_questao_valida, estresse.get("questoes") or []) if q][:n_questoes]
-        lacunas = ficha_estudo.aplicar_lacunas(ficha, estresse.get("lacunas"))
+        # 4. Teste de estresse: questões difíceis respondidas só com a ficha; o que faltou entra nela. Com "nenhuma"
+        # questão na janela de estudos, fica de fora.
+        ficha["questoes"], lacunas = [], 0
+        if n_questoes:
+            self._avisar(tarefa, "fazendo o teste de estresse")
+            estresse = self.pedir_json(
+                f"FICHA DE ESTUDO:\n{self._ficha_no_prompt(ficha)}\n\nQuantidade: exatamente {n_questoes} questões.",
+                max_tokens=8000, sistema=self._sistema(self.instrucoes_estresse))
+            ficha["questoes"] = [q for q in map(_questao_valida, estresse.get("questoes") or []) if q][:n_questoes]
+            lacunas = ficha_estudo.aplicar_lacunas(ficha, estresse.get("lacunas"))
 
         # 3. Leitura direcionada: o texto oficial de cada artigo da lei seca, conferido no Planalto.
         conferencia = {}
@@ -716,6 +735,8 @@ class AgenteEstudos(Agente):
                 logger.warning("Não deu para conferir as súmulas: %s", exc)
 
         ficha["fontes"] = list(dict.fromkeys(tarefa.contexto.get("fontes", [])))
+        # As cores, a letra e as partes escolhidas na janela de estudos; ficam na ficha.json para refazer o visual igual.
+        ficha["visual"] = preferencias_estudo.visual(self._preferencias) if self._preferencias else None
         tarefa.contexto["conteudo"] = ficha
         formatos = [f for f in tarefa.formatos if f in ("pdf", "docx")] or ["pdf"]
         os.makedirs(tarefa.pasta, exist_ok=True)
@@ -890,6 +911,11 @@ class AgenteAulas(Agente):
         super().__init__(**kwargs)
         self.paralelo = paralelo
         self.ao_progredir = None  # o orquestrador liga aqui a publicação do andamento no painel
+        self._preferencias = None  # as escolhas da janela de estudos para a tarefa de agora
+
+    def _sistema(self, instrucoes: str = None) -> str:
+        """Como nas fichas: o tamanho, o estilo, o foco, as instruções e o guia das fotos de exemplo no fim."""
+        return super()._sistema(instrucoes) + preferencias_estudo.bloco_do_prompt(self._preferencias or None, para="aulas")
 
     def _base(self, tarefa: Tarefa) -> str:
         """Começo igual em todas as chamadas do curso (fontes, pedido): o que muda fica no fim do prompt."""
@@ -949,26 +975,28 @@ class AgenteAulas(Agente):
             return dict(executor.map(escrever, numeros))
 
     def _gerar_arquivos(self, tarefa: Tarefa, curso: dict, numeros=None) -> list:
-        """Plano do curso e uma aula por arquivo; `numeros` regera só essas aulas (o resto continua igual)."""
-        formato = "docx" if "docx" in tarefa.formatos else "pdf"
+        """Plano do curso e uma aula por arquivo (em PDF, Word ou os dois, como na janela de estudos); `numeros` regera
+        só essas aulas (o resto continua igual)."""
+        formatos = [f for f in ("pdf", "docx") if f in tarefa.formatos] or ["pdf"]
         os.makedirs(tarefa.pasta, exist_ok=True)
 
         def gerar(conteudo, nome):
-            return geradores.GERADORES[formato](conteudo, os.path.join(tarefa.pasta, f"{nome}.{formato}"))
+            return [geradores.GERADORES[f](conteudo, os.path.join(tarefa.pasta, f"{nome}.{f}")) for f in formatos]
 
         fontes = curso.get("fontes")
-        arquivos = [gerar(documento_do_plano(curso), "00_plano_do_curso")]
+        arquivos = gerar(documento_do_plano(curso), "00_plano_do_curso")
         for aula in curso["aulas"]:
             nome = f"{aula['numero']:02d}_aula_{geradores.nome_arquivo_seguro(aula.get('titulo') or '', 40)}"
-            caminho = os.path.join(tarefa.pasta, f"{nome}.{formato}")
+            caminhos = [os.path.join(tarefa.pasta, f"{nome}.{f}") for f in formatos]
             if aula.get("erro"):
                 continue
-            if numeros is None or aula["numero"] in numeros or not os.path.exists(caminho):
-                caminho = gerar(documento_da_aula(aula, curso.get("titulo") or tarefa.tema, fontes), nome)
-            arquivos.append(caminho)
+            if numeros is None or aula["numero"] in numeros or not all(os.path.exists(c) for c in caminhos):
+                caminhos = gerar(documento_da_aula(aula, curso.get("titulo") or tarefa.tema, fontes), nome)
+            arquivos.extend(caminhos)
         return arquivos
 
     def executar(self, tarefa: Tarefa) -> str:
+        self._preferencias = tarefa.contexto.get("preferencias")
         anterior = tarefa.contexto.get("conteudo")
         if tarefa.avaliacao and not tarefa.avaliacao.cumprido and anterior:
             return self._refazer_aulas_fracas(tarefa, anterior)

@@ -16,9 +16,11 @@ import threading
 import time
 
 import camadas_personalidade
+import conversa_nuvem
 import memory
 import niveis_voz
 import personalidade
+import preferencias_estudo
 from agente_agenda import criar_agente_agenda
 from agente_controle import criar_agente_controle
 from agente_craft import AgenteCraft
@@ -33,7 +35,7 @@ from jeito_de_falar import frase
 from agente_pastas import AgentePastas
 from fontes import criar_agente_fontes
 from leitura_tela import AgenteTela
-from llm_nuvem import claude, gemini
+from llm_nuvem import claude, extrair_ia_pedida, gemini
 from memory import importar_fonte_local, notelooklm_responder
 from painel_hud import MonitorRecursos, contar_linhas, grupos_da_biblioteca, ler_metricas_analise
 from professora_idiomas import processar_comando_idiomas
@@ -116,7 +118,7 @@ class ApiPainel:
         # "escaneia". "Me manda no zap" só funciona pela voz ou pelo próprio WhatsApp.
         self._fontes = criar_agente_fontes(avisar=lambda texto, canal: self._responder(texto), enviar_zap=None,
                                            impressora=self._impressora, pastas=self._pastas, llm=llm_clients,
-                                           estudar=self._estudar_arquivos)
+                                           estudar=self._estudar_arquivos, peca=self._peca_de_arquivos)
         # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
         self._craft = AgenteCraft(recebidos=self._fontes.recebidos_do_pedido, arquivos=self._pastas.arquivos,
                                   avisar=lambda resposta, canal: self._responder(resposta.texto))  # o vídeo editado chega depois
@@ -155,8 +157,10 @@ class ApiPainel:
         return {
             "modelo": OLLAMA_MODEL,
             "ollama": self._em_cache("ollama", VALIDADE_OLLAMA, self._consultar_ollama),
-            "nuvem": [{"nome": provedor.nome, "texto": provedor.status()[0], "estado": provedor.status()[1]}
-                      for provedor in (claude, gemini)],
+            # O estado que o processo principal publica (lá estão as pausas de verdade); sem ele, o deste processo.
+            "nuvem": self._nuvem_do_principal() or [
+                {"nome": provedor.nome, "texto": provedor.status()[0], "estado": provedor.status()[1]}
+                for provedor in (claude, gemini)],
             "whatsapp": self._compartilhado("whatsapp"),
             "painel": self._compartilhado("painel"),
             "microfone_ativo": microfone_ativo(),
@@ -376,6 +380,63 @@ class ApiPainel:
                     else "Nada novo nas últimas conversas (ou a IA local não respondeu).")
         return {"ok": True, "mensagem": mensagem, "dados": camadas_personalidade.para_a_janela()}
 
+    # ------------------------------------------------------------------ estudos (janela)
+    def estudos(self) -> dict:
+        """As escolhas dos resumos, fichas e peças, as opções da janela, as fotos de exemplo e o guia."""
+        return preferencias_estudo.para_a_janela()
+
+    def estudos_salvar(self, dados: dict) -> dict:
+        return preferencias_estudo.resultado(preferencias_estudo.salvar, dados)
+
+    def estudos_padrao(self) -> dict:
+        return preferencias_estudo.resultado(preferencias_estudo.restaurar_padrao)
+
+    def estudos_fotos_adicionar(self) -> dict:
+        """Escolher fotos do PC (PNG, JPG ou WebP) para os exemplos de resumo."""
+        import webview
+
+        if self._janela is None:
+            return {"ok": False, "mensagem": "A janela não está pronta.", "dados": None}
+        caminhos = self._janela.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=True, file_types=("Fotos (*.png;*.jpg;*.jpeg;*.webp)",))
+        if not caminhos:
+            return {"ok": True, "mensagem": "", "dados": preferencias_estudo.para_a_janela()}
+        respostas = [preferencias_estudo.resultado(preferencias_estudo.adicionar_foto, os.path.basename(c), origem=c)
+                     for c in caminhos]
+        erros = [r["mensagem"] for r in respostas if not r["ok"]]
+        mensagem = " ".join(dict.fromkeys(erros)) or f"{len(respostas)} foto(s) adicionada(s)."
+        return {"ok": not erros or len(erros) < len(respostas), "mensagem": mensagem, "dados": preferencias_estudo.para_a_janela()}
+
+    def estudos_foto(self, foto_id: str) -> str:
+        """A miniatura de uma foto de exemplo (data URL), para a janela mostrar."""
+        try:
+            return preferencias_estudo.miniatura(preferencias_estudo.caminho_da_foto(foto_id))
+        except (preferencias_estudo.ErroDasPreferencias, OSError) as exc:
+            logger.debug("Miniatura da foto %s: %s", foto_id, exc)
+            return ""
+
+    def estudos_foto_apagar(self, foto_id: str) -> dict:
+        return preferencias_estudo.resultado(preferencias_estudo.apagar_foto, foto_id)
+
+    def estudos_guia(self) -> dict:
+        """O Claude olha as fotos e monta o guia de estilo (só ele; sem ele, o modelo de visão do PC). ~20 s a 1 min."""
+        return preferencias_estudo.resultado(preferencias_estudo.extrair_guia)
+
+    def estudos_peca_arquivos(self) -> list:
+        """Os arquivos do caso (a foto ou o PDF do enunciado, documentos) para a peça nova."""
+        import webview
+
+        if self._janela is None:
+            return []
+        return list(self._janela.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True) or [])
+
+    def estudos_peca(self, tipo: str, fatos: str, arquivos: list = None) -> dict:
+        """A peça nova da janela: vira uma tarefa dos agentes (os fatos vão para o Claude, com o Gemini de reserva)."""
+        tarefa = self._orquestrador.enviar_peca(tipo or "", fatos or "", list(arquivos or []), ao_concluir=self._missao_concluida)
+        if tarefa is None:
+            return {"ok": False, "mensagem": "Escreva os fatos do caso ou adicione os arquivos dele."}
+        return {"ok": True, "mensagem": self._orquestrador.mensagem_inicio(tarefa)}
+
     def _pedir_leitura_da_biblioteca(self):
         if self._audio_config is not None:
             try:
@@ -481,6 +542,15 @@ class ApiPainel:
                     self._emitir({"tipo": "filmes", "texto": resposta_cinema, **cartao})
                 return self._responder(resposta_cinema)
 
+            # "usa o Claude pra…" e as perguntas de conhecimento geral: a nuvem responde só com a pergunta, como na voz.
+            sem_ia, ia = extrair_ia_pedida(comando)
+            pergunta = sem_ia if ia and sem_ia else comando
+            from llm_clients import llm_clients
+            categoria = None if ia else conversa_nuvem.classificar(pergunta, llm_clients)
+            if ia or (categoria == "conhecimento" and conversa_nuvem.pode_ir_para_a_nuvem(pergunta)):
+                resposta_nuvem = conversa_nuvem.responder(pergunta, preferir=ia, falada=False)
+                if resposta_nuvem:
+                    return self._responder(resposta_nuvem)
             resposta = notelooklm_responder(comando) or frase("sem_resposta")
             self._responder(resposta)
         except Exception as exc:
@@ -501,6 +571,14 @@ class ApiPainel:
         tarefa = self._orquestrador.enviar_estudo_de_arquivos(pedido, caminhos, ao_concluir=self._missao_concluida, ia=ia)
         return self._orquestrador.mensagem_inicio(tarefa) if tarefa else None
 
+    def _peca_de_arquivos(self, caminhos, pedido, canal="painel", ia=None):
+        """"Faz a peça desse caso" sobre um arquivo anexado ou recebido: o agente de peças, com o arquivo como base."""
+        from agentes.pecas import pedido_de_peca
+
+        tarefa = self._orquestrador.enviar_peca(pedido_de_peca(pedido) or "", pedido, caminhos, ia=ia, pedido=pedido,
+                                                ao_concluir=self._missao_concluida)
+        return self._orquestrador.mensagem_inicio(tarefa) if tarefa else None
+
     def _missao_concluida(self, tarefa):
         # A janela de "missão concluída" sai da lanterna (estado compartilhado); aqui só a fala.
         falar_async(tarefa.mensagem_final)
@@ -516,6 +594,12 @@ class ApiPainel:
             categoria = _inferir_categoria(caminho)
             linhas.append(f"{os.path.basename(caminho)} → {categoria}: {importar_fonte_local(caminho, categoria)}")
         self._emitir({"tipo": "resposta", "texto": "\n".join(linhas)})
+
+    def _nuvem_do_principal(self) -> list:
+        try:
+            return [dict(item) for item in self._audio_config.get("nuvem") or []] if self._audio_config is not None else []
+        except Exception:
+            return []
 
     def _compartilhado(self, chave: str) -> dict:
         try:

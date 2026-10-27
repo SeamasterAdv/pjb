@@ -24,6 +24,7 @@
     <button class="botao-sistema" id="btn-agenda">agenda</button>
     <button class="botao-sistema" id="btn-biblioteca">biblioteca</button>
     <button class="botao-sistema" id="btn-personalidade">personalidade</button>
+    <button class="botao-sistema" id="btn-estudos">estudos</button>
     <button class="botao-sistema" id="btn-status">status</button>
     <button class="botao-sistema" id="btn-registro">registro</button>
     <div class="relogio"><span id="hora">--:--</span><span id="data"></span></div>
@@ -251,6 +252,102 @@
   </div>
 </div>
 
+<div class="fundo-modal" id="fundo-estudos" hidden>
+  <div class="janela-sistema janela-estudos" id="janela-estudos" role="dialog" aria-label="Estudos">
+    <div class="cabecalho-janela">◢ estudos: como saem os resumos, as fichas e as peças
+      <button class="fechar" data-fechar="estudos" aria-label="Fechar">×</button>
+    </div>
+    <div class="ps-barra">
+      <button class="pequeno aba-es ativo" data-aba="jeito">jeito do resumo</button>
+      <button class="pequeno aba-es" data-aba="fotos">fotos de exemplo</button>
+      <button class="pequeno aba-es" data-aba="pecas">peças processuais</button>
+      <span class="ps-espaco"></span>
+      <span class="ps-estado" id="es-estado"></span>
+    </div>
+    <div class="es-corpo">
+      <div class="es-editor">
+        <section class="es-aba" data-aba="jeito">
+          <p class="ps-explica">Vale para as próximas fichas, resumos da matéria e aulas. O que você disser no pedido
+            (<b>em Word</b>, <b>com 20 flashcards</b>, <b>pelo Gemini</b>) vale mais que o daqui.</p>
+          <div class="es-grade" id="es-opcoes"></div>
+          <div class="es-linha">
+            <span class="es-rotulo">o que entra</span>
+            <div class="es-partes" id="es-partes"></div>
+          </div>
+          <div class="es-linha">
+            <span class="es-rotulo">instruções</span>
+            <textarea id="es-instrucoes" rows="3" spellcheck="true" aria-label="Instruções livres"
+              placeholder="ex.: sempre com um esquema no começo de cada tópico; nada de latim sem traduzir"></textarea>
+          </div>
+        </section>
+        <section class="es-aba" data-aba="fotos" hidden>
+          <p class="ps-explica">Fotos de resumos de que você gosta (do caderno, de um livro, de uma tela). A IA olha o
+            <b>estilo</b> (organização, tamanho das frases, caixas, cores) e monta um guia que entra nas próximas fichas.
+            As fotos vão <b>só para o Claude</b>, nunca para o Gemini; sem ele, o modelo de visão do PC olha.</p>
+          <div class="es-fotos" id="es-fotos"></div>
+          <div class="es-botoes">
+            <button class="pequeno" id="es-foto-adicionar">+ adicionar fotos</button>
+            <button class="pequeno principal" id="es-guia-montar">montar o guia com o Claude</button>
+            <span class="cm-resumo" id="es-fotos-conta"></span>
+          </div>
+          <div class="es-linha es-guia">
+            <span class="es-rotulo">guia de estilo</span>
+            <textarea id="es-guia" rows="9" spellcheck="true" aria-label="Guia de estilo"
+              placeholder="Monte o guia a partir das fotos, ou escreva aqui como você quer os resumos."></textarea>
+            <div class="es-botoes">
+              <label class="cm-chave"><input type="checkbox" id="es-usar-guia"> usar o guia nos próximos resumos</label>
+              <span class="es-cores-guia" id="es-cores-guia"></span>
+              <span class="ps-espaco"></span>
+              <span class="cm-resumo" id="es-guia-quem"></span>
+            </div>
+          </div>
+        </section>
+        <section class="es-aba" data-aba="pecas" hidden>
+          <p class="ps-explica">Para pedir: <b>faz uma petição inicial de…</b>, <b>redige uma contestação…</b>, <b>faz a peça desse
+            caso</b> (logo depois de mandar a foto ou o PDF do caso). Os fatos vão para o Claude (o Gemini fica de reserva); os
+            artigos citados são conferidos no vade-mécum do PC.</p>
+          <div class="es-grade" id="es-pecas"></div>
+          <div class="es-linha">
+            <span class="es-rotulo">advogado</span>
+            <div class="es-campos">
+              <input id="es-advogado" placeholder="nome (vazio: “Advogado…”)" autocomplete="off" aria-label="Nome do advogado">
+              <input id="es-oab" placeholder="OAB/UF nº" autocomplete="off" aria-label="Número da OAB">
+              <input id="es-cidade" placeholder="cidade (vazio: “Local…”)" autocomplete="off" aria-label="Cidade">
+            </div>
+          </div>
+          <div class="es-linha">
+            <span class="es-rotulo">instruções</span>
+            <textarea id="es-pecas-instrucoes" rows="3" spellcheck="true" aria-label="Instruções das peças"
+              placeholder="ex.: pedidos sempre em alíneas; citar a doutrina só quando ajudar"></textarea>
+          </div>
+          <div class="es-nova-peca">
+            <div class="agenda-secao">NOVA PEÇA</div>
+            <div class="es-campos">
+              <select id="es-peca-tipo" aria-label="Tipo de peça"></select>
+              <button class="pequeno" id="es-peca-arquivos" title="A foto ou o PDF do caso (enunciado, documentos)">+ arquivos do caso</button>
+              <span class="cm-resumo" id="es-peca-arquivos-nomes"></span>
+            </div>
+            <textarea id="es-peca-fatos" rows="5" spellcheck="true" aria-label="Fatos do caso"
+              placeholder="Os fatos do caso: quem é quem, o que aconteceu, datas, valores e o que se quer pedir."></textarea>
+            <div class="es-botoes"><button class="pequeno principal" id="es-peca-redigir">redigir a peça</button></div>
+          </div>
+        </section>
+      </div>
+      <aside class="es-lado">
+        <div class="agenda-secao">PRÉVIA</div>
+        <div class="es-folha" id="es-folha" aria-hidden="true"></div>
+        <p class="ps-dica" id="es-folha-legenda"></p>
+      </aside>
+    </div>
+    <div class="ps-acoes">
+      <button class="pequeno principal" id="es-salvar" title="Ctrl+S">salvar</button>
+      <button class="pequeno" id="es-desfazer">desfazer alterações</button>
+      <button class="pequeno perigo" id="es-padrao">voltar ao padrão</button>
+      <span class="agenda-resposta" id="es-mensagem" aria-live="polite"></span>
+    </div>
+  </div>
+</div>
+
 <footer class="comando">
   <span class="prompt" aria-hidden="true">›_</span>
   <button class="mic ativo" id="btn-mic" title="Microfone ligado (clique para pausar)" aria-label="Microfone">
@@ -264,6 +361,7 @@
 </footer>
 
 <script src="app.js"></script>
+<script src="estudos.js"></script>
 <script type="module" src="painel_visual.js"></script>
 </body>
 </html>

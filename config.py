@@ -394,6 +394,11 @@ from personalidade import TEXTO_PADRAO as PERSONALIDADE_BEATRIZ  # noqa: E402
 # diretos viram camada. A cada CAMADAS_INTERVALO segundos, com CAMADAS_TROCAS_PARA_APRENDER trocas novas, ela relê a
 # conversa; no prompt entram até CAMADAS_NO_PROMPT camadas (para a nuvem, só as de estilo).
 CAMINHO_CAMADAS = os.getenv("CAMINHO_CAMADAS", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "camadas_personalidade.json"))
+# Como os resumos, fichas, aulas e peças saem (preferencias_estudo.py): o que a pessoa escolhe na janela [ estudos ] do
+# painel e na tela Estudos do app, e as fotos de exemplo de onde sai o guia de estilo (fora do git).
+CAMINHO_PREFERENCIAS_ESTUDO = os.getenv(
+    "CAMINHO_PREFERENCIAS_ESTUDO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "preferencias_estudo.json"))
+PASTA_EXEMPLOS_ESTUDO = os.getenv("PASTA_EXEMPLOS_ESTUDO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "exemplos_estudo"))
 CAMADAS_APRENDER = os.getenv("CAMADAS_APRENDER", "true").strip().lower() in {"1", "true", "yes", "on"}
 CAMADAS_INTERVALO = float(os.getenv("CAMADAS_INTERVALO", "300"))
 CAMADAS_TROCAS_PARA_APRENDER = int(os.getenv("CAMADAS_TROCAS_PARA_APRENDER", "8"))

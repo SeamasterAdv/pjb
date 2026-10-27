@@ -48,7 +48,8 @@ def test_tchau_encerra_a_conversa_mas_nao_desliga():
 def test_categoria_aceita_a_descricao_no_lugar_do_rotulo():
     # Respostas reais do llama3.1:8b e do qwen2.5:14b que antes viravam None (e o papo ia para a biblioteca).
     assert main.categoria_da_resposta("conversa") == "simples"
-    assert main.categoria_da_resposta("Conhecimento geral está") == "simples"
+    # Desde out/2026, conhecimento geral é uma categoria à parte (vai para a nuvem): veja test_conversa_nuvem.py.
+    assert main.categoria_da_resposta("Conhecimento geral está") == "conhecimento"
     assert main.categoria_da_resposta("Simples.") == "simples"
     assert main.categoria_da_resposta("pesquisa") == "pesquisa"
     assert main.categoria_da_resposta("Notícias") == "pesquisa"

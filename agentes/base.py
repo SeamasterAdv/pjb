@@ -95,9 +95,11 @@ class Tarefa:
         return any(etapa in self.plano for etapa in ETAPAS_PESSOAIS)
 
     def quantidade_estudo(self, chave: str) -> int:
-        """Flashcards ou questões: o número do pedido; sem número, 12 e 6 (20 e 10 num resumo de matéria)."""
+        """Flashcards ou questões: o número do pedido (ou da janela de estudos, onde 0 é "nenhum"); sem número, 12 e 6
+        (20 e 10 num resumo de matéria)."""
         padrao = {"flashcards": 20, "questoes": 10} if self.materia else {"flashcards": 12, "questoes": 6}
-        return self.quantidades.get(chave) or padrao[chave]
+        valor = self.quantidades.get(chave)
+        return padrao[chave] if valor is None else valor
 
     def resumo(self) -> dict:
         """Versão simples (só tipos básicos) para mostrar no painel e compartilhar entre processos."""

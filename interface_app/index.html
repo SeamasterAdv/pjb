@@ -338,6 +338,103 @@
     <p class="detalhe controle-aviso" id="controle-aviso" data-i="3"></p>
   </section>
 
+  <!-- Estudos: como saem os resumos, as fichas e as peças (o mesmo componente da janela [ estudos ] do painel do PC,
+       interface_web/estudos.js, com os mesmos ids). -->
+  <section class="tela" id="tela-estudos" aria-label="Estudos">
+    <div class="titulo-tela" data-i="0"><span>Estudos</span><span class="linha"></span></div>
+    <div class="segmentos es-abas" data-i="1">
+      <button class="segmento aba-es ativo" type="button" data-aba="jeito">Resumo</button>
+      <button class="segmento aba-es" type="button" data-aba="fotos">Fotos</button>
+      <button class="segmento aba-es" type="button" data-aba="pecas">Peças</button>
+    </div>
+    <div class="es-sugestoes" data-i="2">
+      <button class="sugestao" type="button" data-pedido="Quero estudar ">Pedir uma ficha</button>
+      <button class="sugestao" type="button" data-pedido="Resumo da matéria de ">Resumo da matéria</button>
+      <button class="sugestao" type="button" data-pedido="Crie aulas de ">Aulas</button>
+    </div>
+    <section class="es-aba" data-aba="jeito">
+      <div class="painel holo es-previa" data-i="3">
+        <div class="holo-rotulo"><span>Prévia</span><span class="holo-codigo ps-estado" id="es-estado"></span></div>
+        <div class="es-folha" id="es-folha" aria-hidden="true"></div>
+        <p class="ps-dica" id="es-folha-legenda"></p>
+      </div>
+      <div class="painel holo" data-i="4">
+        <div class="holo-rotulo"><span>Jeito do resumo</span></div>
+        <p class="ps-explica">Vale para as próximas fichas, resumos e aulas. O que você disser no pedido (<b>em Word</b>,
+          <b>com 20 flashcards</b>, <b>pelo Gemini</b>) vale mais que o daqui.</p>
+        <div class="es-grade" id="es-opcoes"></div>
+        <div class="es-linha">
+          <span class="es-rotulo">o que entra</span>
+          <div class="es-partes" id="es-partes"></div>
+        </div>
+        <div class="es-linha">
+          <span class="es-rotulo">instruções</span>
+          <textarea id="es-instrucoes" rows="3" aria-label="Instruções livres"
+            placeholder="ex.: sempre com um esquema no começo de cada tópico"></textarea>
+        </div>
+      </div>
+    </section>
+    <section class="es-aba" data-aba="fotos" hidden>
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Fotos de exemplo</span><span class="holo-codigo cm-resumo" id="es-fotos-conta"></span></div>
+        <p class="ps-explica">Fotografe resumos de que você gosta. A IA olha o <b>estilo</b> e monta um guia para as próximas
+          fichas. As fotos vão <b>só para o Claude</b>, nunca para o Gemini.</p>
+        <div class="es-fotos" id="es-fotos"></div>
+        <div class="es-botoes">
+          <button class="pequeno" type="button" id="es-foto-adicionar">+ fotos</button>
+          <button class="pequeno principal" type="button" id="es-guia-montar">montar o guia com o Claude</button>
+        </div>
+      </div>
+      <div class="painel holo" data-i="4">
+        <div class="holo-rotulo"><span>Guia de estilo</span><span class="holo-codigo cm-resumo" id="es-guia-quem"></span></div>
+        <textarea id="es-guia" rows="8" aria-label="Guia de estilo"
+          placeholder="Monte o guia a partir das fotos, ou escreva aqui como você quer os resumos."></textarea>
+        <div class="es-botoes">
+          <label class="cm-chave"><input type="checkbox" id="es-usar-guia"> usar nos próximos resumos</label>
+          <span class="es-cores-guia" id="es-cores-guia"></span>
+        </div>
+      </div>
+    </section>
+    <section class="es-aba" data-aba="pecas" hidden>
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Nova peça</span></div>
+        <p class="ps-explica">Os fatos vão para o Claude (o Gemini de reserva); os artigos são conferidos no vade-mécum do PC. O
+          resultado chega na conversa, em Word e PDF.</p>
+        <div class="es-campos">
+          <select id="es-peca-tipo" aria-label="Tipo de peça"></select>
+          <button class="pequeno" type="button" id="es-peca-arquivos">+ foto ou PDF do caso</button>
+        </div>
+        <span class="cm-resumo" id="es-peca-arquivos-nomes"></span>
+        <textarea id="es-peca-fatos" rows="5" aria-label="Fatos do caso"
+          placeholder="Os fatos: quem é quem, o que aconteceu, datas, valores e o que se quer pedir."></textarea>
+        <div class="es-botoes"><button class="pequeno principal" type="button" id="es-peca-redigir">redigir a peça</button></div>
+      </div>
+      <div class="painel holo" data-i="4">
+        <div class="holo-rotulo"><span>Jeito das peças</span></div>
+        <div class="es-grade" id="es-pecas"></div>
+        <div class="es-linha">
+          <span class="es-rotulo">advogado</span>
+          <div class="es-campos">
+            <input id="es-advogado" placeholder="nome (vazio: “Advogado…”)" autocomplete="off" aria-label="Nome do advogado">
+            <input id="es-oab" placeholder="OAB/UF nº" autocomplete="off" aria-label="Número da OAB">
+            <input id="es-cidade" placeholder="cidade" autocomplete="off" aria-label="Cidade">
+          </div>
+        </div>
+        <div class="es-linha">
+          <span class="es-rotulo">instruções</span>
+          <textarea id="es-pecas-instrucoes" rows="3" aria-label="Instruções das peças"
+            placeholder="ex.: pedidos sempre em alíneas"></textarea>
+        </div>
+      </div>
+    </section>
+    <div class="es-acoes" data-i="5">
+      <button class="pequeno principal" type="button" id="es-salvar">salvar</button>
+      <button class="pequeno" type="button" id="es-desfazer">desfazer</button>
+      <button class="pequeno perigo" type="button" id="es-padrao">padrão</button>
+      <p class="es-mensagem" id="es-mensagem" aria-live="polite"></p>
+    </div>
+  </section>
+
   <!-- Editar: fotos (LightCraft), vídeos (FilmCraft) e conversões, feitas no PC pelos apps da ArtCraft. A prévia da foto
        e do vídeo é aproximada (filtros do navegador); o resultado de verdade volta do PC. -->
   <section class="tela" id="tela-editar" aria-label="Editar">
@@ -576,6 +673,7 @@
 <input type="file" id="escolher-arquivo" multiple hidden>
 <input type="file" id="tirar-foto" accept="image/*" capture="environment" hidden>
 <script src="app.js"></script>
+<script src="visual/estudos.js"></script>
 <script type="module" src="visual_app.js"></script>
 </body>
 </html>

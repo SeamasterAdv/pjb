@@ -332,7 +332,7 @@ class JanelaComandos(tk.Tk):
         # Arquivos recebidos pelo WhatsApp (no processo principal; o registro é o mesmo arquivo): vira fonte, arquiva, imprime, escaneia.
         self.fontes = criar_agente_fontes(avisar=lambda texto, canal: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")),
                                           enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients,
-                                          estudar=self._estudar_arquivos)
+                                          estudar=self._estudar_arquivos, peca=self._peca_de_arquivos)
         # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
         self.craft = AgenteCraft(recebidos=self.fontes.recebidos_do_pedido, arquivos=self.pastas.arquivos,
                                  avisar=lambda resposta, canal: self.after(0, lambda: self.adicionar_mensagem(
@@ -411,6 +411,15 @@ class JanelaComandos(tk.Tk):
         """"Faz uma ficha desse PDF" sobre um arquivo recebido: a ficha tática dos agentes, escrita pelo Claude."""
         tarefa = self.orquestrador.enviar_estudo_de_arquivos(
             pedido, caminhos, ia=ia, ao_concluir=lambda t: self.after(0, lambda: self._tarefa_concluida(t)))
+        return self.orquestrador.mensagem_inicio(tarefa) if tarefa else None
+
+    def _peca_de_arquivos(self, caminhos, pedido, canal="painel", ia=None):
+        """"Faz a peça desse caso" sobre um arquivo recebido: o agente de peças, com o arquivo como base."""
+        from agentes.pecas import pedido_de_peca
+
+        tarefa = self.orquestrador.enviar_peca(
+            pedido_de_peca(pedido) or "", pedido, caminhos, ia=ia, pedido=pedido,
+            ao_concluir=lambda t: self.after(0, lambda: self._tarefa_concluida(t)))
         return self.orquestrador.mensagem_inicio(tarefa) if tarefa else None
 
     def _tarefa_concluida(self, tarefa):

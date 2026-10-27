@@ -26,6 +26,7 @@ from agentes.especialistas import (
     fonte_pessoal,
 )
 from agentes.geradores import _numero, nome_arquivo_seguro
+from agentes.pecas import TIPOS_DE_PECA, AgentePeca, nome_da_peca, pedido_de_peca
 from agentes.relator import AgenteRelator
 
 logger = logging.getLogger(__name__)
@@ -286,6 +287,14 @@ def _planejar(comando: str):
     if RE_EMAIL.search(texto):
         return Tarefa(pedido=pedido, plano=["email"], formatos=["docx"], tema="seus e-mails")
 
+    # Peças processuais: "faz uma petição inicial de…", "redige um agravo de instrumento…", "faz a peça cabível". Estudar a
+    # peça ("ficha de apelação", "ensino de peça pra eu estudar") continua com os agentes de estudo.
+    tipo_peca = pedido_de_peca(comando)
+    if tipo_peca is not None:
+        return Tarefa(pedido=pedido, plano=(["biblioteca"] if RE_BIBLIOTECA.search(texto) else []) + ["peca"],
+                      tema=nome_da_peca(tipo_peca) if tipo_peca else "a peça cabível",
+                      contexto={"tipo_peca": tipo_peca, "fatos": pedido})
+
     # Aulas da matéria: um plano do curso e uma aula completa por arquivo, também com as fontes do usuário.
     quer_aulas = (RE_AULAS.search(texto) and (RE_CRIAR.search(texto) or RE_PEDE_AULAS.search(texto))) or RE_CURSO.search(texto)
     if (quer_aulas or RE_ENSINAR_TUDO.search(texto)) and not RE_NAO_E_CRIAR_AULA.search(texto):
@@ -442,6 +451,19 @@ def texto_da_entrega(tarefa: Tarefa, limite: int = 1800) -> str:
         importantes = conteudo.get("topicos_importantes") or []
         if importantes:
             linhas.append("*Tópicos mais importantes:*\n" + "\n".join(f"• {t}" for t in importantes[:8]))
+    elif tarefa.tipo == "peca":
+        if conteudo.get("por_que"):
+            linhas.append(f"*Por que essa peça:* {conteudo['por_que']}")
+        secoes = [s.get("titulo") for d in conteudo.get("documentos") or [] for s in d.get("secoes") or []
+                  if isinstance(s, dict) and s.get("titulo")]
+        if secoes:
+            linhas.append("*Estrutura:* " + "; ".join(secoes))
+        pedidos = [i for d in conteudo.get("documentos") or [] for s in d.get("secoes") or []
+                   if "PEDIDO" in str(s.get("titulo") or "").upper() for i in s.get("itens") or []]
+        if pedidos:
+            linhas.append("*Pedidos:*\n" + "\n".join(f"• {p}" for p in pedidos[:8]))
+        if conteudo.get("faltando"):
+            linhas.append("*Para completar:* " + "; ".join(conteudo["faltando"][:6]))
     elif tarefa.tipo == "estudos":
         if conteudo.get("resumo"):
             linhas.append(str(conteudo["resumo"]))
@@ -493,8 +515,13 @@ class TarefaCancelada(Exception):
 class Orquestrador:
     def __init__(self, pasta_saida: str, llm=None, modelo=None, publicar=None, abrir=None,
                  max_revisoes: int = 1, abrir_ao_concluir: bool = True, agentes: dict = None, llm_nuvem=None,
-                 llm_fontes=None, llm_publico=None, tipos_fontes_no_claude=TIPOS_DE_ESTUDO + TIPOS_DE_DOCUMENTO):
+                 llm_fontes=None, llm_publico=None, tipos_fontes_no_claude=TIPOS_DE_ESTUDO + TIPOS_DE_DOCUMENTO,
+                 preferencias=None):
         self.pasta_saida = pasta_saida
+        # As escolhas da janela de estudos (preferencias_estudo.atual), lidas quando cada ficha, aula ou peça entra na fila.
+        if preferencias is None:
+            from preferencias_estudo import atual as preferencias
+        self.preferencias = preferencias
         opcoes = {"llm": llm, "modelo": modelo}
         # As manchetes do resumo do dia são públicas e podem ser resumidas na nuvem (na ordem da pesquisa: Gemini
         # primeiro); a agenda e os e-mails, não.
@@ -511,6 +538,7 @@ class Orquestrador:
             "aulas": AgenteAulas(**opcoes),
             "resumo_dia": AgenteResumoDia(llm_publico=self.llm_publico, **opcoes),
             "email": AgenteEmail(**opcoes),
+            "peca": AgentePeca(**opcoes),
             "critico": AgenteCritico(**opcoes),
             "relator": AgenteRelator(**opcoes),
         }
@@ -526,6 +554,7 @@ class Orquestrador:
                 "apresentacao": AgenteApresentacao(**nuvem),
                 "planilha": AgentePlanilha(**nuvem),
                 "estudos": AgenteEstudos(**nuvem),
+                "peca": AgentePeca(**nuvem),
                 "critico": AgenteCritico(**nuvem),
             }
         # Material de estudo e documentos com as fontes do usuário (ESTUDOS_COM_CLAUDE, DOCUMENTOS_COM_CLAUDE): escreve só
@@ -591,8 +620,66 @@ class Orquestrador:
         tarefa.contexto.update(fontes_escolhidas=list(caminhos), arquivo_recebido=True, so_no_pc=ia == "local")
         return self._enfileirar(tarefa, ao_concluir, abrir)
 
+    def _aplicar_preferencias(self, tarefa: Tarefa):
+        """As escolhas da janela de estudos, guardadas na tarefa (quem muda a janela no meio não muda a tarefa): os
+        flashcards e as questões, o formato e a IA. O que o próprio pedido disser vale mais."""
+        try:
+            prefs = self.preferencias()
+        except Exception as exc:
+            logger.warning("Preferências de estudo indisponíveis: %s", exc)
+            return
+        tarefa.contexto["preferencias"] = prefs
+        for chave in ("flashcards", "questoes"):
+            if chave not in tarefa.quantidades and prefs.get(chave) is not None:
+                tarefa.quantidades[chave] = prefs[chave]
+        texto = normalizar(tarefa.pedido)
+        if not (RE_PDF.search(texto) or RE_DOCX.search(texto)):
+            tarefa.formatos = {"docx": ["docx"], "ambos": ["pdf", "docx"]}.get(prefs.get("formato"), ["pdf"])
+        if not tarefa.ia_preferida:
+            if prefs.get("ia") in ("claude", "gemini"):
+                tarefa.ia_preferida = prefs["ia"]
+            elif prefs.get("ia") == "local":
+                tarefa.contexto["so_no_pc"] = True
+
+    def enviar_peca(self, tipo: str, fatos: str, arquivos: list = None, ao_concluir=None, abrir: bool = True, ia: str = None,
+                    pedido: str = None):
+        """A peça da janela de estudos ou de um arquivo recebido ("faz a peça desse caso"): os arquivos do caso (a foto ou o PDF
+        do enunciado, documentos) são lidos inteiros, e os fatos vão para o Claude, com o Gemini de reserva. `tipo` vazio =
+        a peça cabível. None sem fatos nem arquivos (os pessoais, como o diário, nunca entram)."""
+        arquivos = [c for c in arquivos or [] if not fonte_pessoal(c)]
+        fatos = (fatos or "").strip()
+        if not fatos and not arquivos:
+            return None
+        tipo = tipo if tipo in TIPOS_DE_PECA else ""
+        nome = nome_da_peca(tipo) if tipo else "a peça cabível"
+        tarefa = Tarefa(pedido=(pedido or f"Faz {nome.lower()} com estes fatos: {fatos}").strip(),
+                        plano=(["biblioteca"] if arquivos else []) + ["peca"], tema=nome,
+                        fontes_recentes=bool(arquivos), ia_preferida=ia if ia in ("claude", "gemini") else "")
+        tarefa.contexto.update(tipo_peca=tipo, fatos=fatos, so_no_pc=ia == "local")
+        if arquivos:
+            tarefa.contexto.update(fontes_escolhidas=list(arquivos), arquivo_recebido=True)
+        return self._enfileirar(tarefa, ao_concluir, abrir)
+
+    def _preferencias_da_peca(self, tarefa: Tarefa):
+        """As escolhas da aba de peças (modo OAB ou caso real, advogado, formato): o formato dito no pedido vale mais."""
+        try:
+            prefs = self.preferencias()
+        except Exception as exc:
+            logger.warning("Preferências das peças indisponíveis: %s", exc)
+            prefs = {}
+        tarefa.contexto["preferencias"] = prefs
+        texto = normalizar(tarefa.pedido)
+        if RE_PDF.search(texto) or RE_DOCX.search(texto):
+            tarefa.formatos = [f for f, achou in (("docx", RE_DOCX.search(texto)), ("pdf", RE_PDF.search(texto))) if achou]
+        else:
+            tarefa.formatos = {"pdf": ["pdf"], "docx": ["docx"]}.get((prefs.get("pecas") or {}).get("formato"), ["docx", "pdf"])
+
     def _enfileirar(self, tarefa: Tarefa, ao_concluir, abrir: bool) -> Tarefa:
         tarefa.contexto["abrir_ao_concluir"] = abrir
+        if tarefa.tipo in TIPOS_DE_ESTUDO:
+            self._aplicar_preferencias(tarefa)
+        elif tarefa.tipo == "peca":
+            self._preferencias_da_peca(tarefa)
         if (tarefa.tipo in self.tipos_fontes_no_claude and "biblioteca" in tarefa.plano and self.llm_fontes is not None
                 and not tarefa.contexto.get("so_no_pc") and self.llm_fontes.nuvem_disponivel()):
             tarefa.fontes_no_claude = True
@@ -615,6 +702,8 @@ class Orquestrador:
         if tarefa.tipo == "resumo_dia":
             # As manchetes públicas podem ir para a IA pedida; o resto já fica no computador.
             return f"Certo, vou reunir sua agenda, e-mails e as notícias dos seus temas para o resumo do dia.{fila}"
+        if tarefa.tipo == "peca":
+            return self._inicio_peca(tarefa) + fila
         fim = fila
         if tarefa.fontes_no_claude:
             if tarefa.ia_preferida == "gemini":
@@ -624,6 +713,12 @@ class Orquestrador:
             fim = f" Como envolve seus dados, o {tarefa.ia_preferida.capitalize()} fica de fora: faço tudo aqui no computador.{fila}"
         if tarefa.tipo == "email":
             return f"Certo, vou ler seus e-mails recentes, resumir e rascunhar respostas. Nada sai do seu computador e nada é enviado.{fim}"
+        if tarefa.tipo in TIPOS_DE_ESTUDO and tarefa.contexto.get("preferencias"):
+            from preferencias_estudo import descricao_curta
+
+            jeito = descricao_curta(tarefa.contexto["preferencias"])
+            if jeito:
+                fim = f" Do jeito escolhido na janela de estudos: {jeito}.{fim}"
         if tarefa.tipo == "aulas":
             return self._inicio_aulas(tarefa) + fim
         if tarefa.tipo == "estudos":
@@ -650,6 +745,25 @@ class Orquestrador:
         if tarefa.fontes_no_claude and tarefa.ia_preferida != "gemini":  # com o Gemini pedido, o `fim` já diz isso
             passos += " Seus documentos vão só para o Claude."
         return f"Certo, vou preparar {entrega} sobre {tarefa.tema}.{passos} Te aviso quando terminar.{fim}"
+
+    def _inicio_peca(self, tarefa: Tarefa) -> str:
+        tipo = tarefa.contexto.get("tipo_peca")
+        o_que = f"redigir {nome_da_peca(tipo).lower()}" if tipo else "descobrir a peça cabível e redigir"
+        if tarefa.contexto.get("arquivo_recebido"):
+            o_que += f" a partir de {self._fontes_escolhidas(tarefa)}"
+        modo = (((tarefa.contexto.get("preferencias") or {}).get("pecas") or {}).get("modo") or "oab")
+        jeito = "no modelo da prova da OAB, sem identificar ninguém" if modo == "oab" else "com os dados do caso"
+        formatos = " e ".join("Word" if f == "docx" else "PDF" for f in tarefa.formatos) or "Word e PDF"
+        if tarefa.contexto.get("so_no_pc"):
+            quem = "Faço aqui no computador."
+        elif self.llm_nuvem is None:
+            quem = "Faço aqui no computador (o Claude e o Gemini não estão configurados)."
+        else:
+            primeira = "o Gemini" if tarefa.ia_preferida == "gemini" else "o Claude"
+            reserva = "o Claude" if tarefa.ia_preferida == "gemini" else "o Gemini"
+            quem = f"Os fatos vão para {primeira} ({reserva} de reserva)."
+        return (f"Certo, vou {o_que}, {jeito}: estrutura da peça, fundamentos conferidos no vade-mécum do PC e os pedidos, "
+                f"em {formatos}. {quem} Leva uns minutos; te aviso quando terminar.")
 
     @staticmethod
     def _fontes_escolhidas(tarefa: Tarefa) -> str:
@@ -707,6 +821,12 @@ class Orquestrador:
         Material de estudo ou documento com as fontes do usuário (`fontes_no_claude`): o agente que escreve só com o Claude.
         O relator não tem versão na nuvem: fica sempre no Ollama.
         """
+        if tarefa.contexto.get("so_no_pc"):
+            return self.agentes[nome]  # "só no PC" (no pedido ou na janela de estudos): nada vai para a nuvem
+        if tarefa.tipo == "peca" and nome in ("peca", "critico") and nome in self.agentes_nuvem:
+            # Escolha do usuário: os fatos do caso podem ir para o Claude, com o Gemini de reserva (a leitura dos arquivos do
+            # caso continua aqui no PC).
+            return self.agentes_nuvem[nome]
         if tarefa.fontes_no_claude and nome in self.agentes_fontes:
             return self.agentes_fontes[nome]
         if nome in self.agentes_nuvem and not tarefa.local_apenas:
@@ -732,6 +852,8 @@ class Orquestrador:
             logger.info("Tarefa %s · %s: %s (%.1fs)", tarefa.id, nome, etapa.descricao, etapa.duracao)
 
     def _modelos_usados(self, tarefa: Tarefa) -> list:
+        if tarefa.tipo == "peca" and not tarefa.contexto.get("so_no_pc"):
+            return list(dict.fromkeys(getattr(self.llm_nuvem, "registro", None) or [])) or ["Ollama (local)"]
         if tarefa.fontes_no_claude:
             registro = list(dict.fromkeys(self.llm_fontes.registro))
             return [nome if nome.startswith("Ollama") else f"{nome}, que leu as suas fontes" for nome in registro] or ["Ollama (local)"]
@@ -831,6 +953,8 @@ class Orquestrador:
         if not tarefa.arquivos:
             return f"{resposta}\n\n{nota} O relatório da pesquisa ficou salvo."
 
+        if tarefa.tipo == "peca":
+            return self._final_peca(tarefa, nota, problema)
         nomes_formato = {"pptx": "PowerPoint", "docx": "Word", "pdf": "PDF", "xlsx": "Excel", "txt": "Anki"}
         formatos = " e ".join(dict.fromkeys(nomes_formato.get(os.path.splitext(a)[1].lstrip("."), a) for a in tarefa.arquivos))
         conteudo = tarefa.contexto.get("conteudo") or {}
@@ -857,6 +981,24 @@ class Orquestrador:
         if avaliacao.cumprido:
             return f"Pronto! {entrega} em {formatos}. {nota} O relatório explicando o que foi feito está na mesma pasta.{sem_claude}"
         return f"{entrega} em {formatos}, mas com ressalvas: {problema}. {nota} Veja os detalhes no relatório.{sem_claude}"
+
+    @staticmethod
+    def _final_peca(tarefa: Tarefa, nota: str, problema: str) -> str:
+        peca = tarefa.contexto.get("conteudo") or {}
+        conferencia = peca.get("conferencia") or {}
+        formatos = " e ".join(dict.fromkeys("Word" if a.endswith(".docx") else "PDF" for a in tarefa.arquivos))
+        partes = [f"{'Pronto! ' if tarefa.avaliacao.cumprido else ''}{peca.get('nome') or 'A peça'} está pronta em {formatos}."]
+        if not tarefa.contexto.get("tipo_peca") and peca.get("por_que"):
+            partes.append(f"Por que essa peça: {peca['por_que']}")
+        if conferencia.get("conferidos"):
+            partes.append(f"Conferi {conferencia['conferidos']} artigo(s) no vade-mécum.")
+        if conferencia.get("nao_encontrados"):
+            partes.append(f"{conferencia['nao_encontrados']} citação(ões) não existem na lei: tirei da peça ou marquei "
+                          "\"CONFERIR O NÚMERO\".")
+        if peca.get("faltando"):
+            partes.append("Faltam dados, que ficaram entre colchetes: " + "; ".join(peca["faltando"][:5]) + ".")
+        partes.append(nota if tarefa.avaliacao.cumprido else f"Atenção: {problema}. {nota}")
+        return " ".join(partes)
 
     def _abrir(self, caminho: str):
         try:

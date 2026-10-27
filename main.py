@@ -53,6 +53,7 @@ import camadas_personalidade
 import melhoria_codigo
 import niveis_voz
 import personalidade
+import preferencias_estudo
 from leitura_tela import AgenteTela, RespostaTela
 from canal_whatsapp import CanalWhatsApp
 import app_celular
@@ -63,7 +64,10 @@ from agentes import (PainelCompartilhado, criar_orquestrador, descricao_do_arqui
                      texto_da_entrega)
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
 from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
+import llm_nuvem
 from llm_nuvem import NOMES_IA, extrair_ia_pedida, responder_na_nuvem
+import conversa_nuvem
+from conversa_nuvem import SINONIMOS_CATEGORIA, categoria_da_resposta  # noqa: F401 (os testes usam pelo main)
 import memory
 from memory import (
     indexar_pasta_documentos,
@@ -222,51 +226,8 @@ MAPA_DE_FERRAMENTAS = {
 
 
 def classificar_com_ollama(comando):
-    """Classifica o comando usando Ollama para decidir rota rápida."""
-    if not llm_clients.is_ollama_available():
-        return None
-
-    try:
-        resposta = llm_clients.chat(
-            f"Comando: {comando}\nCategoria:",
-            system_prompt=(
-                "Classifique o comando do usuário. Responda com UMA palavra: simples, pesquisa, ferramentas ou sistema.\n"
-                "simples = conversa, cumprimento, piada, opinião, sentimentos, explicação ou conhecimento geral que "
-                "não muda.\n"
-                "pesquisa = fatos atuais: notícias, preços, cotações, resultados de jogos, clima, pessoas ou dados "
-                "que mudam.\n"
-                "ferramentas = abrir, enviar, criar, agendar ou controlar algo.\n"
-                "sistema = configuração ou estado da própria assistente.\n"
-                "Exemplos: 'me conta uma piada' -> simples; 'tô cansado' -> simples; 'qual a capital da França' -> "
-                "simples; 'quanto tá o dólar' -> pesquisa; 'abre o youtube' -> ferramentas."
-            ),
-            opcoes={"temperature": 0, "num_predict": 5},
-        )
-    except Exception as exc:
-        logger.warning("Falha ao classificar com Ollama: %s", exc)
-        return None
-    return categoria_da_resposta(resposta)
-
-
-# Os modelos pequenos às vezes respondem com a descrição ("conversa", "conhecimento geral") em vez do
-# rótulo; sem isso, papo e piada caíam na rota da biblioteca e saíam com cara de relatório.
-SINONIMOS_CATEGORIA = (
-    ("simples", ("simples", "conversa", "cumpriment", "piada", "opini", "sentiment", "explica", "conhecimento")),
-    ("pesquisa", ("pesquisa", "fatos atuais", "noticia", "preco", "cotac", "resultado", "clima")),
-    ("ferramentas", ("ferramenta", "abrir", "enviar", "criar", "agendar", "controlar")),
-    ("sistema", ("sistema", "configurac")),
-)
-
-
-def categoria_da_resposta(resposta: str) -> str | None:
-    texto = _normalizar_frase(resposta or "")
-    for categoria, _ in SINONIMOS_CATEGORIA:  # o rótulo certo primeiro
-        if categoria in texto:
-            return categoria
-    for categoria, pistas in SINONIMOS_CATEGORIA:
-        if any(pista in texto for pista in pistas):
-            return categoria
-    return None
+    """Classifica o comando usando Ollama para decidir rota rápida (simples, conhecimento, pesquisa, ferramentas, sistema)."""
+    return conversa_nuvem.classificar(comando, llm_clients)
 
 
 def extrair_texto_apos_comando(comando: str, frases: list[str]) -> str:
@@ -799,6 +760,11 @@ def tentar_executar_ferramenta(comando: str):
             avisar_painel("filmes", limpar_texto_para_fala(resposta_cinema), **cartao)
         return True, resposta_cinema
 
+    # "Pesquisa (no Gemini) a previsão do tempo": quem começa pedindo uma pesquisa quer a pesquisa, não a regra do
+    # clima nem a da data (as palavras "hoje" e "previsão" no meio da frase).
+    if RE_VERBO_DE_PESQUISA.search(texto):
+        return True, pesquisar_o_pedido(texto)
+
     pedido_clima = pedido_de_clima(c)
     if pedido_clima:
         resposta_clima = obter_previsao_tempo(*pedido_clima)
@@ -1013,21 +979,35 @@ def tentar_executar_ferramenta(comando: str):
         return True, "Preciso do destinatário do e-mail para abrir o cliente de e-mail."
 
     if any(termo in c for termo in ["pesquise", "procure", "buscar"]):
-        termos = ["pesquise", "procure", "buscar"]
-        # "pelo Gemini" / "no Claude" escolhe a IA que redige; sai da consulta, como o pedido de resumo.
-        sem_ia, ia = extrair_ia_pedida(texto)
-        consulta = extrair_texto_apos_comando(sem_ia, termos)
-        if ia and not consulta:
-            # "pesquise pelo Gemini": aqui o Gemini é o assunto da pesquisa, não a IA escolhida.
-            ia, consulta = None, extrair_texto_apos_comando(texto, termos)
-        resumo = bool(RE_PEDIDO_RESUMO.search(c))
-        if resumo and consulta:
-            consulta = tirar_pedido_de_resumo(consulta)
-        alvo = consulta or "assistente pessoal"
-        salvar = any(termo in c for termo in ["salve", "salvar", "guarde", "guardar"])
-        return True, responder_com_pesquisa_web(alvo, salvar=salvar, preferir=ia, resumo=resumo)
+        return True, pesquisar_o_pedido(texto)
 
     return False, None
+
+
+# "Pesquisa a reforma", "procura o preço do dólar", "busca…": o jeito de falar. Até out/2026 só "pesquise", "procure" e
+# "buscar" contavam, e "Pesquisa no Gemini a previsão do tempo de hoje à noite" virava a hora.
+RE_VERBO_DE_PESQUISA = re.compile(
+    r"^(?:(?:beatriz|beatris|biatriz)[\s,]+)?(?:(?:me|pra mim)\s+)?(?:pesquis[ae]r?|procur[ae]r?|busc(?:a|ar|que))\b",
+    re.IGNORECASE,
+)
+TERMOS_DE_PESQUISA = ["pesquise", "pesquisar", "pesquisa", "procure", "procurar", "procura", "buscar", "busque", "busca"]
+
+
+def pesquisar_o_pedido(texto: str) -> str:
+    """A pesquisa na web do pedido, com a IA dita na frase ("pelo Gemini", "usa o Claude") redigindo primeiro."""
+    c = texto.lower()
+    # "pelo Gemini" / "no Claude" escolhe a IA que redige; sai da consulta, como o pedido de resumo.
+    sem_ia, ia = extrair_ia_pedida(texto)
+    consulta = extrair_texto_apos_comando(sem_ia, TERMOS_DE_PESQUISA)
+    if ia and not consulta:
+        # "pesquise pelo Gemini": aqui o Gemini é o assunto da pesquisa, não a IA escolhida.
+        ia, consulta = None, extrair_texto_apos_comando(texto, TERMOS_DE_PESQUISA)
+    resumo = bool(RE_PEDIDO_RESUMO.search(c))
+    if resumo and consulta:
+        consulta = tirar_pedido_de_resumo(consulta)
+    alvo = consulta or "assistente pessoal"
+    salvar = any(termo in c for termo in ["salve", "salvar", "guarde", "guardar"])
+    return responder_com_pesquisa_web(alvo, salvar=salvar, preferir=ia, resumo=resumo)
 
 
 def iniciar_webcam_em_background(camera_index: int = None):
@@ -1216,6 +1196,18 @@ def estudar_arquivos(orquestrador, caminhos, pedido: str, canal: str = "voz", ia
     fonte. Avisa no fim pelo canal do pedido (e manda os arquivos se o pedido disse "me manda"), como as outras tarefas."""
     tarefa = orquestrador.enviar_estudo_de_arquivos(
         pedido, caminhos, ia=ia, abrir=canal == "voz",
+        ao_concluir=lambda t: anunciar_tarefa_concluida(pedido, t, canal, pede_envio(pedido)),
+    )
+    return orquestrador.mensagem_inicio(tarefa) if tarefa else None
+
+
+def peca_de_arquivos(orquestrador, caminhos, pedido: str, canal: str = "voz", ia: str = None):
+    """"Faz a peça desse caso" logo depois de um arquivo chegar (a foto ou o PDF do enunciado): o agente de peças, com o
+    arquivo como base; os fatos vão para o Claude, com o Gemini de reserva. Avisa no fim pelo canal do pedido."""
+    from agentes.pecas import pedido_de_peca
+
+    tarefa = orquestrador.enviar_peca(
+        pedido_de_peca(pedido) or "", pedido, caminhos, ia=ia, abrir=canal == "voz", pedido=pedido,
         ao_concluir=lambda t: anunciar_tarefa_concluida(pedido, t, canal, pede_envio(pedido)),
     )
     return orquestrador.mensagem_inicio(tarefa) if tarefa else None
@@ -2054,6 +2046,9 @@ def anunciar_tarefa_concluida(pedido: str, tarefa, canal: str = "voz", mandar_ar
     analisador.registrar_interacao(pedido, ["orquestrador", *tarefa.plano], duracao, tarefa.status == "concluída")
 
 
+PROVEDORES_DAS_TAREFAS = []  # o Claude e o Gemini do orquestrador (o Claude das tarefas tem a pausa própria)
+
+
 def publicar_status_painel(dados_compartilhados, intervalo=2.0):
     """Mantém o painel informado sobre a indexação e o modo, e aplica o modo escolhido nas abas.
 
@@ -2072,6 +2067,8 @@ def publicar_status_painel(dados_compartilhados, intervalo=2.0):
                 "modo": memory.MODO_CONVERSA_ATUAL,
                 "escuta": estado_escuta(),
             }
+            # As pausas do Claude e do Gemini (limite, sem cota) acontecem aqui: o painel, em outro processo, não as vê.
+            dados_compartilhados["nuvem"] = llm_nuvem.status_para_o_painel(*PROVEDORES_DAS_TAREFAS)
         except (EOFError, BrokenPipeError, ConnectionError):
             return  # o gerenciador foi encerrado junto com o programa
         except Exception as exc:
@@ -2157,6 +2154,20 @@ def clima_do_app() -> dict | None:
     return CLIMA_DO_APP["valor"]
 
 
+ORQUESTRADOR = {"atual": None}  # o dos agentes, para a peça nova da tela Estudos do app
+
+
+def peca_do_app(tipo: str, fatos: str, caminhos: list):
+    """A peça nova da tela Estudos do celular: vira tarefa dos agentes, e o fim chega na conversa do app."""
+    orquestrador = ORQUESTRADOR["atual"]
+    if orquestrador is None:
+        return "Os agentes ainda estão começando; tente de novo em alguns segundos."
+    pedido = f"Faz {'a peça cabível' if not tipo else 'a peça'} com estes fatos: {fatos}".strip()
+    tarefa = orquestrador.enviar_peca(tipo, fatos, caminhos, abrir=False, pedido=pedido,
+                                      ao_concluir=lambda t: anunciar_tarefa_concluida(pedido, t, "app", False))
+    return orquestrador.mensagem_inicio(tarefa) if tarefa else None
+
+
 def iniciar_app_celular(configuracao):
     """Sobe o servidor do app do celular (só no próprio PC; o iPhone chega pelo Tailscale) e liga o canal dele."""
     global CANAL_APP
@@ -2166,6 +2177,7 @@ def iniciar_app_celular(configuracao):
             canal, APARELHOS, dados=lambda: dados_para_o_app(configuracao), transcrever=transcrever_amostras,
             gerar_fala=gerar_arquivo_de_fala, limpar=limpar_texto_para_fala, agenda_semana=AGENDA.dados_semana,
             biblioteca=BIBLIOTECA, controle=CONTROLE, editar=CRAFT.editar_do_app, situacao_da_edicao=CRAFT.situacao,
+            estudos=preferencias_estudo, nova_peca=peca_do_app,
         )
         app_celular.iniciar_servidor(servidor)
         CANAL_APP = canal
@@ -2203,8 +2215,12 @@ def main(evento_carregamento=None):
     iniciar_lembretes(AGENDA, avisar_lembrete)
     # O andamento das tarefas dos agentes vai para o mesmo dicionário que o painel lê.
     orquestrador = criar_orquestrador(publicar=PainelCompartilhado(configuracao_audio))
+    ORQUESTRADOR["atual"] = orquestrador
+    PROVEDORES_DAS_TAREFAS[:] = [p for cadeia in (orquestrador.llm_nuvem, orquestrador.llm_fontes) if cadeia is not None
+                                 for p in cadeia.principais]
     # "Faz uma ficha desse PDF" (arquivo recebido) vira tarefa deste orquestrador.
     FONTES.estudar = lambda caminhos, pedido, canal, ia=None: estudar_arquivos(orquestrador, caminhos, pedido, canal, ia)
+    FONTES.peca = lambda caminhos, pedido, canal, ia=None: peca_de_arquivos(orquestrador, caminhos, pedido, canal, ia)
     if WHATSAPP_COMANDOS:
         # O estado do WhatsApp (QR, conectado...) também vai para o dicionário do painel.
         CANAL_WHATSAPP = CanalWhatsApp(configuracao_audio, numero=WHATSAPP_MEU_NUMERO)
@@ -2503,9 +2519,23 @@ def main(evento_carregamento=None):
             analisador.registrar_interacao(comando, [], 0.0, True)
             continue
 
+        # "usa o Claude pra…", "pergunta pro Gemini…": a IA pedida responde, e o nome dela sai da pergunta.
+        sem_ia, ia_pedida = extrair_ia_pedida(comando)
         # "e quanto custa?" vira "quanto custa o produto X?" antes de buscar na memória ou na web.
-        consulta = llm_clients.reescrever_consulta(comando)
+        consulta = llm_clients.reescrever_consulta(sem_ia if ia_pedida and sem_ia else comando)
         categoria = classificar_com_ollama(consulta)
+
+        # Conhecimento geral (explicações, conceitos) vai para a nuvem, Gemini e depois Claude, só com a pergunta; o
+        # que tem algo da vida da pessoa fica no PC. Sem nuvem, segue a conversa local.
+        if ia_pedida or (categoria == "conhecimento" and conversa_nuvem.pode_ir_para_a_nuvem(consulta)):
+            inicio_nuvem = time.time()
+            resposta_nuvem = conversa_nuvem.responder(consulta, preferir=ia_pedida, falada=canal_remoto() is None)
+            if resposta_nuvem:
+                falar_e_registrar(comando, resposta_nuvem)
+                analisador.registrar_interacao(comando, ["conversa_nuvem"], time.time() - inicio_nuvem, True)
+                continue
+        if categoria == "conhecimento":
+            categoria = "simples"  # nenhuma IA da nuvem respondeu: o Ollama explica, como antes
 
         if categoria == "simples":
             try:

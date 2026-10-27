@@ -49,6 +49,9 @@ def personalidade_isolada(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "CAMINHO_PERSONALIDADE", str(tmp_path / "personalidade_teste.json"))
     monkeypatch.setattr(config, "CAMINHO_CAMADAS", str(tmp_path / "camadas_teste.json"))  # nem as camadas aprendidas
+    # Nem as preferências de estudo e as fotos de exemplo da janela [ estudos ]: vale o padrão.
+    monkeypatch.setattr(config, "CAMINHO_PREFERENCIAS_ESTUDO", str(tmp_path / "preferencias_estudo_teste.json"))
+    monkeypatch.setattr(config, "PASTA_EXEMPLOS_ESTUDO", str(tmp_path / "exemplos_estudo_teste"))
     yield
 
 

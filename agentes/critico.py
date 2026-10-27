@@ -50,6 +50,8 @@ def _verificar_estudos(tarefa: Tarefa, conteudo: dict) -> list:
     resultado = []
     for chave, rotulo in (("flashcards", "flashcards"), ("questoes", "questões")):
         feitos = len(conteudo.get(chave) or [])
+        if not pedidos[chave]:
+            continue  # "nenhum" na janela de estudos
         # Aceita até 20% a menos: itens malformados são descartados pelo agente.
         resultado.append((f"{feitos} {rotulo} (pedido: {pedidos[chave]})", feitos >= max(1, int(pedidos[chave] * 0.8))))
     topicos = len(conteudo.get("topicos") or [])
@@ -73,6 +75,23 @@ def _verificar_aulas(tarefa: Tarefa, conteudo: dict) -> list:
     for aula in aulas:
         problemas = problemas_da_aula(aula)
         resultado.append((f"Aula {aula.get('numero')}: {'; '.join(problemas) or 'completa'}", not problemas))
+    return resultado
+
+
+def _verificar_peca(conteudo: dict) -> list:
+    """A forma da peça: endereçamento, abertura, seções, pedidos e fechamento em cada documento (interposição e razões)."""
+    documentos = conteudo.get("documentos") or []
+    resultado = [(f"Peça com {len(documentos)} documento(s)", bool(documentos))]
+    for numero, documento in enumerate(documentos, start=1):
+        secoes = [s for s in documento.get("secoes") or [] if isinstance(s, dict)]
+        resultado.append((f"Documento {numero}: endereçamento", bool(str(documento.get("enderecamento") or "").strip())))
+        resultado.append((f"Documento {numero}: abertura (preâmbulo)", len(str(documento.get("preambulo") or "").split()) >= 15))
+        resultado.append((f"Documento {numero}: fechamento", bool(documento.get("fechamento"))))
+        if numero == len(documentos):
+            resultado.append((f"Documento {numero}: {len(secoes)} seções (mínimo 3)", len(secoes) >= 3))
+            pedidos = [s for s in secoes if "PEDIDO" in str(s.get("titulo") or "").upper()]
+            itens = sum(len(s.get("itens") or []) + len(s.get("paragrafos") or []) for s in pedidos)
+            resultado.append((f"Pedidos: {itens} (mínimo 1)", itens >= 1))
     return resultado
 
 
@@ -126,6 +145,8 @@ def verificacoes_objetivas(tarefa: Tarefa) -> list:
         resultado.extend(_verificar_estudos(tarefa, conteudo))
     elif tarefa.tipo == "aulas":
         resultado.extend(_verificar_aulas(tarefa, conteudo))
+    elif tarefa.tipo == "peca":
+        resultado.extend(_verificar_peca(conteudo))
     elif tarefa.tipo == "resumo_dia":
         palavras = len(tarefa.contexto.get("resposta", "").split())
         resultado.append((f"Resumo falado com {palavras} palavras (mínimo 40)", palavras >= 40))
@@ -166,6 +187,11 @@ def _resumo_conteudo(tarefa: Tarefa) -> str:
     conteudo = tarefa.contexto.get("conteudo")
     if not conteudo:
         return tarefa.contexto.get("resposta", "")[:3000]
+    if tarefa.tipo == "peca":
+        # A peça inteira (as peças cabem): o revisor precisa ver os fundamentos e os pedidos.
+        enxuta = {"peca": conteudo.get("nome"), "por_que": conteudo.get("por_que"), "documentos": conteudo.get("documentos"),
+                  "valor_da_causa": conteudo.get("valor_da_causa"), "artigos_conferidos": (conteudo.get("conferencia") or {}).get("artigos")}
+        return json.dumps(enxuta, ensure_ascii=False, default=str)[:24000]
     if tarefa.tipo == "aulas":
         # Curso: o plano e o começo de cada aula (o texto inteiro passaria do que o crítico precisa).
         enxuto = {
@@ -207,6 +233,25 @@ FORMATO_COMBINADO_ESTUDOS = (
 )
 
 
+# A peça tem forma própria: o revisor avalia como um examinador da 2ª fase da OAB (os colchetes são de propósito).
+FORMATO_DAS_PECAS = (
+    "Avalie como um examinador da 2ª fase da OAB e um advogado experiente: a peça escolhida é a cabível para o caso, o "
+    "endereçamento e o juízo estão certos, a estrutura e os requisitos legais do tipo estão todos lá (cabimento, "
+    "tempestividade, preparo, partes, fatos, direito, pedidos, provas, valor da causa quando couber), os fundamentos "
+    "sustentam cada pedido e não há fato inventado. Os dados entre colchetes ([NOME DO AUTOR], 'Nome…', 'Advogado…') faltam "
+    "no caso e estão assim de propósito: não são problema.\n\n"
+)
+
+
+def _formato_escolhido(tarefa: Tarefa) -> str:
+    """As escolhas da janela de estudos (ficha enxuta, partes tiradas, guia das fotos), para o crítico não as reprovar."""
+    if tarefa.tipo not in ("estudos", "aulas") or not tarefa.contexto.get("preferencias"):
+        return ""
+    import preferencias_estudo
+
+    return preferencias_estudo.resumo_para_o_critico(tarefa.contexto["preferencias"])
+
+
 class AgenteCritico(Agente):
     nome = "critico"
     papel = "Analisa o resultado e decide se o pedido foi cumprido."
@@ -236,6 +281,8 @@ class AgenteCritico(Agente):
         prompt = (
             f"Pedido do usuário: {tarefa.pedido}\n\n"
             f"{FORMATO_COMBINADO_ESTUDOS if tarefa.tipo == 'estudos' else ''}"
+            f"{FORMATO_DAS_PECAS if tarefa.tipo == 'peca' else ''}"
+            f"{_formato_escolhido(tarefa)}"
             f"Conteúdo entregue (resumido):\n{_resumo_conteudo(tarefa)}{conferencia}"
         )
         try:

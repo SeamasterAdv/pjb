@@ -1246,13 +1246,16 @@ function ligarControles(inicio) {
   $("#btn-status").onclick = () => abrirStatus($("#fundo-status").hidden);
   $("#fundo-status").addEventListener("click", (e) => { if (e.target.id === "fundo-status") abrirStatus(false); });
   const fechar = { status: () => abrirStatus(false), agenda: () => abrirAgenda(false), registro: () => abrirRegistro(false),
-                   biblioteca: () => abrirBiblioteca(false), personalidade: () => abrirPersonalidade(false) };
+                   biblioteca: () => abrirBiblioteca(false), personalidade: () => abrirPersonalidade(false),
+                   estudos: () => abrirEstudos(false) };  // abrirEstudos fica no estudos.js
   document.querySelectorAll("[data-fechar]").forEach((b) => b.onclick = fechar[b.dataset.fechar]);
   ligarAgenda();
   ligarBiblioteca();
   ligarPersonalidade();
   addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); abrirPersonalidade(false); }
+    if (e.key === "Escape") {
+      abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); abrirPersonalidade(false); abrirEstudos(false);
+    }
     if (e.key === "k" && e.ctrlKey) { entrada.focus(); e.preventDefault(); }
   });
   const atalhos = $("#atalhos");

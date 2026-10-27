@@ -396,11 +396,39 @@ class ClienteClaudeCode(ProvedorNuvem):
         if self._pasta_neutra is None:
             # Pasta vazia: o Claude Code não carrega instruções nem arquivos de nenhum projeto.
             self._pasta_neutra = tempfile.mkdtemp(prefix="beatriz_claude_")
+        return self._rodar(self._comando(sistema), prompt, self._pasta_neutra)
+
+    def ver_imagens(self, caminhos, prompt, system_prompt=None):
+        """O Claude olha imagens (as fotos de exemplo de resumo): as cópias vão para uma pasta temporária só delas, e ele
+        só tem a ferramenta de ler, só lá dentro (`Read(./**)`, como na evolução do código). Mesma pausa e contagem de uso."""
+        if not self.disponivel():
+            raise NuvemIndisponivel("Claude indisponível no momento")
+        from preferencias_estudo import copiar_fotos_para
+
+        pasta = tempfile.mkdtemp(prefix="beatriz_fotos_")
+        try:
+            nomes = copiar_fotos_para(pasta, list(caminhos))
+            sistema = (system_prompt or "Você é a Beatriz.") + (
+                "\n\nResponda apenas com o objeto JSON, sem texto antes ou depois e sem blocos de código.")
+            comando = [
+                self.executavel, "-p", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config",
+                "--disable-slash-commands", "--permission-mode", "dontAsk", "--tools", "Read",
+                "--allowedTools", "Read(./**)", "--system-prompt", sistema,
+            ]
+            if self._modelo_cli:
+                comando += ["--model", self._modelo_cli]
+            pedido = (f"{prompt}\n\nAbra com a ferramenta Read cada uma destas imagens, nesta pasta: "
+                      f"{', '.join(nomes)}. Depois responda.")
+            return self._rodar(comando, pedido, pasta)
+        finally:
+            shutil.rmtree(pasta, ignore_errors=True)
+
+    def _rodar(self, comando: list, prompt: str, pasta: str) -> str:
         ambiente = {k: v for k, v in os.environ.items() if k not in self.VARIAVEIS_DE_API}
         try:
             processo = self._executar(
-                self._comando(sistema), input=prompt, capture_output=True, text=True, encoding="utf-8",
-                cwd=self._pasta_neutra, env=ambiente, timeout=self.tempo_limite,
+                comando, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                cwd=pasta, env=ambiente, timeout=self.tempo_limite,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except subprocess.TimeoutExpired as exc:
@@ -425,10 +453,14 @@ class ClienteClaudeCode(ProvedorNuvem):
 
 # ------------------------------------------------------------------- escolha da IA
 NOMES_IA = {"claude": "Claude", "gemini": "Gemini"}
-# "pelo Gemini", "no Claude", "com o Gemini", "usando o Claude": a IA pedida na própria frase.
+# "pelo Gemini", "no Claude", "com o Gemini", "usando o Claude", e também "usa o Claude pra…", "pergunta pro Gemini…",
+# "pede pro Claude…" (até out/2026 esses três eram ignorados: "USA o Claude pra produzir uma peça" ia para o PC).
 # Inclui grafias comuns da transcrição de voz ("gêmini", "jemini", "clóde").
+_NOMES_DAS_IAS = r"(gemini|g[eê]mini|jemini|claude|cl[oó]de)"
 RE_IA_PEDIDA = re.compile(
-    r"[\s,]*\b(?:pel[oa]|n[oa]|com|usando|via)\s+(?:[oa]\s+)?(gemini|g[eê]mini|jemini|claude|cl[oó]de)\b",
+    r"[\s,]*\b(?:(?:pel[oa]|n[oa]|com|usando|via)\s+(?:[oa]\s+)?" + _NOMES_DAS_IAS +
+    r"|(?:us[ae]r?|pergunt[ae]r?|ped[ei]r?)\s+(?:(?:[oa]|pr[oa]|para\s+[oa]|ao|à)\s+)?" + _NOMES_DAS_IAS +
+    r"(?:\s+(?:pra|para)\b)?)\b",
     re.IGNORECASE,
 )
 
@@ -438,7 +470,7 @@ def extrair_ia_pedida(texto: str):
     achado = RE_IA_PEDIDA.search(texto or "")
     if not achado:
         return texto, None
-    ia = "claude" if achado.group(1).lower().startswith("cl") else "gemini"
+    ia = "claude" if (achado.group(1) or achado.group(2)).lower().startswith("cl") else "gemini"
     restante = (texto[:achado.start()] + " " + texto[achado.end():]).strip()
     return re.sub(r"\s{2,}", " ", restante), ia
 
@@ -503,6 +535,21 @@ gemini = ClienteGemini()
 
 
 ORDENS_POR_FUNCAO = {"pesquisa": ORDEM_IA_PESQUISA, "agentes": ORDEM_IA_AGENTES}
+
+
+def status_para_o_painel(*outras) -> list:
+    """[{"nome", "texto", "estado"}] do Claude e do Gemini, juntando as instâncias deste processo (a da conversa e as das
+    tarefas, em `outras`): vale a que está em pausa, porque o limite do plano de uma é o das outras.
+
+    O processo principal publica isto para o painel, que roda em outro processo e não vê as pausas daqui.
+    """
+    instancias = [claude, gemini] + [p for p in outras if p is not None]
+    saida = []
+    for nome in ("Claude", "Gemini"):
+        estados = [p.status() for p in instancias if getattr(p, "nome", "") == nome]
+        texto, estado = next((s for s in estados if s[1] == "pausado"), estados[0])
+        saida.append({"nome": nome, "texto": texto, "estado": estado})
+    return saida
 
 
 def provedores_nuvem(funcao: str = None) -> list:

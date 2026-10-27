@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 PASTA_APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interface_app")
 PASTA_VISUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interface_web")
-ARQUIVOS_DO_VISUAL = {"visual_rede.js", "visual_ajustes.json", "vendor/three/build/three.module.min.js"}
+# Do interface_web, o app usa o visual em rede e o componente da janela de estudos (a mesma do painel).
+ARQUIVOS_DO_VISUAL = {"visual_rede.js", "visual_ajustes.json", "vendor/three/build/three.module.min.js", "estudos.js"}
 VALIDADE_DO_CODIGO = 300.0
 TENTATIVAS_DO_CODIGO = 5
 CONECTADO_SEGUNDOS = 45.0  # o app busca mensagens sem parar; sem busca há mais que isto, ele está fechado
@@ -445,11 +446,14 @@ def _buscar_imagem(endereco: str) -> tuple[str, bytes]:
 def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcrever=None, gerar_fala=None,
                    limpar=lambda texto: texto, pasta_recebidos: str = PASTA_RECEBIDOS, limite_mb: float = LIMITE_DO_ARQUIVO_MB,
                    agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc, controle=None,
-                   editar=None, situacao_da_edicao=None, limite_da_edicao_mb: float = LIMITE_DA_EDICAO_MB):
+                   editar=None, situacao_da_edicao=None, limite_da_edicao_mb: float = LIMITE_DA_EDICAO_MB, estudos=None,
+                   nova_peca=None):
     """O app FastAPI. `dados()` -> dict do painel do celular; `transcrever(amostras)` -> (texto, confiança);
     `gerar_fala(texto)` -> caminho do áudio; `agenda_semana(deslocamento)` -> a semana da agenda;
     `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões; `controle` -> o AgenteControle (TV e ar);
-    `editar(caminho, pedido)` e `situacao_da_edicao(tarefa)` -> a tela "Editar" (AgenteCraft.editar_do_app e .situacao)."""
+    `editar(caminho, pedido)` e `situacao_da_edicao(tarefa)` -> a tela "Editar" (AgenteCraft.editar_do_app e .situacao);
+    `estudos` -> o módulo preferencias_estudo (a tela Estudos); `nova_peca(tipo, fatos, caminhos)` -> a mensagem de início da
+    peça processual (Orquestrador.enviar_peca)."""
     from collections import OrderedDict
 
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -686,6 +690,99 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
             raise HTTPException(404, "Essa edição não existe (o PC pode ter reiniciado).")
         return _com_anexos(situacao)
 
+    # -- a tela Estudos: as mesmas escolhas da janela [ estudos ] do painel (preferencias_estudo.py) e a peça nova
+    arquivos_das_pecas = OrderedDict()  # id -> caminho dos arquivos do caso que o celular mandou para uma peça
+
+    def _estudos():
+        if estudos is None:
+            raise HTTPException(503, "As escolhas de estudo não estão disponíveis.")
+        return estudos
+
+    async def _corpo_json(request: Request) -> dict:
+        try:
+            corpo = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Pedido inválido.")
+        if not isinstance(corpo, dict):
+            raise HTTPException(400, "Pedido inválido.")
+        return corpo
+
+    @app.get("/api/estudos")
+    def estudos_ler(quem: dict = Depends(aparelho)):
+        return _estudos().para_a_janela()
+
+    @app.post("/api/estudos")
+    async def estudos_salvar(request: Request, quem: dict = Depends(aparelho)):
+        modulo = _estudos()
+        return modulo.resultado(modulo.salvar, await _corpo_json(request))
+
+    @app.post("/api/estudos/padrao")
+    def estudos_padrao(quem: dict = Depends(aparelho)):
+        modulo = _estudos()
+        return modulo.resultado(modulo.restaurar_padrao)
+
+    @app.post("/api/estudos/foto")
+    async def estudos_foto_nova(request: Request, quem: dict = Depends(aparelho)):
+        modulo = _estudos()
+        conteudo = await request.body()
+        if len(conteudo) > modulo.LIMITE_DA_FOTO_MB * 1024 * 1024:
+            raise HTTPException(413, f"A foto passa de {modulo.LIMITE_DA_FOTO_MB} MB.")
+        nome = nome_seguro(unquote(request.headers.get("X-Nome", "")) or "foto.jpg")
+        return modulo.resultado(modulo.adicionar_foto, nome, conteudo)
+
+    @app.get("/api/estudos/foto/{foto_id}")
+    def estudos_foto(foto_id: str, quem: dict = Depends(aparelho)):
+        modulo = _estudos()
+        try:
+            return {"src": modulo.miniatura(modulo.caminho_da_foto(foto_id))}
+        except (modulo.ErroDasPreferencias, OSError):
+            raise HTTPException(404, "Foto não encontrada.")
+
+    @app.post("/api/estudos/foto/{foto_id}/apagar")
+    def estudos_foto_apagar(foto_id: str, quem: dict = Depends(aparelho)):
+        modulo = _estudos()
+        return modulo.resultado(modulo.apagar_foto, foto_id)
+
+    @app.post("/api/estudos/guia")
+    async def estudos_guia(quem: dict = Depends(aparelho)):
+        from starlette.concurrency import run_in_threadpool
+
+        modulo = _estudos()
+        return await run_in_threadpool(modulo.resultado, modulo.extrair_guia)  # o Claude leva de 20 s a 1 min
+
+    @app.post("/api/estudos/peca-arquivo")
+    async def estudos_peca_arquivo(request: Request, quem: dict = Depends(aparelho)):
+        """Um arquivo do caso (a foto ou o PDF do enunciado): fica nos recebidos, e o id dele vai no pedido da peça."""
+        nome = nome_seguro(unquote(request.headers.get("X-Nome", "")) or "caso")
+        if os.path.splitext(nome)[1].lower() in EXTENSOES_BLOQUEADAS:
+            raise HTTPException(415, f"Não guardo arquivos {os.path.splitext(nome)[1].lower()} (podem ser programas).")
+        conteudo = await request.body()
+        if not conteudo:
+            raise HTTPException(400, "O arquivo chegou vazio.")
+        if len(conteudo) > limite_mb * 1024 * 1024:
+            raise HTTPException(413, f"O arquivo passa de {limite_mb:g} MB.")
+        destino = caminho_livre(os.path.join(pasta_recebidos, datetime.now().strftime("%Y-%m-%d")), nome)
+        with open(destino, "wb") as saida:
+            saida.write(conteudo)
+        identificador = secrets.token_urlsafe(9)
+        arquivos_das_pecas[identificador] = destino
+        while len(arquivos_das_pecas) > 40:
+            arquivos_das_pecas.popitem(last=False)
+        return {"ok": True, "id": identificador, "nome": os.path.basename(destino)}
+
+    @app.post("/api/estudos/peca")
+    async def estudos_peca(request: Request, quem: dict = Depends(aparelho)):
+        from starlette.concurrency import run_in_threadpool
+
+        if nova_peca is None:
+            raise HTTPException(503, "As peças não estão disponíveis.")
+        corpo = await _corpo_json(request)
+        caminhos = [arquivos_das_pecas[i] for i in corpo.get("arquivos") or [] if isinstance(i, str) and i in arquivos_das_pecas]
+        mensagem = await run_in_threadpool(nova_peca, str(corpo.get("tipo") or ""), str(corpo.get("fatos") or "")[:20000], caminhos)
+        if not mensagem:
+            return {"ok": False, "mensagem": "Escreva os fatos do caso ou mande os arquivos dele."}
+        return {"ok": True, "mensagem": mensagem}
+
     # -- controle remoto (TV e ar pelo Ekaza): os botões da tela vão direto ao agente, sem passar pela conversa
     @app.get("/api/controle")
     def controle_painel(quem: dict = Depends(aparelho)):
@@ -792,6 +889,27 @@ def _controle_de_mentira(pasta: str):
             time.sleep(0.8)
 
     return AgenteControle(RegistroDoControle(os.path.join(pasta, "controle.json")), local=Local(), nuvem=Nuvem())
+
+
+def _estudos_de_mentira(pasta: str):
+    """As escolhas de estudo de verdade (preferencias_estudo), mas gravadas na pasta da demonstração, e um guia de mentira
+    (sem mandar as fotos ao Claude)."""
+    import types
+
+    import config
+    import preferencias_estudo
+
+    config.CAMINHO_PREFERENCIAS_ESTUDO = os.path.join(pasta, "preferencias_estudo.json")
+    config.PASTA_EXEMPLOS_ESTUDO = os.path.join(pasta, "exemplos_estudo")
+    resposta = json.dumps({"resumo": "Esquemas curtos, com uma caixa colorida por tipo de informação.",
+                           "estrutura": ["Título numerado com a regra logo embaixo", "Exceções em lista, cada uma com o artigo"],
+                           "visual": ["Caixas com borda à esquerda", "Palavras-chave em negrito"],
+                           "texto": ["Frases de uma linha"], "evitar": ["Parágrafos longos"],
+                           "cores": {"principal": "#1D3A8A", "destaque": "#E11D48"}})
+    estudos = types.SimpleNamespace(**{nome: getattr(preferencias_estudo, nome) for nome in dir(preferencias_estudo)
+                                       if not nome.startswith("_")})
+    estudos.extrair_guia = lambda: preferencias_estudo.extrair_guia(ver_com_claude=lambda fotos, prompt, sistema: resposta)
+    return estudos
 
 
 def _demonstracao(porta: int):
@@ -917,11 +1035,18 @@ def _demonstracao(porta: int):
     from agente_craft import AgenteCraft
 
     craft = AgenteCraft(avisar=lambda resposta, canal_do_pedido: canal.enviar(resposta.texto, resposta.arquivos))
+    estudos = _estudos_de_mentira(pasta)
+
+    def peca_de_mentira(tipo, fatos, caminhos):
+        canal.enviar(f"(demonstração) A peça {tipo or 'cabível'} ficaria pronta aqui, com {len(caminhos)} arquivo(s) do caso.")
+        return "Certo, vou redigir a peça: estrutura, fundamentos conferidos no vade-mécum e os pedidos, em Word e PDF."
+
     app = criar_servidor(canal, aparelhos, dados=dados, transcrever=lambda amostras: ("que horas são?", 0.9), agenda_semana=semana,
                          gerar_fala=fala_de_mentira,
                          buscar_imagem=poster_de_mentira, biblioteca=biblioteca, controle=_controle_de_mentira(pasta),
                          recursos=lambda: {"cpu": random.randint(12, 48), "ram": random.randint(58, 66), "disco": 71},
-                         editar=craft.editar_do_app, situacao_da_edicao=craft.situacao, pasta_recebidos=os.path.join(pasta, "recebidos"))
+                         editar=craft.editar_do_app, situacao_da_edicao=craft.situacao, pasta_recebidos=os.path.join(pasta, "recebidos"),
+                         estudos=estudos, nova_peca=peca_de_mentira)
     codigo = aparelhos.novo_codigo()
     print(f"Demonstração em http://127.0.0.1:{porta}  |  código de pareamento: {codigo} (vale 5 min)", flush=True)
     import uvicorn

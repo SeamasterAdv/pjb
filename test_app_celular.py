@@ -580,3 +580,52 @@ def test_tela_do_controle_na_pagina():
     for trecho in ('id="tela-controle"', 'data-acao="controle"', 'id="w-casa"', 'data-tv="volume_mais"', 'id="ar-ligar"'):
         assert trecho in pagina, trecho
     assert 'data-acao="arquivos" role="listitem"' not in pagina  # "Mandar ao PC" ficou só no clipe da barra de baixo
+
+
+# ------------------------------------------------------------------ tela Estudos
+def test_tela_estudos_le_salva_e_guarda_as_fotos(tmp_path, pastas):
+    import preferencias_estudo
+
+    pecas = []
+    canal, aparelhos = CanalApp(), Aparelhos(str(tmp_path / "aparelhos.json"))
+    app = criar_servidor(canal, aparelhos, pasta_recebidos=str(pastas[1]), limite_mb=1, estudos=preferencias_estudo,
+                         nova_peca=lambda tipo, fatos, caminhos: pecas.append((tipo, fatos, caminhos)) or "Certo, vou redigir.")
+    cliente = TestClient(app)
+    assert cliente.get("/api/estudos").status_code == 401  # só aparelho pareado
+    chave = parear(cliente, aparelhos)
+    dados = cliente.get("/api/estudos", headers=chave).json()
+    assert dados["preferencias"]["estilo"] == "tatico" and dados["tipos_de_peca"]
+    salvo = cliente.post("/api/estudos", headers=chave, json={"estilo": "esquematico", "cores": "verde"}).json()
+    assert salvo["ok"] and preferencias_estudo.atual()["estilo"] == "esquematico"
+    assert not cliente.post("/api/estudos", headers=chave, json={"estilo": "poema"}).json()["ok"]
+
+    png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00"
+           b"\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82")
+    foto = cliente.post("/api/estudos/foto", headers={**chave, "X-Nome": "resumo%20bonito.png"}, content=png).json()
+    assert foto["ok"] and len(foto["dados"]["fotos"]) == 1
+    foto_id = foto["dados"]["fotos"][0]["id"]
+    assert cliente.get(f"/api/estudos/foto/{foto_id}", headers=chave).json()["src"].startswith("data:image/jpeg")
+    assert cliente.get("/api/estudos/foto/nao_existe.png", headers=chave).status_code == 404
+    assert not cliente.post("/api/estudos/foto", headers={**chave, "X-Nome": "a.exe"}, content=b"MZ").json()["ok"]
+    assert cliente.post(f"/api/estudos/foto/{foto_id}/apagar", headers=chave).json()["dados"]["fotos"] == []
+    assert cliente.post("/api/estudos/padrao", headers=chave).json()["dados"]["preferencias"]["estilo"] == "tatico"
+
+    # A peça nova: o arquivo do caso sobe antes, e só o id dele vai no pedido.
+    caso = cliente.post("/api/estudos/peca-arquivo", headers={**chave, "X-Nome": "caso.pdf"}, content=b"%PDF-1.4 caso").json()
+    assert caso["ok"] and cliente.post("/api/estudos/peca-arquivo", headers={**chave, "X-Nome": "x.bat"}, content=b"x").status_code == 415
+    resposta = cliente.post("/api/estudos/peca", headers=chave,
+                            json={"tipo": "contestacao", "fatos": "O autor cobra R$ 5 mil.", "arquivos": [caso["id"], "inventado"]})
+    assert resposta.json() == {"ok": True, "mensagem": "Certo, vou redigir."}
+    tipo, fatos, caminhos = pecas[-1]
+    assert tipo == "contestacao" and fatos == "O autor cobra R$ 5 mil." and len(caminhos) == 1
+    assert os.path.dirname(os.path.dirname(caminhos[0])) == str(pastas[1])  # nos recebidos
+
+
+def test_componente_da_janela_de_estudos_sai_para_o_app(ambiente):
+    cliente, *_ = ambiente
+    componente = cliente.get("/visual/estudos.js")
+    assert componente.status_code == 200 and componente.headers["content-type"].startswith("text/javascript")
+    assert "window.JanelaDeEstudos" in componente.text
+    pagina = cliente.get("/").text
+    assert 'id="tela-estudos"' in pagina and 'src="visual/estudos.js"' in pagina and 'id="es-folha"' in pagina
+    assert cliente.get("/api/estudos", headers=parear(cliente, ambiente[2])).status_code == 503  # sem o módulo, explica

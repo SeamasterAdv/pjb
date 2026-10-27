@@ -209,6 +209,81 @@ function cartaoFilmes(ev) {
   adicionarAoRegistro(cartao);
 }
 
+/* ------------------------------------------------------------------ criações do Claude (no lugar da esfera) */
+// "Cria uma imagem de…" (SVG, mostrado num <img>, onde nada roda) ou "cria um modelo 3D de…" (cena montada pelo
+// criacao_3d.js, carregado só quando precisa). Fica até "fecha a imagem" ou o botão "× esfera".
+const ROTULOS_CRIACAO = { imagem: "imagem", "3d": "modelo 3d" };
+let criacaoAtual = null; // {formato, arquivo, url, visualizador}
+let modulo3d = null;
+
+function andamentoDaCriacao(ev) {
+  const andamento = $("#criacao-andamento");
+  andamento.hidden = !ev;
+  if (ev) $("#criacao-andamento-texto").textContent = `${ROTULOS_CRIACAO[ev.formato] || ""} · ${ev.texto}`;
+}
+
+function limparPalcoDaCriacao() {
+  if (!criacaoAtual) return;
+  if (criacaoAtual.visualizador) criacaoAtual.visualizador.descartar();
+  if (criacaoAtual.url) URL.revokeObjectURL(criacaoAtual.url);
+  $("#criacao-palco").replaceChildren();
+  criacaoAtual = null;
+}
+
+async function mostrarCriacao(ev) {
+  andamentoDaCriacao(null);
+  limparPalcoDaCriacao();
+  const palco = $("#criacao-palco"), atual = { formato: ev.formato, arquivo: ev.arquivo };
+  criacaoAtual = atual;
+  $("#criacao-formato").textContent = ROTULOS_CRIACAO[ev.formato] || "criação";
+  $("#criacao-nome").textContent = ev.titulo || "";
+  $("#criacao-ia").textContent = ev.ia ? `por ${ev.ia}` : "";
+  $("#criacao-abrir").hidden = !ev.arquivo;
+  $("#criacao").hidden = false;
+  document.body.dataset.criacao = ev.formato;
+  if (ev.formato === "3d") {
+    $("#criacao-dica").textContent = "arraste para girar · roda do mouse aproxima";
+    palco.classList.add("carregando");
+    try {
+      modulo3d = modulo3d || await import("./criacao_3d.js");
+      if (criacaoAtual !== atual) return; // outra criação chegou enquanto o módulo carregava
+      atual.visualizador = new modulo3d.VisualizadorDeModelo(palco, ev.modelo);
+      guardarGLB(atual);
+    } catch (erro) {
+      $("#criacao-dica").textContent = "não consegui montar o modelo neste painel";
+    } finally { palco.classList.remove("carregando"); }
+  } else {
+    $("#criacao-dica").textContent = "";
+    atual.url = URL.createObjectURL(new Blob([ev.svg || ""], { type: "image/svg+xml" }));
+    const imagem = document.createElement("img");
+    imagem.src = atual.url; imagem.alt = ev.titulo || "imagem criada"; imagem.draggable = false;
+    palco.appendChild(imagem);
+  }
+}
+
+// O modelo vira .glb ao lado do .json; "abrir o arquivo" passa a abrir o .glb (Visualizador 3D do Windows).
+async function guardarGLB(atual) {
+  if (!api || !api.criacao_glb || !atual.arquivo || !atual.arquivo.endsWith(".json")) return;
+  try {
+    const bytes = new Uint8Array(await atual.visualizador.exportarGLB());
+    let binario = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) binario += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    const caminho = await api.criacao_glb(atual.arquivo, btoa(binario));
+    if (caminho) atual.arquivo = caminho;
+  } catch (erro) { /* fica só o .json */ }
+}
+
+function fecharCriacao() {
+  limparPalcoDaCriacao();
+  $("#criacao").hidden = true;
+  delete document.body.dataset.criacao;
+}
+
+function ligarCriacao() {
+  $("#criacao-fechar").onclick = fecharCriacao;
+  $("#criacao-abrir").onclick = () => { if (criacaoAtual && criacaoAtual.arquivo) api.abrir(criacaoAtual.arquivo); };
+}
+
 /* ------------------------------------------------------------------ eventos */
 function tratarEvento(ev) {
   const texto = ev.texto || "";
@@ -255,6 +330,14 @@ function tratarEvento(ev) {
       if (!$("#fundo-agenda").hidden) carregarAgenda();
       carregarAgendaDaTela();
       break;
+    case "criacao_iniciada":
+      andamentoDaCriacao(ev); break;
+    case "criacao":
+      mostrarCriacao(ev); celebrar(); break;
+    case "criacao_falhou":
+      andamentoDaCriacao(null); break;
+    case "criacao_fechar":
+      fecharCriacao(); break;
     case "abrir_agenda":
       abrirAgenda(true); break;
     case "agenda_mudou":
@@ -1271,6 +1354,7 @@ async function comecar(ponte) {
   api = ponte;
   const inicio = await api.inicio();
   ligarControles(inicio);
+  ligarCriacao();
   const buscarEventos = async () => {
     try { for (const ev of await api.eventos()) tratarEvento(ev); } catch (erro) { /* a ponte se recupera sozinha */ }
     setTimeout(buscarEventos, 250);

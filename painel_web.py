@@ -8,6 +8,7 @@ Roda num processo próprio, como o painel clássico em Tkinter (interface_texto.
 continua disponível com INTERFACE=tk no .env. Os nomes que começam com "_" não ficam
 visíveis para o JavaScript.
 """
+import base64
 import ctypes
 import logging
 import os
@@ -29,6 +30,7 @@ from agente_leis import AgenteLeis
 from agentes import PainelCompartilhado, criar_orquestrador
 from biblioteca_fontes import BibliotecaDeFontes, ErroDaBiblioteca, resultado as resultado_da_biblioteca
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
+from criacao_visual import AgenteCriacao
 from config import MASCOTE_NA_TELA, MODOS_PASTAS, OLLAMA_MODEL, PASTA_DOCUMENTOS_GERADOS
 from interface_texto import ATALHOS_RAPIDOS, definir_id_app_windows, verificar_ollama
 from jeito_de_falar import frase
@@ -63,6 +65,7 @@ PASTA_ARMAZENAMENTO = os.path.join(PASTA_PROJETO, "banco_memoria", "painel_web")
 FUNDO = "#000000"
 EVENTOS_POR_BUSCA = 50
 VALIDADE_OLLAMA = 15.0  # segundos entre consultas ao Ollama
+LIMITE_GLB = 60 * 1024 * 1024  # o modelo 3D das criações, exportado pelo painel
 VALIDADE_BIBLIOTECA = 10.0  # contar trechos e conversas a cada busca de estado pesaria
 
 
@@ -122,6 +125,8 @@ class ApiPainel:
         # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
         self._craft = AgenteCraft(recebidos=self._fontes.recebidos_do_pedido, arquivos=self._pastas.arquivos,
                                   avisar=lambda resposta, canal: self._responder(resposta.texto))  # o vídeo editado chega depois
+        # "Cria uma imagem de…" / "cria um modelo 3D de…": o Claude desenha e o resultado vai para o centro, no lugar da esfera.
+        self._criacao = AgenteCriacao(mostrar=self._emitir, avisar=lambda texto, canal, arquivos: self._responder(texto))
         self._tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa (não a do painel)
         # Biblioteca de fontes organizada à mão: a nova leitura do índice é pedida ao processo principal (só ele grava no banco).
         self._biblioteca = BibliotecaDeFontes(ao_mudar=self._pedir_leitura_da_biblioteca)
@@ -454,6 +459,24 @@ class ApiPainel:
         os.startfile(caminho)
         return True
 
+    def criacao_glb(self, arquivo_json: str, dados: str) -> str:
+        """Grava ao lado do .json da criação o modelo 3D em .glb, que o painel exportou (base64). Só na pasta das criações."""
+        caminho = os.path.realpath(arquivo_json or "")
+        pasta = os.path.dirname(caminho)
+        if (not caminho.endswith(".json") or not os.path.isfile(caminho) or not pasta.endswith("_criacoes")
+                or not pasta.startswith(os.path.realpath(PASTA_DOCUMENTOS_GERADOS))):
+            return ""
+        try:
+            conteudo = base64.b64decode(dados or "", validate=True)
+        except ValueError:
+            return ""
+        if not conteudo.startswith(b"glTF") or len(conteudo) > LIMITE_GLB:
+            return ""
+        destino = caminho[:-5] + ".glb"
+        with open(destino, "wb") as arquivo:
+            arquivo.write(conteudo)
+        return destino
+
     # ------------------------------------------------------------------ por dentro
     def _emitir(self, evento: dict):
         """Manda o evento para a página do painel e para a mascote da tela."""
@@ -497,6 +520,9 @@ class ApiPainel:
             resposta_craft = self._craft.responder(comando, "painel")
             if resposta_craft:  # apps da ArtCraft, antes das fontes ("converte esse Word" não é pergunta sobre ele)
                 return self._responder(resposta_craft.texto)
+            resposta_criacao = self._criacao.responder(comando, "painel")
+            if resposta_criacao:  # imagem ou modelo 3D pelo Claude, depois dos apps ("faz uma imagem desse PDF" é deles)
+                return self._responder(resposta_criacao)
             resposta_fontes = self._fontes.responder(comando, "painel")
             if resposta_fontes:
                 return self._responder(resposta_fontes)

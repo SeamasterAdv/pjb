@@ -188,6 +188,19 @@ def controle_remoto_intocado(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def criacoes_isoladas(tmp_path, monkeypatch):
+    """Nenhum teste pede uma imagem ou um modelo 3D ao Claude de verdade nem grava nos documentos gerados."""
+    import criacao_visual
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou pedir uma criação ao Claude ou ao Gemini de verdade")
+
+    monkeypatch.setattr(criacao_visual, "_provedores_padrao", proibido)
+    monkeypatch.setattr(criacao_visual, "PASTA_DOCUMENTOS_GERADOS", str(tmp_path / "documentos_gerados"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def apps_craft_intocados(monkeypatch):
     """Nenhum teste roda os programas da ArtCraft, abre um app ou abre o resultado de uma conversão no PC de verdade."""
     import agente_craft

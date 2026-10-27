@@ -131,6 +131,30 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 body[data-estado="pensando"] .rotulo-estado .marca-estado,
 body[data-estado="ouvindo"] .rotulo-estado .marca-estado { animation: piscar .8s steps(2) infinite; }
+/* A criação do Claude (imagem ou modelo 3D) no lugar da esfera, até fechar. */
+body[data-criacao] .esfera { display: none; }
+.criacao { flex: 1 1 0; min-height: 200px; width: min(1040px, 100%); display: flex; flex-direction: column; margin: 6px 0 10px;
+           animation: aparecer-criacao .7s ease-out; }
+.criacao[hidden] { display: none; }
+.criacao .titulo-quadro { align-items: center; }
+.criacao-nome { color: var(--claro); letter-spacing: .1em; }
+.criacao-acoes { display: flex; align-items: center; gap: 8px; }
+.criacao-acoes .pequeno { padding: 2px 9px; font-size: 9.5px; }
+.criacao-palco { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.criacao-palco img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; user-select: none; -webkit-user-drag: none; }
+.criacao-dica { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--suave);
+                text-align: center; padding-top: 6px; min-height: 16px; }
+.criacao-palco.carregando::after {
+  content: "montando…"; font-family: var(--mono); font-size: 11px; letter-spacing: .3em; text-transform: uppercase; color: var(--suave);
+}
+body[data-estado="falando"] .criacao { box-shadow: 0 0 0 1px var(--linha-forte); }
+.criacao-andamento { color: var(--suave); letter-spacing: .2em; }
+.criacao-andamento #criacao-andamento-texto { color: var(--cor); animation: piscar 1.2s steps(2) infinite; }
+@keyframes aparecer-criacao {
+  from { opacity: 0; clip-path: inset(48% 0 48% 0); }
+  60% { opacity: 1; clip-path: inset(0 0 0 0); }
+  to { opacity: 1; }
+}
 .legendas { position: relative; width: min(820px, 96%); min-height: 64px; margin: 6px 0 10px; text-align: center; }
 .legenda { margin: 3px 0; line-height: 1.45; transition: opacity .8s, color 1s; }
 .legenda.voce { color: var(--suave); font-size: 14.5px; }

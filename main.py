@@ -63,6 +63,7 @@ from llm_clients import llm_clients
 from agentes import (PainelCompartilhado, criar_orquestrador, descricao_do_arquivo_pedido, pede_envio, pedido_de_arquivo,
                      texto_da_entrega)
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
+from criacao_visual import AgenteCriacao
 from resumo_explicativo import gerar_resumo, preparar_pedido_de_resumo
 import llm_nuvem
 from llm_nuvem import NOMES_IA, extrair_ia_pedida, responder_na_nuvem
@@ -1248,6 +1249,32 @@ def responder_craft(resposta, canal: str | None = None) -> None:
 CRAFT = AgenteCraft(recebidos=FONTES.recebidos_do_pedido, arquivos=PASTAS.arquivos, avisar=responder_craft)
 
 
+def mostrar_criacao(evento: dict) -> None:
+    """O começo, o resultado e o fechar de uma criação vão para o painel (que a mostra no lugar da esfera)."""
+    dados = dict(evento)
+    avisar_painel(dados.pop("tipo"), dados.pop("texto", "") or "-", **dados)
+
+
+def responder_criacao(texto: str, canal: str, arquivos) -> None:
+    """Fim de uma criação. Pelo WhatsApp e pelo app o arquivo volta junto; pela voz, "... e me manda" o manda pelo WhatsApp.
+    Não entra no histórico, como a dos apps."""
+    if canal_remoto(canal) is not None:
+        responder_no_whatsapp("", texto, arquivos=arquivos, registrar=False, canal=canal)
+        return
+    if arquivos:
+        try:
+            mandar_pelo_whatsapp(arquivos)
+            texto += " Mandei no seu WhatsApp."
+        except Exception as exc:
+            texto += f" Não consegui mandar no WhatsApp: {exc}."
+    responder_fontes(texto, canal)
+
+
+# Imagens e modelos 3D pelo Claude (criacao_visual.py): "cria uma imagem de um farol", "modela um foguete em 3D". O painel
+# mostra o resultado no centro, no lugar da esfera; "muda a cor do fundo", "fecha a imagem" e "mostra de novo" vêm depois.
+CRIACAO = AgenteCriacao(mostrar=mostrar_criacao, avisar=responder_criacao)
+
+
 def ultima_interacao() -> float:
     """Quando foi a última fala com ela (a pessoa ou ela; a conversa da casa ignorada não conta)."""
     for momento, quem, _ in reversed(REGISTRO_CONVERSA):
@@ -2399,6 +2426,13 @@ def main(evento_carregamento=None):
         if resposta_craft:
             responder_craft(resposta_craft)
             analisador.registrar_interacao(comando, ["apps_craft"], time.time() - inicio_craft, True)
+            continue
+
+        # Imagem ou modelo 3D pelo Claude, depois dos apps ("faz uma imagem desse PDF" é conversão) e antes das fontes.
+        resposta_criacao = CRIACAO.responder(comando, canal=CANAL["atual"])
+        if resposta_criacao:
+            responder_fontes(resposta_criacao, CANAL["atual"])
+            analisador.registrar_interacao(comando, ["criacao_visual"], 0.0, True)
             continue
 
         # Fontes e arquivos recebidos antes da impressora, da leitura de tela e dos agentes: "vira fonte", "arquiva", "imprime isso",

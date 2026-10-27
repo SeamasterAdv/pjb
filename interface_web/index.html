@@ -6,7 +6,7 @@
 <title>Beatriz</title>
 <link rel="stylesheet" href="estilo.css">
 <script type="importmap">
-{ "imports": { "three": "./vendor/three/build/three.module.min.js" } }
+{ "imports": { "three": "./vendor/three/build/three.module.min.js", "three/addons/": "./vendor/three/examples/jsm/" } }
 </script>
 </head>
 <body data-estado="repouso">
@@ -55,7 +55,21 @@
 
   <section class="centro">
     <div class="esfera" id="esfera" aria-hidden="true"></div>
-    <div class="rotulo-estado"><span class="marca-estado">◢</span> <span id="rotulo-estado">em espera</span></div>
+    <!-- Imagem ou modelo 3D feito pelo Claude (criacao_visual.py): fica no lugar da esfera até fechar. -->
+    <section class="quadro criacao" id="criacao" aria-label="Criação" hidden>
+      <div class="titulo-quadro">
+        <span>◢ <span id="criacao-formato">imagem</span> · <span id="criacao-nome" class="criacao-nome"></span></span>
+        <span class="criacao-acoes">
+          <span class="conta" id="criacao-ia"></span>
+          <button class="pequeno" id="criacao-abrir">abrir o arquivo</button>
+          <button class="pequeno" id="criacao-fechar" aria-label="Fechar e voltar à esfera">× esfera</button>
+        </span>
+      </div>
+      <div class="criacao-palco" id="criacao-palco"></div>
+      <div class="criacao-dica" id="criacao-dica"></div>
+    </section>
+    <div class="rotulo-estado"><span class="marca-estado">◢</span> <span id="rotulo-estado">em espera</span>
+      <span class="criacao-andamento" id="criacao-andamento" hidden>· criando <span id="criacao-andamento-texto"></span></span></div>
     <div class="legendas" aria-live="polite">
       <p class="legenda voce" id="legenda-voce"></p>
       <p class="legenda beatriz" id="legenda-beatriz"></p>

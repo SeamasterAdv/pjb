@@ -1,0 +1,56 @@
+{
+  "mcpServers": {
+    "wordcraft": {
+      "command": "C:\\Program Files\\WordCraft\\wordcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "pdfcraft": {
+      "command": "C:\\Program Files\\PdfCraft\\pdfcraft-cli.exe",
+      "args": ["mcp", "--compact", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "deckcraft": {
+      "command": "C:\\Program Files\\DeckCraft\\deckcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "gridcraft": {
+      "command": "C:\\Program Files\\GridCraft\\gridcraft-cli.exe",
+      "args": ["mcp"]
+    },
+    "vectorcraft": {
+      "command": "C:\\Program Files\\VectorCraft\\vectorcraft-cli.exe",
+      "args": ["mcp", "--headless", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "photocraft": {
+      "command": "C:\\Program Files\\PhotoCraft\\photocraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "designcraft": {
+      "command": "C:\\Program Files\\DesignCraft\\designcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "figcraft": {
+      "command": "C:\\Program Files\\FigCraft\\figcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "effectcraft": {
+      "command": "C:\\Program Files\\EffectCraft\\effectcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "soundcraft": {
+      "command": "C:\\Program Files\\SoundCraft\\soundcraft-cli.exe",
+      "args": ["mcp", "--automation-read-root", "C:\\B.E.A.T.R.I.Z", "--automation-write-root", "C:\\B.E.A.T.R.I.Z\\documentos_gerados\\craft"]
+    },
+    "lightcraft": {
+      "command": "C:\\Program Files\\LightCraft\\lightcraft-cli.exe",
+      "args": ["mcp", "--compact"]
+    },
+    "filmcraft": {
+      "command": "C:\\Program Files\\FilmCraft\\filmcraft-cli.exe",
+      "args": ["mcp"]
+    },
+    "cadcraft": {
+      "command": "C:\\Program Files\\CADCraft\\cadcraft-cli.exe",
+      "args": ["mcp"]
+    }
+  }
+}

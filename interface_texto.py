@@ -13,6 +13,7 @@ import camadas_personalidade
 import memory
 from agente_agenda import criar_agente_agenda
 from agente_controle import criar_agente_controle
+from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, texto_da_agenda
 from agente_leis import AgenteLeis
 from agente_pastas import AgentePastas
@@ -332,6 +333,10 @@ class JanelaComandos(tk.Tk):
         self.fontes = criar_agente_fontes(avisar=lambda texto, canal: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")),
                                           enviar_zap=None, impressora=self.impressora, pastas=self.pastas, llm=llm_clients,
                                           estudar=self._estudar_arquivos)
+        # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
+        self.craft = AgenteCraft(recebidos=self.fontes.recebidos_do_pedido, arquivos=self.pastas.arquivos,
+                                 avisar=lambda resposta, canal: self.after(0, lambda: self.adicionar_mensagem(
+                                     "Beatriz", resposta.texto, tag="beatriz")))  # o vídeo editado chega depois
 
         self.style = ttk.Style(self)
         try:
@@ -1385,6 +1390,10 @@ class JanelaComandos(tk.Tk):
 
         def responder():
             try:
+                resposta_craft = self.craft.responder(comando, "painel")
+                if resposta_craft:  # apps da ArtCraft, antes das fontes ("converte esse Word" não é pergunta sobre ele)
+                    self.after(0, lambda: self._finalizar_resposta(resposta_craft.texto))
+                    return
                 resposta_fontes = self.fontes.responder(comando, "painel")
                 if resposta_fontes:  # arquivos recebidos e escaneamento
                     self.after(0, lambda: self._finalizar_resposta(resposta_fontes))

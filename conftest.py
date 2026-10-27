@@ -185,6 +185,21 @@ def controle_remoto_intocado(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def apps_craft_intocados(monkeypatch):
+    """Nenhum teste roda os programas da ArtCraft, abre um app ou abre o resultado de uma conversão no PC de verdade."""
+    import agente_craft
+    import apps_craft
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("um teste tentou rodar um app da ArtCraft ou abrir um arquivo de verdade")
+
+    monkeypatch.setattr(apps_craft, "_rodar_de_verdade", proibido)
+    monkeypatch.setattr(apps_craft, "_iniciar_de_verdade", proibido)
+    monkeypatch.setattr(agente_craft, "abrir_no_pc", proibido)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def impressora_intocada(monkeypatch):
     """Nenhum teste imprime, cancela ou pausa nada na fila do Windows de verdade."""
     import impressora

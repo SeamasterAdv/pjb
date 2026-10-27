@@ -7,6 +7,8 @@ gmail_token.json
 beatriz.log
 __pycache__/
 .pytest_cache/
+# Configurações pessoais do Claude Code (quais servidores do .mcp.json ficam ligados)
+.claude/settings.local.json
 # Ambientes virtuais
 .venv*/
 venv/

@@ -1405,6 +1405,389 @@ function ondaDeLuz(evento) {
   setTimeout(() => onda.remove(), 600);
 }
 
+// ------------------------------------------------------------------ editar: fotos, vídeos e conversões (no PC, pelos apps da ArtCraft)
+// A prévia da foto e do vídeo usa os filtros do navegador (aproximada, na hora); o resultado de verdade vem do PC: a foto em
+// ~2 s, o vídeo em segundo plano (o celular pergunta pela situação e ele também chega na conversa).
+const FILTROS_DA_EDICAO = [
+  ["", "Original", ""],
+  ["pb", "P&B", "grayscale(1)"],
+  ["sepia", "Sépia", "sepia(0.9)"],
+  ["vintage", "Antiga", "sepia(0.35) contrast(0.9) saturate(0.8) brightness(1.06)"],
+  ["cinema", "Cinema", "contrast(1.15) saturate(0.85) hue-rotate(-10deg)"],
+  ["quente", "Quente", "sepia(0.25) saturate(1.25) brightness(1.03)"],
+  ["frio", "Frio", "hue-rotate(12deg) saturate(0.9) brightness(1.02)"],
+  ["vivo", "Vivas", "saturate(1.6) contrast(1.05)"],
+  ["dramatico", "Drama", "contrast(1.35) brightness(0.85) saturate(0.8)"],
+  ["suave", "Suave", "contrast(0.85) saturate(0.75) brightness(1.08)"],
+];
+const SO_PARA_FOTO = new Set(["vivo", "suave"]);  // o FilmCraft não tem esses dois
+const RECORTES = [["", "Original", 0], ["1x1", "Quadrado", 1], ["9x16", "Stories", 9 / 16], ["16x9", "16:9", 16 / 9], ["4x5", "4:5", 4 / 5]];
+const TAMANHOS = [[0, "Original"], [2560, "Grande"], [1600, "Médio"], [1080, "Leve"]];
+const VELOCIDADES = [[50, "0,5×"], [100, "1×"], [200, "2×"], [400, "4×"]];
+const SAIDAS_DO_VIDEO = [[".mp4", "Vídeo"], [".gif", "GIF"], [".aac", "Só o som"], [".jpg", "Imagem"]];
+const EXTENSOES_DE_VIDEO = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mts", ".3gp"];
+const CONVERSOES = [
+  [[".docx", ".doc", ".odt", ".rtf", ".md", ".html", ".htm", ".txt"], [[".pdf", "PDF"], [".png", "Imagens"], [".docx", "Word"], [".txt", "Texto"], [".html", "HTML"]], "WordCraft"],
+  [[".pptx"], [[".pdf", "PDF"], [".png", "Imagens"], [".gif", "GIF"], [".txt", "Texto"]], "DeckCraft"],
+  [[".xlsx", ".csv", ".tsv"], [[".pdf", "PDF"], [".xlsx", "Excel"], [".csv", "CSV"], [".html", "HTML"]], "GridCraft"],
+  [[".pdf"], [[".png", "Imagens"], [".txt", "Texto"]], "PdfCraft"],
+  [[".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".psd", ".bmp"], [[".pdf", "PDF"], [".png", "PNG"], [".jpg", "JPG"], [".webp", "WebP"], [".psd", "PSD"]], "PhotoCraft"],
+  [[".svg", ".ai", ".eps"], [[".pdf", "PDF"], [".png", "PNG"], [".svg", "SVG"]], "VectorCraft"],
+  [[".dxf", ".dwg"], [[".pdf", "PDF"], [".png", "PNG"], [".svg", "SVG"]], "CADCraft"],
+  [EXTENSOES_DE_VIDEO, [[".mp4", "MP4"], [".gif", "GIF"], [".aac", "Só o som"]], "FilmCraft"],
+];
+const LIMITE_EDICAO_MB = 1024;
+const fotoPadrao = () => ({ filtro: "", automatico: false, luz: 0, contraste: 0, cor: 0, nitidez: 0, girar: 0, espelhar: false, recorte: "", tamanho: 0 });
+const videoPadrao = () => ({ inicio: 0, fim: null, duracao: 0, velocidade: 100, filtro: "", sem_som: false, metade: false, saida: ".mp4" });
+const editor = { modo: "foto", arquivo: null, url: "", tipo: "", foto: fotoPadrao(), video: videoPadrao(), formato: "", miniatura: "", tarefa: null, enviando: false };
+
+function extensaoDe(nome) {
+  const ponto = (nome || "").lastIndexOf(".");
+  return ponto < 0 ? "" : nome.slice(ponto).toLowerCase();
+}
+
+function tipoDoArquivo(arquivo) {
+  if ((arquivo.type || "").startsWith("video/") || EXTENSOES_DE_VIDEO.includes(extensaoDe(arquivo.name))) return "video";
+  if ((arquivo.type || "").startsWith("image/") && !/svg/.test(arquivo.type)) return "foto";
+  return "outro";
+}
+
+function tempoCurto(segundos) {
+  const s = Math.max(0, Math.round(segundos || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function abrirEditor(modo) {
+  mostrarTela("editar");
+  trocarModo(modo);
+}
+
+function trocarModo(modo) {
+  editor.modo = modo;
+  $("editar-titulo").textContent = { foto: "Fotos", video: "Vídeos", converter: "Converter" }[modo];
+  document.querySelectorAll("#editar-modos [data-modo]").forEach((b) => b.classList.toggle("ativo", b.dataset.modo === modo));
+  $("editar-foto").hidden = modo !== "foto";
+  $("editar-video").hidden = modo !== "video";
+  $("editar-converter").hidden = modo !== "converter";
+  $("editar-escolher-texto").textContent = { foto: "Escolher uma foto", video: "Escolher um vídeo", converter: "Escolher um arquivo" }[modo];
+  $("editar-camera").hidden = modo === "converter";
+  $("editar-zerar").hidden = modo === "converter";
+  // O arquivo escolhido continua se servir para o modo novo (uma foto também se converte; um vídeo também)
+  if (editor.arquivo && modo !== "converter" && editor.tipo !== modo) limparArquivo();
+  desenharEditor();
+}
+
+function escolherArquivo(camera = false) {
+  const entrada = $("editar-arquivo-escolha");
+  entrada.accept = { foto: "image/*", video: "video/*", converter: "" }[editor.modo];
+  if (camera) entrada.setAttribute("capture", "environment"); else entrada.removeAttribute("capture");
+  entrada.click();
+}
+
+function limparArquivo() {
+  if (editor.url) URL.revokeObjectURL(editor.url);
+  Object.assign(editor, { arquivo: null, url: "", tipo: "", miniatura: "", formato: "", foto: fotoPadrao(), video: videoPadrao() });
+  $("previa-foto").removeAttribute("src");
+  $("previa-video").removeAttribute("src");
+  $("editar-resultado").hidden = true;
+  mostrarEstadoDaEdicao("");
+}
+
+function receberArquivoParaEditar(arquivo) {
+  if (!arquivo) return;
+  if (arquivo.size > LIMITE_EDICAO_MB * 1024 * 1024) return falhou(`${arquivo.name} passa de ${LIMITE_EDICAO_MB} MB.`);
+  limparArquivo();
+  editor.arquivo = arquivo;
+  editor.tipo = tipoDoArquivo(arquivo);
+  if (editor.modo !== "converter" && editor.tipo !== "outro" && editor.tipo !== editor.modo) trocarModo(editor.tipo);
+  if (editor.modo !== "converter" && editor.tipo === "outro") {
+    trocarModo("converter");
+    aviso("Esse arquivo não é foto nem vídeo: abri a conversão.");
+  }
+  if (editor.tipo !== "outro") editor.url = URL.createObjectURL(arquivo);
+  const foto = $("previa-foto"), video = $("previa-video");
+  if (editor.tipo === "foto") {
+    foto.onload = () => { editor.miniatura = miniaturaDe(foto); desenharEditor(); };
+    foto.src = editor.url;
+  } else if (editor.tipo === "video") {
+    video.onloadedmetadata = () => {
+      editor.video.duracao = video.duration || 0;
+      video.currentTime = Math.min(0.5, (video.duration || 1) / 2);
+      desenharEditor();
+    };
+    video.onseeked = () => { if (!editor.miniatura) { editor.miniatura = miniaturaDe(video); desenharEditor(); } };
+    video.src = editor.url;
+  }
+  som("abrir");
+  desenharEditor();
+}
+
+function miniaturaDe(midia) {
+  // Uma imagem pequena da foto (ou de um quadro do vídeo) para as amostras dos filtros
+  try {
+    const largura = midia.videoWidth || midia.naturalWidth, altura = midia.videoHeight || midia.naturalHeight;
+    if (!largura || !altura) return "";
+    const lado = Math.min(largura, altura), tela = document.createElement("canvas");
+    tela.width = tela.height = 120;
+    tela.getContext("2d").drawImage(midia, (largura - lado) / 2, (altura - lado) / 2, lado, lado, 0, 0, 120, 120);
+    return tela.toDataURL("image/jpeg", 0.7);
+  } catch { return ""; }
+}
+
+function filtroCss(opcoes, foto) {
+  const base = (FILTROS_DA_EDICAO.find(([chave]) => chave === opcoes.filtro) || ["", "", ""])[2];
+  if (!foto) return base || "none";
+  const partes = [base];
+  if (opcoes.automatico) partes.push("contrast(1.08) saturate(1.1)");
+  if (opcoes.luz) partes.push(`brightness(${(1 + opcoes.luz * 0.32).toFixed(2)})`);
+  if (opcoes.contraste) partes.push(`contrast(${(1 + opcoes.contraste / 100).toFixed(2)})`);
+  if (opcoes.cor) partes.push(`saturate(${(1 + opcoes.cor / 100).toFixed(2)})`);
+  return partes.filter(Boolean).join(" ") || "none";
+}
+
+function desenharFiltros(id, opcoes, foto) {
+  const caixa = $(id);
+  caixa.textContent = "";
+  for (const [chave, nome, css] of FILTROS_DA_EDICAO) {
+    if (!foto && SO_PARA_FOTO.has(chave)) continue;
+    const botao = elemento("button", `filtro${chave === opcoes.filtro ? " ativo" : ""}`);
+    botao.type = "button";
+    const amostra = elemento("span", "filtro-amostra");
+    if (editor.miniatura) amostra.style.backgroundImage = `url("${editor.miniatura}")`;
+    amostra.style.filter = css || "none";
+    botao.append(amostra, elemento("span", "", nome));
+    botao.addEventListener("click", () => { opcoes.filtro = chave; desenharEditor(); });
+    caixa.appendChild(botao);
+  }
+}
+
+function desenharEditor() {
+  const tem = !!editor.arquivo;
+  $("editar-escolher").hidden = tem;
+  $("previa-moldura").hidden = !tem;
+  $("editar-trocar").hidden = !tem;
+  $("previa-foto").hidden = editor.tipo !== "foto";
+  $("previa-video").hidden = editor.tipo !== "video";
+  $("previa-arquivo").hidden = !tem || editor.tipo !== "outro";
+  $("previa-arquivo-nome").textContent = tem ? editor.arquivo.name : "";
+  $("editar-info").textContent = tem ? `${editor.arquivo.name.slice(0, 26)} · ${tamanho(editor.arquivo.size)}` : "nenhum arquivo";
+  $("editar-rotulo").textContent = editor.modo === "converter" ? "Arquivo" : "Prévia";
+  if (editor.modo === "foto") desenharFoto();
+  if (editor.modo === "video") desenharVideo();
+  if (editor.modo === "converter") desenharConversao();
+  const pronto = tem && !editor.enviando && (editor.modo !== "converter" || !!editor.formato);
+  $("editar-enviar").disabled = !pronto;
+  $("editar-enviar-texto").textContent = editor.enviando ? "Enviando…" : editor.modo === "converter" ? "Converter no PC" : "Editar no PC";
+}
+
+function desenharFoto() {
+  const f = editor.foto, imagem = $("previa-foto"), moldura = $("previa-moldura");
+  desenharFiltros("foto-filtros", f, true);
+  $("foto-auto").checked = f.automatico;
+  for (const [nome, valor, texto] of [["luz", f.luz, f.luz ? (f.luz > 0 ? "+" : "") + f.luz.toFixed(1) : "0"],
+                                      ["contraste", f.contraste, String(f.contraste)], ["cor", f.cor, String(f.cor)],
+                                      ["nitidez", f.nitidez, String(f.nitidez)]]) {
+    $(`foto-${nome}`).value = valor;
+    $(`foto-${nome}-valor`).textContent = texto;
+  }
+  $("foto-espelhar").setAttribute("aria-pressed", String(f.espelhar));
+  segmentos("foto-recortes", RECORTES.map((r) => r[0]), Object.fromEntries(RECORTES.map((r) => [r[0], r[1]])), f.recorte,
+            (r) => { f.recorte = r; desenharEditor(); });
+  segmentos("foto-tamanhos", TAMANHOS.map((t) => String(t[0])), Object.fromEntries(TAMANHOS.map((t) => [String(t[0]), t[1]])),
+            String(f.tamanho), (t) => { f.tamanho = Number(t); desenharEditor(); });
+  if (editor.tipo !== "foto") return;
+  imagem.style.filter = filtroCss(f, true);
+  const proporcao = (RECORTES.find((r) => r[0] === f.recorte) || [0, 0, 0])[2];
+  moldura.classList.toggle("recortada", !!proporcao);
+  moldura.style.aspectRatio = proporcao ? String(proporcao) : "";
+  // Girada de lado, a foto troca largura por altura: encolhe para caber no quadro
+  let escala = 1;
+  if (f.girar % 2 && !proporcao && imagem.clientWidth && imagem.clientHeight) {
+    escala = Math.min(1, moldura.clientWidth / imagem.clientHeight, (window.innerHeight * 0.52) / imagem.clientWidth);
+  }
+  imagem.style.transform = `rotate(${f.girar * 90}deg) scaleX(${f.espelhar ? -1 : 1}) scale(${escala.toFixed(3)})`;
+}
+
+function desenharVideo() {
+  const v = editor.video, video = $("previa-video");
+  desenharFiltros("video-filtros", v, false);
+  if (SO_PARA_FOTO.has(v.filtro)) v.filtro = "";
+  video.style.filter = filtroCss(v, false);
+  video.playbackRate = v.velocidade / 100;
+  $("video-duracao").textContent = v.duracao ? tempoCurto(v.duracao) : "--";
+  $("video-inicio-texto").textContent = tempoCurto(v.inicio);
+  $("video-fim-texto").textContent = v.fim == null ? (v.duracao ? tempoCurto(v.duracao) : "fim") : tempoCurto(v.fim);
+  const total = v.duracao || 1, fim = v.fim == null ? total : v.fim;
+  $("trecho-escolhido").style.left = `${(v.inicio / total) * 100}%`;
+  $("trecho-escolhido").style.right = `${100 - (fim / total) * 100}%`;
+  $("video-sem-som").checked = v.sem_som;
+  $("video-metade").checked = v.metade;
+  segmentos("video-velocidades", VELOCIDADES.map((x) => String(x[0])), Object.fromEntries(VELOCIDADES.map((x) => [String(x[0]), x[1]])),
+            String(v.velocidade), (x) => { v.velocidade = Number(x); desenharEditor(); });
+  segmentos("video-saidas", SAIDAS_DO_VIDEO.map((x) => x[0]), Object.fromEntries(SAIDAS_DO_VIDEO), v.saida,
+            (x) => { v.saida = x; desenharEditor(); if (x === ".jpg") aviso("A imagem sai do momento marcado como início."); });
+}
+
+function desenharConversao() {
+  const ext = editor.arquivo ? extensaoDe(editor.arquivo.name) : "";
+  const regra = CONVERSOES.find(([entradas]) => entradas.includes(ext));
+  const mesma = (formato) => formato === ext || (formato === ".jpg" && ext === ".jpeg");
+  const opcoes = regra ? regra[1].filter(([formato]) => !mesma(formato)) : [];
+  if (!opcoes.some(([formato]) => formato === editor.formato)) editor.formato = "";
+  segmentos("converter-formatos", opcoes.map((o) => o[0]), Object.fromEntries(opcoes), editor.formato,
+            (formato) => { editor.formato = formato; desenharEditor(); });
+  $("converter-app").textContent = regra ? regra[2] : "--";
+  $("converter-ajuda").textContent = !editor.arquivo ? "Escolha um Word, PDF, apresentação, planilha, imagem, desenho ou vídeo."
+    : regra ? "Escolha o formato. O arquivo pronto volta para você baixar." : `Arquivos ${ext || "sem extensão"} eu ainda não converto.`;
+}
+
+function pedidoDaEdicao() {
+  if (editor.modo === "foto") return { tipo: "foto", ...editor.foto };
+  if (editor.modo === "converter") return { tipo: "converter", formato: editor.formato };
+  const v = editor.video;
+  const inteiro = v.inicio <= 0.05 && (v.fim == null || v.fim >= v.duracao - 0.05);
+  return { tipo: "video", inicio: inteiro && v.saida !== ".jpg" ? null : v.inicio, fim: inteiro ? null : v.fim, sem_som: v.sem_som,
+           metade: v.metade, velocidade: v.velocidade, filtro: v.filtro, saida: v.saida };
+}
+
+function enviarComProgresso(arquivo, pedido, aoProgredir) {
+  // XMLHttpRequest, e não fetch: um vídeo grande leva um tempo para subir, e só ele diz quanto já foi
+  return new Promise((pronto, falha) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/editar");
+    xhr.setRequestHeader("X-Chave-Beatriz", estado.chave);
+    xhr.setRequestHeader("X-Nome", encodeURIComponent(arquivo.name));
+    xhr.setRequestHeader("X-Edicao", encodeURIComponent(JSON.stringify(pedido)));
+    xhr.setRequestHeader("Content-Type", arquivo.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) aoProgredir(e.loaded / e.total); };
+    xhr.onload = () => {
+      let corpo = {};
+      try { corpo = JSON.parse(xhr.responseText || "{}"); } catch { /* sem corpo */ }
+      if (xhr.status === 401) { esquecerChave(); return falha(new Error("nao_pareado")); }
+      if (xhr.status >= 400) return falha(new Error(corpo.erro || "Algo deu errado no PC."));
+      pronto(corpo);
+    };
+    xhr.onerror = () => falha(new Error("Não consegui falar com o PC."));
+    xhr.send(arquivo);
+  });
+}
+
+function mostrarEstadoDaEdicao(texto, erro = false, trabalhando = false, fracao = null) {
+  $("editar-estado").textContent = texto;
+  $("editar-estado").classList.toggle("erro", erro);
+  const barra = $("editar-progresso");
+  barra.hidden = !trabalhando;
+  barra.classList.toggle("indo", trabalhando && fracao == null);
+  $("editar-progresso-barra").style.width = fracao == null ? "" : `${Math.round(fracao * 100)}%`;
+}
+
+async function editarNoPc() {
+  if (!editor.arquivo || editor.enviando) return;
+  editor.enviando = true;
+  $("editar-resultado").hidden = true;
+  desenharEditor();
+  som("enviar");
+  mostrarEstadoDaEdicao("Mandando ao PC…", false, true, 0);
+  try {
+    const resposta = await enviarComProgresso(editor.arquivo, pedidoDaEdicao(), (fracao) => {
+      mostrarEstadoDaEdicao(fracao < 1 ? `Mandando ao PC… ${Math.round(fracao * 100)}%` : "No PC: editando…", false, true, fracao < 1 ? fracao : null);
+    });
+    await acompanharEdicao(resposta);
+  } catch (erro) {
+    if (erro.message !== "nao_pareado") {
+      som("erro");
+      mostrarEstadoDaEdicao(erro.message, true);
+    }
+  } finally {
+    editor.enviando = false;
+    desenharEditor();
+  }
+}
+
+async function acompanharEdicao(situacao) {
+  while (!situacao.pronto) {
+    mostrarEstadoDaEdicao(situacao.texto || "Editando no PC…", false, true);
+    await esperar(2000);
+    situacao = await (await api(`/api/editar/${encodeURIComponent(situacao.tarefa)}`)).json();
+  }
+  if (!situacao.ok) {
+    som("erro");
+    return mostrarEstadoDaEdicao(situacao.texto || "Não deu certo.", true);
+  }
+  som("chegou");
+  celebrar();
+  mostrarEstadoDaEdicao(situacao.texto || "Pronto.");
+  await mostrarResultado(situacao.arquivos || []);
+}
+
+async function mostrarResultado(arquivos) {
+  const caixa = $("resultado-previa");
+  caixa.textContent = "";
+  $("resultado-anexos").textContent = "";
+  if (!arquivos.length) return;
+  $("resultado-info").textContent = arquivos.length > 1 ? `${arquivos.length} arquivos` : tamanho(arquivos[0].tamanho);
+  $("resultado-anexos").appendChild(caixaDeAnexos(arquivos));
+  $("editar-resultado").hidden = false;
+  const primeiro = arquivos[0], ext = extensaoDe(primeiro.nome);
+  const tag = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext) ? "img" : [".mp4", ".mov"].includes(ext) ? "video"
+    : [".aac", ".m4a", ".wav"].includes(ext) ? "audio" : "";
+  if (!tag) return;
+  try {
+    const resposta = await api(`/api/arquivo/${encodeURIComponent(primeiro.id)}`);
+    const midia = document.createElement(tag);
+    midia.src = URL.createObjectURL(await resposta.blob());
+    if (tag !== "img") { midia.controls = true; midia.setAttribute("playsinline", ""); }
+    if (tag === "img") midia.alt = primeiro.nome;
+    caixa.appendChild(midia);
+    $("editar-resultado").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch { /* sem prévia: os botões de baixar continuam */ }
+}
+
+function ligarEditor() {
+  document.querySelectorAll("[data-editar]").forEach((b) => b.addEventListener("click", () => { abrirEditor(b.dataset.editar); som("abrir"); }));
+  document.querySelectorAll("#editar-modos [data-modo]").forEach((b) => b.addEventListener("click", () => trocarModo(b.dataset.modo)));
+  const entrada = document.createElement("input");
+  entrada.type = "file";
+  entrada.id = "editar-arquivo-escolha";
+  entrada.hidden = true;
+  document.body.appendChild(entrada);
+  entrada.addEventListener("change", (e) => { receberArquivoParaEditar(e.target.files[0]); e.target.value = ""; });
+  $("editar-escolher").addEventListener("click", () => escolherArquivo());
+  $("editar-outro").addEventListener("click", () => escolherArquivo());
+  $("editar-camera").addEventListener("click", () => escolherArquivo(true));
+  $("editar-zerar").addEventListener("click", () => { editor.foto = fotoPadrao(); Object.assign(editor.video, { ...videoPadrao(), duracao: editor.video.duracao }); desenharEditor(); });
+  $("foto-auto").addEventListener("change", (e) => { editor.foto.automatico = e.target.checked; desenharEditor(); });
+  for (const nome of ["luz", "contraste", "cor", "nitidez"]) {
+    $(`foto-${nome}`).addEventListener("input", (e) => { editor.foto[nome] = Number(e.target.value); desenharEditor(); });
+  }
+  $("foto-girar-esquerda").addEventListener("click", () => { editor.foto.girar = (editor.foto.girar + 3) % 4; desenharEditor(); });
+  $("foto-girar-direita").addEventListener("click", () => { editor.foto.girar = (editor.foto.girar + 1) % 4; desenharEditor(); });
+  $("foto-espelhar").addEventListener("click", () => { editor.foto.espelhar = !editor.foto.espelhar; desenharEditor(); });
+  const video = $("previa-video");
+  $("video-marcar-inicio").addEventListener("click", () => {
+    const v = editor.video;
+    v.inicio = video.currentTime || 0;
+    if (v.fim != null && v.fim <= v.inicio) v.fim = null;
+    desenharEditor();
+  });
+  $("video-marcar-fim").addEventListener("click", () => {
+    const v = editor.video, agora = video.currentTime || 0;
+    if (agora <= v.inicio) return aviso("O fim tem de vir depois do início.", true);
+    v.fim = agora;
+    desenharEditor();
+  });
+  $("video-inteiro").addEventListener("click", () => { editor.video.inicio = 0; editor.video.fim = null; desenharEditor(); });
+  $("trecho-barra").addEventListener("click", (e) => {
+    const caixa = e.currentTarget.getBoundingClientRect();
+    if (editor.video.duracao) video.currentTime = ((e.clientX - caixa.left) / caixa.width) * editor.video.duracao;
+  });
+  $("video-sem-som").addEventListener("change", (e) => { editor.video.sem_som = e.target.checked; });
+  $("video-metade").addEventListener("change", (e) => { editor.video.metade = e.target.checked; });
+  $("editar-enviar").addEventListener("click", editarNoPc);
+  window.addEventListener("resize", () => { if (estado.tela === "editar" && editor.modo === "foto") desenharFoto(); });
+  trocarModo("foto");
+}
+
 // ------------------------------------------------------------------ começo
 function conectar() {
   estado.ultimo = 0;
@@ -1492,6 +1875,7 @@ function iniciar() {
     controle.relogio = null;
     apertarControle({ aparelho: "ar", acao: "desligar" }, $("ar-desligar"));
   });
+  ligarEditor();
 
   const microfone = $("botao-microfone");
   microfone.addEventListener("pointerdown", comecarGravacao);

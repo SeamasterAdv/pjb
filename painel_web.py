@@ -21,6 +21,7 @@ import niveis_voz
 import personalidade
 from agente_agenda import criar_agente_agenda
 from agente_controle import criar_agente_controle
+from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
 from agentes import PainelCompartilhado, criar_orquestrador
@@ -116,6 +117,9 @@ class ApiPainel:
         self._fontes = criar_agente_fontes(avisar=lambda texto, canal: self._responder(texto), enviar_zap=None,
                                            impressora=self._impressora, pastas=self._pastas, llm=llm_clients,
                                            estudar=self._estudar_arquivos)
+        # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
+        self._craft = AgenteCraft(recebidos=self._fontes.recebidos_do_pedido, arquivos=self._pastas.arquivos,
+                                  avisar=lambda resposta, canal: self._responder(resposta.texto))  # o vídeo editado chega depois
         self._tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa (não a do painel)
         # Biblioteca de fontes organizada à mão: a nova leitura do índice é pedida ao processo principal (só ele grava no banco).
         self._biblioteca = BibliotecaDeFontes(ao_mudar=self._pedir_leitura_da_biblioteca)
@@ -429,6 +433,9 @@ class ApiPainel:
             resposta_controle = self._controle.responder(comando)
             if resposta_controle:  # "liga a TV", "liga o ar em 22 graus"
                 return self._responder(resposta_controle)
+            resposta_craft = self._craft.responder(comando, "painel")
+            if resposta_craft:  # apps da ArtCraft, antes das fontes ("converte esse Word" não é pergunta sobre ele)
+                return self._responder(resposta_craft.texto)
             resposta_fontes = self._fontes.responder(comando, "painel")
             if resposta_fontes:
                 return self._responder(resposta_fontes)

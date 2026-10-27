@@ -345,6 +345,12 @@ class AgenteFontes:
         """Se a frase pede algo que este agente faz com arquivos ("vira fonte", "arquiva", "imprime", "escaneia"...). Não faz nada."""
         return bool(self._acoes(normalizar(texto)))
 
+    def recebidos_do_pedido(self, texto: str) -> list[str]:
+        """Os arquivos que "esse", "esses", "todos" ou "o último" querem dizer (o lote que acabou de chegar), na ordem em que
+        chegaram. Usado pelos apps da ArtCraft ("converte esse Word em PDF", "junta esses PDFs")."""
+        recentes = self.registro.recentes(VALIDADE_DOS_RECENTES)
+        return [r.caminho for r in reversed(self._rajada(normalizar(texto), recentes))] if recentes else []
+
     def esperando_resposta(self) -> bool:
         """Ela acabou de perguntar "o que faço com ele?" ou "tem mais uma página?" e a resposta ainda vale."""
         agora = self.relogio()

@@ -174,6 +174,18 @@
         <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M4 4h13v15a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2z"/><path d="M17 8h3v11a2 2 0 0 1-2 2M8 8h5M8 12h5M8 16h3"/></svg></span>
         <span class="bloco-nome">Resumo do dia</span>
       </button>
+      <button class="bloco" type="button" data-editar="foto" role="listitem" data-i="15">
+        <span class="bloco-icone"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/><path d="M17 2.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/></svg></span>
+        <span class="bloco-nome">Fotos</span>
+      </button>
+      <button class="bloco" type="button" data-editar="video" role="listitem" data-i="16">
+        <span class="bloco-icone"><svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="M15.5 10.5l6-3.5v10l-6-3.5z"/><path d="M6 6l3-3M10 6l3-3"/></svg></span>
+        <span class="bloco-nome">Vídeos</span>
+      </button>
+      <button class="bloco" type="button" data-editar="converter" role="listitem" data-i="17">
+        <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v6"/><path d="M14 3v5h5v3"/><path d="M14 3l5 5"/><path d="M4 16h11M12 13l3 3-3 3"/><path d="M20 21H9"/></svg></span>
+        <span class="bloco-nome">Converter</span>
+      </button>
     </div>
   </section>
 
@@ -324,6 +336,108 @@
       <div class="segmentos" id="ar-ventos"></div>
     </div>
     <p class="detalhe controle-aviso" id="controle-aviso" data-i="3"></p>
+  </section>
+
+  <!-- Editar: fotos (LightCraft), vídeos (FilmCraft) e conversões, feitas no PC pelos apps da ArtCraft. A prévia da foto
+       e do vídeo é aproximada (filtros do navegador); o resultado de verdade volta do PC. -->
+  <section class="tela" id="tela-editar" aria-label="Editar">
+    <div class="titulo-tela" data-i="0"><span id="editar-titulo">Fotos</span><span class="linha"></span></div>
+    <div class="segmentos editar-modos" id="editar-modos" data-i="1">
+      <button class="segmento" type="button" data-modo="foto">Foto</button>
+      <button class="segmento" type="button" data-modo="video">Vídeo</button>
+      <button class="segmento" type="button" data-modo="converter">Converter</button>
+    </div>
+
+    <div class="painel holo editar-quadro" data-i="2">
+      <div class="holo-rotulo"><span id="editar-rotulo">Original</span><span class="holo-codigo" id="editar-info">nenhum arquivo</span></div>
+      <div class="previa" id="previa">
+        <button class="previa-vazia" type="button" id="editar-escolher">
+          <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
+          <span id="editar-escolher-texto">Escolher uma foto</span>
+        </button>
+        <div class="previa-moldura" id="previa-moldura" hidden>
+          <img class="previa-midia" id="previa-foto" alt="Prévia da foto" hidden>
+          <video class="previa-midia" id="previa-video" controls playsinline muted hidden></video>
+          <div class="previa-arquivo" id="previa-arquivo" hidden>
+            <svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6"/></svg>
+            <span id="previa-arquivo-nome"></span>
+          </div>
+        </div>
+      </div>
+      <div class="energia editar-trocar" id="editar-trocar" hidden>
+        <button class="tecla tecla-larga tecla-pequena" type="button" id="editar-outro">Trocar</button>
+        <button class="tecla tecla-larga tecla-pequena" type="button" id="editar-camera">Câmera</button>
+        <button class="tecla tecla-larga tecla-pequena" type="button" id="editar-zerar">Desfazer tudo</button>
+      </div>
+    </div>
+
+    <!-- Foto: filtro, ajustes, girar, recorte e tamanho -->
+    <div class="painel holo editar-opcoes" id="editar-foto" data-i="3">
+      <div class="holo-rotulo"><span>Filtro</span><span class="holo-codigo">LightCraft</span></div>
+      <div class="filtros" id="foto-filtros"></div>
+      <p class="controle-rotulo">Ajustes</p>
+      <label class="chave-opcao"><span>Melhorar no automático</span><input type="checkbox" id="foto-auto"><span class="trilho"></span></label>
+      <div class="regua"><span class="regua-nome">Luz</span><input type="range" id="foto-luz" min="-2" max="2" step="0.1" value="0"><output id="foto-luz-valor">0</output></div>
+      <div class="regua"><span class="regua-nome">Contraste</span><input type="range" id="foto-contraste" min="-60" max="60" step="5" value="0"><output id="foto-contraste-valor">0</output></div>
+      <div class="regua"><span class="regua-nome">Cor</span><input type="range" id="foto-cor" min="-80" max="80" step="5" value="0"><output id="foto-cor-valor">0</output></div>
+      <div class="regua"><span class="regua-nome">Nitidez</span><input type="range" id="foto-nitidez" min="0" max="120" step="10" value="0"><output id="foto-nitidez-valor">0</output></div>
+      <p class="controle-rotulo">Girar e espelhar</p>
+      <div class="linha-teclas linha-tres">
+        <button class="tecla tecla-pequena" type="button" id="foto-girar-esquerda" aria-label="Girar para a esquerda">
+          <svg viewBox="0 0 24 24"><path d="M4 4v6h6"/><path d="M4.5 13a8 8 0 1 0 2-7.5L4 10"/></svg></button>
+        <button class="tecla tecla-pequena" type="button" id="foto-girar-direita" aria-label="Girar para a direita">
+          <svg viewBox="0 0 24 24"><path d="M20 4v6h-6"/><path d="M19.5 13a8 8 0 1 1-2-7.5L20 10"/></svg></button>
+        <button class="tecla tecla-pequena" type="button" id="foto-espelhar" aria-pressed="false">Espelhar</button>
+      </div>
+      <p class="controle-rotulo">Recorte</p>
+      <div class="segmentos" id="foto-recortes"></div>
+      <p class="controle-rotulo">Tamanho</p>
+      <div class="segmentos" id="foto-tamanhos"></div>
+    </div>
+
+    <!-- Vídeo: trecho, velocidade, filtro, som, tamanho e o que sai -->
+    <div class="painel holo editar-opcoes" id="editar-video" data-i="3" hidden>
+      <div class="holo-rotulo"><span>Trecho</span><span class="holo-codigo" id="video-duracao">--</span></div>
+      <div class="trecho">
+        <div class="trecho-ponta">
+          <span class="regua-nome">Início</span><output class="trecho-tempo" id="video-inicio-texto">0:00</output>
+          <button class="tecla tecla-pequena" type="button" id="video-marcar-inicio">Marcar aqui</button>
+        </div>
+        <div class="trecho-ponta">
+          <span class="regua-nome">Fim</span><output class="trecho-tempo" id="video-fim-texto">fim</output>
+          <button class="tecla tecla-pequena" type="button" id="video-marcar-fim">Marcar aqui</button>
+        </div>
+      </div>
+      <div class="trecho-barra" id="trecho-barra"><span class="trecho-escolhido" id="trecho-escolhido"></span></div>
+      <button class="tecla tecla-pequena trecho-inteiro" type="button" id="video-inteiro">Vídeo inteiro</button>
+      <p class="controle-rotulo">Velocidade</p>
+      <div class="segmentos" id="video-velocidades"></div>
+      <p class="controle-rotulo">Filtro</p>
+      <div class="filtros" id="video-filtros"></div>
+      <label class="chave-opcao"><span>Sem som</span><input type="checkbox" id="video-sem-som"><span class="trilho"></span></label>
+      <label class="chave-opcao"><span>Metade do tamanho (mais leve)</span><input type="checkbox" id="video-metade"><span class="trilho"></span></label>
+      <p class="controle-rotulo">O que sai</p>
+      <div class="segmentos" id="video-saidas"></div>
+    </div>
+
+    <!-- Converter: o formato de saída depende do arquivo -->
+    <div class="painel holo editar-opcoes" id="editar-converter" data-i="3" hidden>
+      <div class="holo-rotulo"><span>Converter para</span><span class="holo-codigo" id="converter-app">--</span></div>
+      <div class="segmentos segmentos-quebra" id="converter-formatos"></div>
+      <p class="detalhe" id="converter-ajuda">Escolha um Word, PDF, apresentação, planilha, imagem, desenho ou vídeo.</p>
+    </div>
+
+    <button class="tecla tecla-larga editar-enviar" type="button" id="editar-enviar" data-i="4" disabled>
+      <svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg><span id="editar-enviar-texto">Editar no PC</span>
+    </button>
+    <div class="editar-progresso" id="editar-progresso" hidden><span id="editar-progresso-barra"></span></div>
+    <p class="detalhe editar-estado" id="editar-estado"></p>
+
+    <div class="painel holo" id="editar-resultado" hidden>
+      <div class="holo-rotulo"><span>Resultado</span><span class="holo-codigo" id="resultado-info"></span></div>
+      <div class="previa resultado-previa" id="resultado-previa"></div>
+      <div id="resultado-anexos"></div>
+    </div>
   </section>
 
   <!-- Sistema -->

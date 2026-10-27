@@ -46,6 +46,7 @@ CONECTADO_SEGUNDOS = 45.0  # o app busca mensagens sem parar; sem busca há mais
 ESPERA_DAS_MENSAGENS = 25.0  # cada busca espera até isto por uma mensagem nova (long polling)
 MENSAGENS_GUARDADAS = 200
 LIMITE_DA_VOZ_MB = 15.0
+LIMITE_DA_EDICAO_MB = 1024.0  # a tela "Editar" recebe vídeos do celular (gravados direto no disco, sem passar pela memória)
 FALAS_GUARDADAS = 12  # áudios das respostas (gerados quando o app pede para falar) que ficam no disco
 CABECALHO_DA_CHAVE = "X-Chave-Beatriz"
 # Só arquivos destas pastas podem ser oferecidos ao celular: os que a Beatriz gerou, os que chegaram e os da biblioteca (fontes e
@@ -443,10 +444,12 @@ def _buscar_imagem(endereco: str) -> tuple[str, bytes]:
 
 def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcrever=None, gerar_fala=None,
                    limpar=lambda texto: texto, pasta_recebidos: str = PASTA_RECEBIDOS, limite_mb: float = LIMITE_DO_ARQUIVO_MB,
-                   agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc, controle=None):
+                   agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc, controle=None,
+                   editar=None, situacao_da_edicao=None, limite_da_edicao_mb: float = LIMITE_DA_EDICAO_MB):
     """O app FastAPI. `dados()` -> dict do painel do celular; `transcrever(amostras)` -> (texto, confiança);
     `gerar_fala(texto)` -> caminho do áudio; `agenda_semana(deslocamento)` -> a semana da agenda;
-    `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões; `controle` -> o AgenteControle (TV e ar)."""
+    `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões; `controle` -> o AgenteControle (TV e ar);
+    `editar(caminho, pedido)` e `situacao_da_edicao(tarefa)` -> a tela "Editar" (AgenteCraft.editar_do_app e .situacao)."""
     from collections import OrderedDict
 
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -640,6 +643,48 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
         except ErroDaBiblioteca as exc:
             raise HTTPException(404, str(exc))
         return FileResponse(caminho, filename=os.path.basename(caminho))
+
+    # -- a tela "Editar": uma foto, um vídeo ou um arquivo para converter e o que fazer com ele (apps da ArtCraft, no PC)
+    def _com_anexos(situacao: dict) -> dict:
+        situacao = dict(situacao)
+        situacao["arquivos"] = [a for a in (canal.oferecer(c) for c in situacao.get("arquivos", [])) if a]
+        return situacao
+
+    @app.post("/api/editar")
+    async def editar_no_pc(request: Request, quem: dict = Depends(aparelho)):
+        from starlette.concurrency import run_in_threadpool
+
+        if editar is None:
+            raise HTTPException(503, "A edição não está disponível.")
+        nome = nome_seguro(unquote(request.headers.get("X-Nome", "")) or "arquivo")
+        if os.path.splitext(nome)[1].lower() in EXTENSOES_BLOQUEADAS:
+            raise HTTPException(415, f"Não guardo arquivos {os.path.splitext(nome)[1].lower()} (podem ser programas).")
+        try:
+            pedido = json.loads(unquote(request.headers.get("X-Edicao", "")) or "{}")
+        except ValueError:
+            raise HTTPException(400, "Pedido de edição inválido.")
+        if not isinstance(pedido, dict):
+            raise HTTPException(400, "Pedido de edição inválido.")
+        destino = caminho_livre(os.path.join(pasta_recebidos, datetime.now().strftime("%Y-%m-%d")), nome)
+        tamanho, limite = 0, limite_da_edicao_mb * 1024 * 1024
+        with open(destino, "wb") as saida:  # direto no disco: um vídeo do celular pode ter centenas de MB
+            async for parte in request.stream():
+                tamanho += len(parte)
+                if tamanho > limite:
+                    break
+                saida.write(parte)
+        if not tamanho or tamanho > limite:
+            os.remove(destino)
+            raise HTTPException(413 if tamanho else 400,
+                                f"O arquivo passa de {limite_da_edicao_mb:g} MB." if tamanho else "O arquivo chegou vazio.")
+        return _com_anexos(await run_in_threadpool(editar, destino, pedido))
+
+    @app.get("/api/editar/{tarefa}")
+    def situacao_da_edicao_no_pc(tarefa: str, quem: dict = Depends(aparelho)):
+        situacao = situacao_da_edicao(tarefa) if situacao_da_edicao else None
+        if situacao is None:
+            raise HTTPException(404, "Essa edição não existe (o PC pode ter reiniciado).")
+        return _com_anexos(situacao)
 
     # -- controle remoto (TV e ar pelo Ekaza): os botões da tela vão direto ao agente, sem passar pela conversa
     @app.get("/api/controle")
@@ -868,10 +913,15 @@ def _demonstracao(porta: int):
         shutil.copyfile(amostra, copia)
         return copia
 
+    # A tela "Editar" usa os apps da ArtCraft de verdade (se estiverem instalados); o resultado fica em documentos gerados.
+    from agente_craft import AgenteCraft
+
+    craft = AgenteCraft(avisar=lambda resposta, canal_do_pedido: canal.enviar(resposta.texto, resposta.arquivos))
     app = criar_servidor(canal, aparelhos, dados=dados, transcrever=lambda amostras: ("que horas são?", 0.9), agenda_semana=semana,
                          gerar_fala=fala_de_mentira,
                          buscar_imagem=poster_de_mentira, biblioteca=biblioteca, controle=_controle_de_mentira(pasta),
-                         recursos=lambda: {"cpu": random.randint(12, 48), "ram": random.randint(58, 66), "disco": 71})
+                         recursos=lambda: {"cpu": random.randint(12, 48), "ram": random.randint(58, 66), "disco": 71},
+                         editar=craft.editar_do_app, situacao_da_edicao=craft.situacao, pasta_recebidos=os.path.join(pasta, "recebidos"))
     codigo = aparelhos.novo_codigo()
     print(f"Demonstração em http://127.0.0.1:{porta}  |  código de pareamento: {codigo} (vale 5 min)", flush=True)
     import uvicorn

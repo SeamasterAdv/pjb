@@ -40,6 +40,7 @@ import tools
 from jeito_de_falar import frase, tipo_de_encerramento, todas as todas_as_frases
 from agente_agenda import criar_agente_agenda, iniciar_lembretes
 from agente_controle import criar_agente_controle
+from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
 from biometria_voz import BIOMETRIA, NEGADO, AgenteBiometria, Falante
@@ -1231,6 +1232,29 @@ def mandar_pelo_whatsapp(caminhos, texto: str = "") -> None:
 FONTES = criar_agente_fontes(avisar=lambda texto, canal: responder_fontes(texto, canal), enviar_zap=mandar_pelo_whatsapp,
                              impressora=IMPRESSORA, pastas=PASTAS, llm=llm_clients)
 
+def responder_craft(resposta, canal: str | None = None) -> None:
+    """Resposta dos apps da ArtCraft. Pelo WhatsApp ou pelo app, o arquivo convertido volta junto; pela voz, "... e me manda" o
+    manda pelo WhatsApp. Não entra no histórico, como a das fontes: os nomes são dos seus arquivos. `canal` é o do pedido
+    (o fim de um vídeo editado chega depois, quando o canal atual pode ser outro)."""
+    canal = canal or CANAL["atual"]
+    if canal_remoto(canal) is not None:
+        responder_no_whatsapp("", resposta.texto, arquivos=resposta.arquivos, registrar=False, canal=canal)
+        return
+    texto = resposta.texto
+    if resposta.arquivos:
+        try:
+            mandar_pelo_whatsapp(resposta.arquivos)
+            texto += " Mandei no seu WhatsApp."
+        except Exception as exc:
+            texto += f" Não consegui mandar no WhatsApp: {exc}."
+    responder_fontes(texto, canal)
+
+
+# Apps da ArtCraft (apps_craft.py + agente_craft.py): "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs",
+# "deixa essa foto preto e branco" (LightCraft), "corta esse vídeo do 10 ao 30" (FilmCraft), pelos programas de linha de
+# comando dos apps, sem janela e sem nuvem. "Esse" é o arquivo que acabou de chegar. O vídeo pronto chega por avisar.
+CRAFT = AgenteCraft(recebidos=FONTES.recebidos_do_pedido, arquivos=PASTAS.arquivos, avisar=responder_craft)
+
 
 def ultima_interacao() -> float:
     """Quando foi a última fala com ela (a pessoa ou ela; a conversa da casa ignorada não conta)."""
@@ -2141,7 +2165,7 @@ def iniciar_app_celular(configuracao):
         servidor = app_celular.criar_servidor(
             canal, APARELHOS, dados=lambda: dados_para_o_app(configuracao), transcrever=transcrever_amostras,
             gerar_fala=gerar_arquivo_de_fala, limpar=limpar_texto_para_fala, agenda_semana=AGENDA.dados_semana,
-            biblioteca=BIBLIOTECA, controle=CONTROLE,
+            biblioteca=BIBLIOTECA, controle=CONTROLE, editar=CRAFT.editar_do_app, situacao_da_edicao=CRAFT.situacao,
         )
         app_celular.iniciar_servidor(servidor)
         CANAL_APP = canal
@@ -2351,6 +2375,15 @@ def main(evento_carregamento=None):
             continue
 
         comando_normalizado = agente_aprendizagem.normalizar(comando)
+
+        # Apps da ArtCraft antes das fontes: "converte esse Word em PDF" logo depois de um arquivo chegar não é uma pergunta
+        # sobre ele, e "abre esse PDF no PdfCraft" não é a pasta.
+        inicio_craft = time.time()
+        resposta_craft = CRAFT.responder(comando, canal=CANAL["atual"])
+        if resposta_craft:
+            responder_craft(resposta_craft)
+            analisador.registrar_interacao(comando, ["apps_craft"], time.time() - inicio_craft, True)
+            continue
 
         # Fontes e arquivos recebidos antes da impressora, da leitura de tela e dos agentes: "vira fonte", "arquiva", "imprime isso",
         # "escaneia" e "resume esse PDF" logo depois de um arquivo chegar pelo WhatsApp (ou de escanear uma folha) são desse arquivo.

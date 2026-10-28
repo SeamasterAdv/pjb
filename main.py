@@ -43,6 +43,7 @@ from agente_controle import criar_agente_controle
 from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
+from agente_prazos import criar_agente_prazos
 from biometria_voz import BIOMETRIA, NEGADO, AgenteBiometria, Falante
 import leitura_tela
 from agente_pastas import AgentePastas
@@ -1169,6 +1170,11 @@ CAMADAS = camadas_personalidade.AgenteCamadas(
 # do vade-mécum ("atualiza o vade-mécum") volta por avisar.
 LEIS = AgenteLeis(avisar=lambda texto: responder_rapido(texto))
 
+# Prazos processuais (agente_prazos.py, a conta em prazos.py): "fui intimado hoje, quando vence a contestação?", em dias
+# úteis ou corridos conforme o rito, com feriados, o recesso de 20/12 a 20/1 e o prazo em dobro; marca o vencimento na
+# agenda local. A agenda vem por função porque os testes trocam o banco do AGENDA.
+PRAZOS = criar_agente_prazos(agenda=lambda: AGENDA.agenda)
+
 # Biometria vocal (biometria_voz.py): cadastrar e esquecer vozes, "quem está falando?". O que um convidado
 # (voz que não é a do dono) pode pedir está em responder_ao_convidado.
 AGENTE_VOZ = AgenteBiometria(BIOMETRIA, avisar=lambda texto: responder_rapido(texto))
@@ -1671,7 +1677,7 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
             return ""
         if em_conversa and (tipo_de_encerramento(texto) or LEIS.e_seguimento(texto) or TELA.e_seguimento(texto)
                             or PASTAS.esperando_resposta() or CONTROLE.esperando_resposta()
-                            or MELHORIA.esperando_resposta()):
+                            or MELHORIA.esperando_resposta() or PRAZOS.esperando_resposta()):
             avaliacao = "pedido"  # "valeu!", "tchau", "não entendi", "explica melhor", "a segunda": no meio da conversa, é com ela
         elif FONTES.esperando_resposta() and FONTES.reconhece(texto):
             avaliacao = "pedido"  # acabou de chegar um arquivo (ou escaneou uma folha): "vira fonte", "arquiva", "mais uma"
@@ -2482,6 +2488,16 @@ def main(evento_carregamento=None):
         if resposta_pasta:
             falar_e_registrar(comando, resposta_pasta)
             analisador.registrar_interacao(comando, ["pastas"], 0.0, True)
+            continue
+
+        # Prazos processuais antes das leis e da agenda: "qual o prazo da apelação?" não é o artigo, e "quando vence a
+        # contestação?" não é um compromisso. A resposta curta é falada; a conta inteira vai para o painel e o WhatsApp.
+        resposta_prazo = PRAZOS.responder(comando)
+        if resposta_prazo:
+            falar_e_registrar(comando, resposta_prazo.fala, texto_painel=resposta_prazo.painel)
+            if resposta_prazo.agenda_mudou:
+                avisar_painel("agenda_mudou", "agenda")
+            analisador.registrar_interacao(comando, ["prazos"], 0.0, True)
             continue
 
         # Artigos de lei antes dos agentes, do resumo e das ferramentas: "me explica o artigo 5 da

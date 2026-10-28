@@ -16,6 +16,7 @@ from agente_controle import criar_agente_controle
 from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, texto_da_agenda
 from agente_leis import AgenteLeis
+from agente_prazos import criar_agente_prazos
 from agente_pastas import AgentePastas
 from fontes import criar_agente_fontes
 from leitura_tela import AgenteTela
@@ -313,6 +314,7 @@ class JanelaComandos(tk.Tk):
         self._dados_tarefas = audio_config if audio_config is not None else {}
         self.orquestrador = criar_orquestrador(publicar=PainelCompartilhado(self._dados_tarefas))
         self.agenda = criar_agente_agenda(llm=None)  # a mesma agenda local da voz (mesmo arquivo)
+        self.prazos = criar_agente_prazos(agenda=lambda: self.agenda.agenda)  # "quando vence a contestação?"
         # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
         self.leis = AgenteLeis(
             avisar=lambda texto: self.after(0, lambda: self.adicionar_mensagem("Beatriz", texto, tag="beatriz")))
@@ -1358,6 +1360,12 @@ class JanelaComandos(tk.Tk):
         if resposta_impressora:  # imprimir, fila e estado da impressora: na hora, sem LLM
             self._inicio_processamento = time.perf_counter()
             self._finalizar_resposta(resposta_impressora)
+            return
+
+        resposta_prazo = self.prazos.responder(comando)
+        if resposta_prazo:  # prazo processual: a conta inteira no chat, a curta na voz
+            self._inicio_processamento = time.perf_counter()
+            self._finalizar_resposta(resposta_prazo.painel or resposta_prazo.fala, fala=resposta_prazo.fala)
             return
 
         if self.controle.reconhece(comando):  # TV e ar: a rede pode demorar, então o envio vai numa thread

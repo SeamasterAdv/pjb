@@ -31,6 +31,17 @@ def agenda_temporaria(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def prazos_isolados(tmp_path, monkeypatch):
+    """Os dias sem expediente de verdade (banco_memoria/prazos_sem_expediente.json) nunca são lidos nem gravados."""
+    from prazos import Calendario
+
+    if "main" in sys.modules:
+        monkeypatch.setattr(sys.modules["main"].PRAZOS, "calendario", Calendario(caminho=str(tmp_path / "prazos_teste.json")))
+        monkeypatch.setattr(sys.modules["main"].PRAZOS, "pendencia", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def sem_internet_para_as_leis(monkeypatch):
     """A conferência da lei seca e o agente de leis nunca baixam o site do Planalto nos testes."""
     import agente_leis

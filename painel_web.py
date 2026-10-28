@@ -28,6 +28,7 @@ from agente_controle import criar_agente_controle
 from agente_craft import AgenteCraft
 from agente_impressora import criar_agente_impressora, pede_impressao, texto_da_agenda
 from agente_leis import AgenteLeis
+from agente_prazos import criar_agente_prazos
 from agentes import PainelCompartilhado, criar_orquestrador
 from biblioteca_fontes import BibliotecaDeFontes, ErroDaBiblioteca, resultado as resultado_da_biblioteca
 from cinema import cartao_de_filmes, responder_pedido_de_cinema
@@ -105,6 +106,8 @@ class ApiPainel:
         self._ultimas_respostas = []  # mais nova primeiro, para "imprime isso"
         # artigos de lei e súmulas (vade-mécum do PC): texto oficial e explicação pelo Gemini
         self._leis = AgenteLeis(avisar=self._responder)
+        # prazos processuais ("quando vence a contestação?"), marcados na mesma agenda local
+        self._prazos = criar_agente_prazos(agenda=lambda: self._agenda.agenda)
         # Camadas de personalidade: os pedidos diretos do chat ("me chama de…") e a aba "camadas" da janela; o
         # aprendizado de tempos em tempos roda no processo principal (aqui, só o "aprender agora").
         self._aprendiz = camadas_personalidade.Aprendiz(llm=llm_clients)
@@ -601,6 +604,14 @@ class ApiPainel:
             resposta_pasta = self._pastas.responder(comando)
             if resposta_pasta:
                 return self._responder(resposta_pasta)
+            resposta_prazo = self._prazos.responder(comando)
+            if resposta_prazo:  # fala a conta curta e mostra a inteira, com os avisos
+                falar_async(resposta_prazo.fala)
+                self._emitir({"tipo": "resposta", "texto": resposta_prazo.painel or resposta_prazo.fala, "mostrar": True})
+                self._ultimas_respostas = [resposta_prazo.painel or resposta_prazo.fala] + self._ultimas_respostas[:9]
+                if resposta_prazo.agenda_mudou:
+                    self._emitir({"tipo": "agenda_mudou"})
+                return
             resposta_lei = self._leis.responder(comando)
             if resposta_lei:
                 return self._responder_lei(resposta_lei)

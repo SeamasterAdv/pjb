@@ -276,6 +276,14 @@ AGENDA_HORA_TAREFAS = os.getenv("AGENDA_HORA_TAREFAS", "09:00")
 # para chegarem no celular quando você não está perto do PC. Para desligar: AGENDA_LEMBRETES_WHATSAPP=false
 AGENDA_LEMBRETES_WHATSAPP = os.getenv("AGENDA_LEMBRETES_WHATSAPP", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+# Prazos processuais (prazos.py, agente_prazos.py): os feriados nacionais sempre contam. Os forenses comuns
+# (segunda e terça de Carnaval, quinta-feira santa, Corpus Christi e 8/12, Dia da Justiça) também, a não ser com
+# PRAZOS_FERIADOS_FORENSES=false. Feriados do seu tribunal: PRAZOS_FERIADOS_EXTRAS="30/11, 24/12/2026" (sem o ano,
+# todo ano), ou falando ("dia 31 de outubro não tem expediente"), que fica em CAMINHO_PRAZOS.
+PRAZOS_FERIADOS_FORENSES = os.getenv("PRAZOS_FERIADOS_FORENSES", "true").strip().lower() in {"1", "true", "yes", "on"}
+PRAZOS_FERIADOS_EXTRAS = os.getenv("PRAZOS_FERIADOS_EXTRAS", "")
+CAMINHO_PRAZOS = os.getenv("CAMINHO_PRAZOS", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "prazos_sem_expediente.json"))
+
 # Impressora (agente_impressora.py): imprime arquivos, textos ditados e respostas pela fila do Windows.
 # Vazio = a impressora padrão do Windows (hoje a EPSON L395 Series).
 IMPRESSORA_NOME = os.getenv("IMPRESSORA_NOME", "").strip()

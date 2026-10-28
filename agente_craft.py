@@ -114,6 +114,9 @@ RE_RECORTES = {
     "16x9": re.compile(r"\b16\W?(?:x|por)\W?9\b|\bwidescreen\b"),
     "4x5": re.compile(r"\b4\W?(?:x|por)\W?5\b"),
 }
+# "No meu estilo" (estilo_video.py) e o título dito ("com o título Férias na praia", até o fim da frase), no texto original.
+RE_MEU_ESTILO = re.compile(r"\b(?:no|com\s+o|do|pro)\s+meu\s+estilo\b|\bmeu\s+estilo\s+(?:nesse|neste|no)\b")
+RE_TITULO_DO_VIDEO = re.compile(r"\s*,?\s*\b(?:e\s+)?com\s+(?:o\s+)?t[íi]tulo\s+(?:de\s+)?(?P<titulo>.{1,80}?)\s*$", re.IGNORECASE)
 VAZIAS_DA_EDICAO = set("""
 deixa deixar deixe coloca colocar coloque poe por aplica aplicar aplique edita editar edite faz faca fazer fica ficar mais menos
 bem muito bastante pouco filtro efeito cara estilo tom versao video videos clipe clipes gravacao foto fotos imagem imagens
@@ -349,7 +352,8 @@ class AgenteCraft:
     índice de arquivos pelo nome aproximado (`busca_arquivos.IndiceDeArquivos`, o do `AgentePastas`)."""
 
     def __init__(self, apps: AppsCraft | None = None, recebidos=None, arquivos=None, pasta_saida: str | None = None,
-                 abrir_arquivo=None, relogio=time.time, avisar=None, em_segundo_plano=None):
+                 abrir_arquivo=None, relogio=time.time, avisar=None, em_segundo_plano=None, estilizar=None, transcrever=None,
+                 video_animado_recente=None):
         if pasta_saida is None:
             from config import PASTA_DOCUMENTOS_GERADOS
 
@@ -366,6 +370,10 @@ class AgenteCraft:
                                                                                       name="apps-craft").start())
         self._tarefas = {}  # as edições pedidas pela tela do celular: id -> situação
         self._trava = threading.Lock()
+        # "Edita esse vídeo no meu estilo": video_animado.estilizar_video e o Whisper do PC (voice.transcrever_palavras).
+        self.estilizar = estilizar
+        self.transcrever = transcrever
+        self.video_animado_recente = video_animado_recente or (lambda: False)
 
     # ------------------------------------------------------------------ pedidos
     def responder(self, texto: str, canal: str = "voz") -> RespostaCraft | None:
@@ -377,6 +385,9 @@ class AgenteCraft:
         app = app_citado(t)
         if app is not None and RE_PRA_QUE.search(t) and not RE_ABRIR.search(t):
             return RespostaCraft(self._descrever(app))
+        resposta = self._no_meu_estilo(texto, t, canal) if RE_MEU_ESTILO.search(t) else None
+        if resposta:
+            return resposta
         resposta = self._editar(texto, t, canal)
         if resposta:
             return resposta
@@ -579,6 +590,70 @@ class AgenteCraft:
         self.em_segundo_plano(editar)
         como = _lista_falada(edicao.descricao())
         return RespostaCraft(f"Editando “{nome}” no FilmCraft{': ' + como if como else ''}. Aviso quando ficar pronto.")
+
+    # ------------------------------------------------------------------ o meu estilo (estilo_video.py)
+    def _no_meu_estilo(self, texto: str, t: str, canal: str) -> RespostaCraft | None:
+        """"Edita esse vídeo no meu estilo", "põe o vídeo da viagem no meu estilo com o título Férias": o filtro do estilo (e o
+        que mais a frase pedir: cortar, acelerar) pelo FilmCraft, e o enquadramento, o título, as legendas e a assinatura em
+        video_animado.estilizar_video. None se não for sobre um vídeo (o estilo é só de vídeos)."""
+        if RE_FOTO.search(t) and not RE_VIDEO.search(t):
+            return None
+        titulo = RE_TITULO_DO_VIDEO.search(texto)
+        sem_titulo = RE_TITULO_DO_VIDEO.sub(" ", texto)
+        t = normalizar(sem_titulo)
+        edicao, usados = ler_edicao_de_video(sem_titulo, t)
+        resto = RE_MEU_ESTILO.sub(" ", t)
+        for padrao in usados:
+            resto = padrao.sub(" ", resto)
+        resto = " ".join(p for p in resto.split() if p not in VAZIAS_DA_EDICAO)
+        arquivos, problema = self._origem(sem_titulo, resto, VIDEOS)
+        if problema:
+            return RespostaCraft(problema)
+        if not arquivos:
+            # Sem vídeo seu, "aplica meu estilo no vídeo" logo depois de um vídeo animado é refazê-lo (criacao_visual.py).
+            if not RE_VIDEO.search(t) or self.video_animado_recente():
+                return None
+            return RespostaCraft("Qual vídeo? Me mande o vídeo antes, ou diga uma parte do nome do arquivo.")
+        if edicao.saida != ".mp4":
+            return RespostaCraft("O meu estilo vale para o vídeo em MP4: peça o GIF ou o som numa frase à parte.")
+        video, nome = arquivos[-1], os.path.basename(arquivos[-1])
+        titulo = titulo.group("titulo").strip(" \"'“”.") if titulo else ""
+
+        def trabalhar():
+            import tempfile
+
+            import estilo_video
+
+            estilo = estilo_video.atual()
+            if not edicao.filtro and estilo["edicao"].get("filtro"):
+                edicao.filtro = estilo["edicao"]["filtro"]
+            temporaria = tempfile.mkdtemp(prefix="beatriz_estilo_")
+            try:
+                entrada = video if edicao.vazia() else self.apps.editar_video(video, edicao, temporaria)
+                destino = os.path.join(self._pasta_do_dia(), f"{os.path.splitext(nome)[0]} (meu estilo).mp4")
+                os.makedirs(os.path.dirname(destino), exist_ok=True)
+                estilizar = self.estilizar
+                if estilizar is None:
+                    from video_animado import estilizar_video as estilizar
+                transcrever = self.transcrever
+                if transcrever is None:
+                    from voice import transcrever_palavras as transcrever
+                info = estilizar(entrada, estilo, destino, titulo, transcrever)
+                partes = [p for p in (_lista_falada(edicao.descricao()), f"com {info.get('legendas')} legendas"
+                                      if info.get("legendas") else "", f"com o título “{titulo}”" if titulo else "") if p]
+                frase = f"Pronto: “{nome}” no seu estilo{', ' + ', '.join(partes) if partes else ''}, em documentos gerados."
+                resposta = self._entregar(frase, [destino], t, canal)
+            except (ErroCraft, OSError, RuntimeError, ValueError) as exc:
+                resposta = RespostaCraft(f"Não deu para pôr “{nome}” no seu estilo: {exc}")
+            finally:
+                import shutil
+
+                shutil.rmtree(temporaria, ignore_errors=True)
+            self.avisar(resposta, canal)
+
+        self.em_segundo_plano(trabalhar)
+        return RespostaCraft(f"Pondo “{nome}” no seu estilo{' com o título “' + titulo + '”' if titulo else ''}. "
+                             "Leva de um a alguns minutos (as legendas são ouvidas no PC); aviso quando ficar pronto.")
 
     # ------------------------------------------------------------------ a tela "Editar" do celular
     def editar_do_app(self, caminho: str, dados: dict) -> dict:

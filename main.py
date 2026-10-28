@@ -54,6 +54,7 @@ import melhoria_codigo
 import niveis_voz
 import personalidade
 import preferencias_estudo
+import estilo_video
 from leitura_tela import AgenteTela, RespostaTela
 from canal_whatsapp import CanalWhatsApp
 import app_celular
@@ -1246,7 +1247,8 @@ def responder_craft(resposta, canal: str | None = None) -> None:
 # Apps da ArtCraft (apps_craft.py + agente_craft.py): "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs",
 # "deixa essa foto preto e branco" (LightCraft), "corta esse vídeo do 10 ao 30" (FilmCraft), pelos programas de linha de
 # comando dos apps, sem janela e sem nuvem. "Esse" é o arquivo que acabou de chegar. O vídeo pronto chega por avisar.
-CRAFT = AgenteCraft(recebidos=FONTES.recebidos_do_pedido, arquivos=PASTAS.arquivos, avisar=responder_craft)
+CRAFT = AgenteCraft(recebidos=FONTES.recebidos_do_pedido, arquivos=PASTAS.arquivos, avisar=responder_craft,
+                    video_animado_recente=lambda: CRIACAO.tem_video_recente())
 
 
 def mostrar_criacao(evento: dict) -> None:
@@ -2204,7 +2206,9 @@ def iniciar_app_celular(configuracao):
             canal, APARELHOS, dados=lambda: dados_para_o_app(configuracao), transcrever=transcrever_amostras,
             gerar_fala=gerar_arquivo_de_fala, limpar=limpar_texto_para_fala, agenda_semana=AGENDA.dados_semana,
             biblioteca=BIBLIOTECA, controle=CONTROLE, editar=CRAFT.editar_do_app, situacao_da_edicao=CRAFT.situacao,
-            estudos=preferencias_estudo, nova_peca=peca_do_app,
+            estudos=preferencias_estudo, nova_peca=peca_do_app, estilo_de_video=estilo_video,
+            video_novo=lambda assunto, opcoes: CRIACAO.criar_video(assunto, "app", opcoes),
+            refazer_video=lambda: CRIACAO.refazer_video("app"),
         )
         app_celular.iniciar_servidor(servidor)
         CANAL_APP = canal

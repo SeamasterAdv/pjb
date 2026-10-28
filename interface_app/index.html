@@ -182,7 +182,11 @@
         <span class="bloco-icone"><svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="M15.5 10.5l6-3.5v10l-6-3.5z"/><path d="M6 6l3-3M10 6l3-3"/></svg></span>
         <span class="bloco-nome">Vídeos</span>
       </button>
-      <button class="bloco" type="button" data-editar="converter" role="listitem" data-i="17">
+      <button class="bloco" type="button" data-acao="estudio" role="listitem" data-i="17">
+        <span class="bloco-icone"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M10 8.5v5l4.5-2.5z"/><path d="M7 21h10M12 17v4"/><path d="M19 1.5l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z"/></svg></span>
+        <span class="bloco-nome">Estúdio</span>
+      </button>
+      <button class="bloco" type="button" data-editar="converter" role="listitem" data-i="18">
         <span class="bloco-icone"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v6"/><path d="M14 3v5h5v3"/><path d="M14 3l5 5"/><path d="M4 16h11M12 13l3 3-3 3"/><path d="M20 21H9"/></svg></span>
         <span class="bloco-nome">Converter</span>
       </button>
@@ -435,6 +439,97 @@
     </div>
   </section>
 
+  <!-- Estúdio: o seu estilo de vídeo, os exemplos e um vídeo novo (o mesmo componente da janela [ vídeos ] do painel do PC,
+       interface_web/estilo_video.js, com os mesmos ids). -->
+  <section class="tela" id="tela-estudio" aria-label="Estúdio">
+    <div class="titulo-tela" data-i="0"><span>Estúdio</span><span class="linha"></span></div>
+    <div class="segmentos es-abas" data-i="1">
+      <button class="segmento aba-vd ativo" type="button" data-aba="estilo">Estilo</button>
+      <button class="segmento aba-vd" type="button" data-aba="meus">Meus</button>
+      <button class="segmento aba-vd" type="button" data-aba="exemplos">Exemplos</button>
+      <button class="segmento aba-vd" type="button" data-aba="novo">Novo</button>
+    </div>
+    <div class="painel holo es-previa" data-i="2">
+      <div class="holo-rotulo"><span>Prévia</span><span class="holo-codigo ps-estado" id="vd-estado"></span></div>
+      <div class="vd-previa" id="vd-previa"><canvas id="vd-canvas" aria-hidden="true"></canvas></div>
+      <p class="ps-dica" id="vd-previa-legenda"></p>
+    </div>
+    <section class="vd-aba" data-aba="estilo">
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Meu estilo</span></div>
+        <p class="ps-explica">Vale para os próximos vídeos. O que você disser no pedido (<b>em pé</b>, <b>sem narração</b>,
+          <b>de 30 segundos</b>) vale mais que o daqui.</p>
+        <div class="es-grade" id="vd-opcoes"></div>
+        <div class="es-linha">
+          <span class="es-rotulo">abertura e fim</span>
+          <div class="es-campos">
+            <label class="cm-chave"><input type="checkbox" id="vd-abertura"> abertura com o título</label>
+            <input id="vd-assinatura" maxlength="60" placeholder="assinatura no fim (ex.: @seuperfil)" autocomplete="off"
+              aria-label="Assinatura no fim do vídeo">
+          </div>
+        </div>
+        <div class="es-linha">
+          <span class="es-rotulo">instruções</span>
+          <textarea id="vd-instrucoes" rows="3" aria-label="Instruções livres"
+            placeholder="ex.: sempre termine com uma pergunta para o público"></textarea>
+        </div>
+      </div>
+    </section>
+    <section class="vd-aba" data-aba="meus" hidden>
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Os vídeos que você grava</span></div>
+        <p class="ps-explica">Mande o vídeo na conversa e diga <b>edita esse vídeo no meu estilo</b> (ou <b>… com o título
+          “Férias”</b>). O PC aplica o filtro, o formato, as legendas do que foi falado e a assinatura.</p>
+        <div class="es-grade" id="vd-edicao"></div>
+        <div class="es-linha">
+          <span class="es-rotulo">legendas</span>
+          <label class="cm-chave"><input type="checkbox" id="vd-edicao-legendas"> legendar o que for falado</label>
+        </div>
+      </div>
+    </section>
+    <section class="vd-aba" data-aba="exemplos" hidden>
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Exemplos</span><span class="holo-codigo cm-resumo" id="vd-exemplos-conta"></span></div>
+        <p class="ps-explica">Prints e vídeos de que você gosta (de cada vídeo ficam 3 quadros). A IA olha o <b>estilo</b> e monta
+          um guia. Vão <b>só para o Claude</b>.</p>
+        <div class="es-fotos" id="vd-exemplos"></div>
+        <div class="es-botoes">
+          <button class="pequeno" type="button" id="vd-exemplo-adicionar">+ prints ou vídeos</button>
+          <button class="pequeno principal" type="button" id="vd-guia-montar">montar o guia com o Claude</button>
+        </div>
+      </div>
+      <div class="painel holo" data-i="4">
+        <div class="holo-rotulo"><span>Guia de estilo</span><span class="holo-codigo cm-resumo" id="vd-guia-quem"></span></div>
+        <textarea id="vd-guia" rows="8" aria-label="Guia de estilo dos vídeos"
+          placeholder="Monte o guia a partir dos exemplos, ou escreva aqui como você quer os vídeos."></textarea>
+        <div class="es-botoes">
+          <label class="cm-chave"><input type="checkbox" id="vd-usar-guia"> usar nos próximos vídeos</label>
+          <span class="es-cores-guia" id="vd-cores-guia"></span>
+        </div>
+      </div>
+    </section>
+    <section class="vd-aba" data-aba="novo" hidden>
+      <div class="painel holo" data-i="3">
+        <div class="holo-rotulo"><span>Vídeo novo</span></div>
+        <p class="ps-explica">O Claude escreve o roteiro e desenha as cenas no seu estilo; o PC narra, monta e grava o MP4, que
+          chega na conversa e aparece no centro do painel do PC.</p>
+        <textarea id="vd-assunto" rows="3" aria-label="Assunto do vídeo" placeholder="ex.: como funciona a fotossíntese"></textarea>
+        <div class="es-opcoes" id="vd-novo-formato"></div>
+        <label class="cm-chave"><input type="checkbox" id="vd-novo-sem-narracao"> sem narração</label>
+        <div class="es-botoes">
+          <button class="pequeno principal" type="button" id="vd-criar">fazer o vídeo</button>
+          <button class="pequeno" type="button" id="vd-refazer">refazer o último com o estilo salvo</button>
+        </div>
+      </div>
+    </section>
+    <div class="es-acoes" data-i="5">
+      <button class="pequeno principal" type="button" id="vd-salvar">salvar</button>
+      <button class="pequeno" type="button" id="vd-desfazer">desfazer</button>
+      <button class="pequeno perigo" type="button" id="vd-padrao">padrão</button>
+      <p class="es-mensagem" id="vd-mensagem" aria-live="polite"></p>
+    </div>
+  </section>
+
   <!-- Editar: fotos (LightCraft), vídeos (FilmCraft) e conversões, feitas no PC pelos apps da ArtCraft. A prévia da foto
        e do vídeo é aproximada (filtros do navegador); o resultado de verdade volta do PC. -->
   <section class="tela" id="tela-editar" aria-label="Editar">
@@ -674,6 +769,7 @@
 <input type="file" id="tirar-foto" accept="image/*" capture="environment" hidden>
 <script src="app.js"></script>
 <script src="visual/estudos.js"></script>
+<script src="visual/estilo_video.js"></script>
 <script type="module" src="visual_app.js"></script>
 </body>
 </html>

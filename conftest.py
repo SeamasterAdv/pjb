@@ -52,6 +52,8 @@ def personalidade_isolada(tmp_path, monkeypatch):
     # Nem as preferências de estudo e as fotos de exemplo da janela [ estudos ]: vale o padrão.
     monkeypatch.setattr(config, "CAMINHO_PREFERENCIAS_ESTUDO", str(tmp_path / "preferencias_estudo_teste.json"))
     monkeypatch.setattr(config, "PASTA_EXEMPLOS_ESTUDO", str(tmp_path / "exemplos_estudo_teste"))
+    monkeypatch.setattr(config, "CAMINHO_ESTILO_VIDEO", str(tmp_path / "estilo_video_teste.json"))
+    monkeypatch.setattr(config, "PASTA_EXEMPLOS_VIDEO", str(tmp_path / "exemplos_video_teste"))
     yield
 
 
@@ -197,6 +199,13 @@ def criacoes_isoladas(tmp_path, monkeypatch):
 
     monkeypatch.setattr(criacao_visual, "_provedores_padrao", proibido)
     monkeypatch.setattr(criacao_visual, "PASTA_DOCUMENTOS_GERADOS", str(tmp_path / "documentos_gerados"))
+    # Nem a narração (voz online), nem o Chromium das ilustrações, nem o Whisper das legendas dos vídeos.
+    import video_animado
+    import voice
+
+    monkeypatch.setattr(video_animado, "narrar", proibido)
+    monkeypatch.setattr(video_animado, "rasterizar_svgs", proibido)
+    monkeypatch.setattr(voice, "transcrever_palavras", proibido)
     yield
 
 

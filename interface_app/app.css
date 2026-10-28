@@ -760,21 +760,21 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius
 .resultado-previa audio { width: 100%; margin: 14px 0; }
 
 /* ---------------------------------------------------------------- estudos (o componente da janela [ estudos ] do PC) */
-#tela-estudos .es-abas { margin-bottom: 10px; }
-#tela-estudos .es-abas .segmento { flex: 1; }
+:is(#tela-estudos, #tela-estudio) .es-abas { margin-bottom: 10px; }
+:is(#tela-estudos, #tela-estudio) .es-abas .segmento { flex: 1; }
 .es-sugestoes { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
-#tela-estudos .painel { margin-bottom: 12px; }
-#tela-estudos .ps-explica, #tela-estudos .ps-dica { margin: 4px 0 8px; font-size: 13px; line-height: 1.45; color: var(--suave); }
-#tela-estudos .ps-explica b { color: var(--texto); font-weight: 600; }
-#tela-estudos .ps-estado.mudou { color: var(--ouro); }
-#tela-estudos .pequeno {
+:is(#tela-estudos, #tela-estudio) .painel { margin-bottom: 12px; }
+:is(#tela-estudos, #tela-estudio) .ps-explica, :is(#tela-estudos, #tela-estudio) .ps-dica { margin: 4px 0 8px; font-size: 13px; line-height: 1.45; color: var(--suave); }
+:is(#tela-estudos, #tela-estudio) .ps-explica b { color: var(--texto); font-weight: 600; }
+:is(#tela-estudos, #tela-estudio) .ps-estado.mudou { color: var(--ouro); }
+:is(#tela-estudos, #tela-estudio) .pequeno {
   padding: 8px 13px; border-radius: 18px; border: 1px solid var(--linha-forte); background: transparent; color: var(--texto);
   font-family: var(--hud); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
 }
-#tela-estudos .pequeno.principal { background: var(--cor); border-color: var(--cor); color: #000; font-weight: 700; }
-#tela-estudos .pequeno.perigo { border-color: rgba(255, 111, 134, 0.5); color: var(--erro); }
-#tela-estudos .pequeno:disabled { opacity: 0.35; }
-#tela-estudos .pequeno.principal:disabled { background: transparent; color: var(--texto); border-color: var(--linha-forte); }
+:is(#tela-estudos, #tela-estudio) .pequeno.principal { background: var(--cor); border-color: var(--cor); color: #000; font-weight: 700; }
+:is(#tela-estudos, #tela-estudio) .pequeno.perigo { border-color: rgba(255, 111, 134, 0.5); color: var(--erro); }
+:is(#tela-estudos, #tela-estudio) .pequeno:disabled { opacity: 0.35; }
+:is(#tela-estudos, #tela-estudio) .pequeno.principal:disabled { background: transparent; color: var(--texto); border-color: var(--linha-forte); }
 .es-linha { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
 .es-rotulo { font-family: var(--hud); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--suave); }
 .es-opcoes, .es-partes { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -791,7 +791,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius
 .es-amostra { display: inline-flex; border: 1px solid rgba(255, 255, 255, 0.5); }
 .es-amostra i { width: 11px; height: 14px; display: block; }
 .es-explica { min-height: 1.2em; font-size: 12px; line-height: 1.4; color: var(--suave); }
-#tela-estudos textarea, #tela-estudos input:not([type="checkbox"]):not([type="color"]), #tela-estudos select {
+:is(#tela-estudos, #tela-estudio) textarea, :is(#tela-estudos, #tela-estudio) input:not([type="checkbox"]):not([type="color"]), :is(#tela-estudos, #tela-estudio) select {
   width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--linha-forte); background: rgba(0, 0, 0, 0.6);
   color: var(--texto); font: inherit; font-size: 15px;
 }
@@ -846,3 +846,9 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius
 .ef-lei mark.sem { background: none; }
 .ef-rodape { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #64748b; }
 .ef-rodape span { flex: 1; }
+
+/* ------------------------------------------------------------------ Estúdio (o componente estilo_video.js; o resto vem das es-*) */
+.vd-previa { display: flex; justify-content: center; align-items: flex-start; padding: 6px 0; }
+.vd-previa canvas { display: block; max-width: 100%; }
+.vd-amostra i { width: 8px; }
+#tela-estudio textarea { width: 100%; }

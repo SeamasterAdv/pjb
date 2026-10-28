@@ -853,6 +853,22 @@ def _transcrever_whisper(modelo, audio):
     return _whisper_nas_amostras(modelo, _audio_para_whisper(audio))
 
 
+def transcrever_palavras(amostras, espera: float = 120.0) -> list:
+    """[(início, fim, palavra)] do áudio (16 kHz mono float32), pelo Whisper do PC, nunca pelo Google: as legendas de "edita
+    esse vídeo no meu estilo". Vazio sem o modelo. Trechos sem fala e as alucinações conhecidas ficam de fora."""
+    modelo = _WHISPER.obter(espera=espera)
+    if modelo is None:
+        return []
+    segmentos, _ = modelo.transcribe(amostras, language="pt", vad_filter=True, word_timestamps=True,
+                                     condition_on_previous_text=False, hotwords=siglas.vocabulario_de_voz())
+    palavras = []
+    for segmento in segmentos:
+        if segmento.no_speech_prob > LIMITE_SEM_FALA or _ALUCINACOES_WHISPER.search(segmento.text or ""):
+            continue
+        palavras.extend((p.start, p.end, siglas.corrigir_siglas(p.word.strip())) for p in segmento.words or [] if p.word.strip())
+    return palavras
+
+
 def _whisper_nas_amostras(modelo, amostras):
     """A confiança é a probabilidade média dos tokens (exp de avg_logprob): ~0,9 numa frase
     clara, ~0,6 numa duvidosa, a mesma escala da confiança do Google."""

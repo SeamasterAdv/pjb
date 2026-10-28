@@ -25,6 +25,7 @@
     <button class="botao-sistema" id="btn-biblioteca">biblioteca</button>
     <button class="botao-sistema" id="btn-personalidade">personalidade</button>
     <button class="botao-sistema" id="btn-estudos">estudos</button>
+    <button class="botao-sistema" id="btn-videos">vídeos</button>
     <button class="botao-sistema" id="btn-status">status</button>
     <button class="botao-sistema" id="btn-registro">registro</button>
     <div class="relogio"><span id="hora">--:--</span><span id="data"></span></div>
@@ -362,6 +363,108 @@
   </div>
 </div>
 
+<!-- Vídeos: o seu estilo (estilo_video.py) para os vídeos animados pelo Claude e para a edição dos seus vídeos, os exemplos
+     e um vídeo novo. O componente (estilo_video.js) é o mesmo da tela Estúdio do app do celular, com os mesmos ids. -->
+<div class="fundo-modal" id="fundo-videos" hidden>
+  <div class="janela-sistema janela-estudos janela-videos" id="janela-videos" role="dialog" aria-label="Vídeos">
+    <div class="cabecalho-janela">◢ vídeos: o seu estilo, os exemplos e um vídeo novo
+      <button class="fechar" data-fechar="videos" aria-label="Fechar">×</button>
+    </div>
+    <div class="ps-barra">
+      <button class="pequeno aba-vd ativo" data-aba="estilo">meu estilo</button>
+      <button class="pequeno aba-vd" data-aba="meus">meus vídeos</button>
+      <button class="pequeno aba-vd" data-aba="exemplos">exemplos</button>
+      <button class="pequeno aba-vd" data-aba="novo">vídeo novo</button>
+      <span class="ps-espaco"></span>
+      <span class="ps-estado" id="vd-estado"></span>
+    </div>
+    <div class="es-corpo">
+      <div class="es-editor">
+        <section class="vd-aba" data-aba="estilo">
+          <p class="ps-explica">Vale para os próximos vídeos (<b>faz um vídeo sobre…</b>). O que você disser no pedido
+            (<b>em pé</b>, <b>sem narração</b>, <b>de 30 segundos</b>) vale mais que o daqui.</p>
+          <div class="es-grade" id="vd-opcoes"></div>
+          <div class="es-linha">
+            <span class="es-rotulo">abertura e fim</span>
+            <div class="es-campos">
+              <label class="cm-chave"><input type="checkbox" id="vd-abertura"> tela de abertura com o título</label>
+              <input id="vd-assinatura" maxlength="60" placeholder="assinatura no fim (ex.: @seuperfil); vazio: sem" autocomplete="off"
+                aria-label="Assinatura no fim do vídeo">
+            </div>
+          </div>
+          <div class="es-linha">
+            <span class="es-rotulo">instruções</span>
+            <textarea id="vd-instrucoes" rows="3" spellcheck="true" aria-label="Instruções livres"
+              placeholder="ex.: sempre termine com uma pergunta para o público; nada de emojis; ilustrações em estilo isométrico"></textarea>
+          </div>
+        </section>
+        <section class="vd-aba" data-aba="meus" hidden>
+          <p class="ps-explica">Para os vídeos que você grava: diga <b>edita esse vídeo no meu estilo</b> logo depois de mandá-lo
+            (pelo WhatsApp, pelo app ou anexando aqui), ou <b>põe o vídeo da viagem no meu estilo com o título “Férias”</b>. O filtro
+            é do FilmCraft; as legendas são do que foi falado (o Whisper ouve no PC), na sua letra e nas suas cores.</p>
+          <div class="es-grade" id="vd-edicao"></div>
+          <div class="es-linha">
+            <span class="es-rotulo">legendas</span>
+            <label class="cm-chave"><input type="checkbox" id="vd-edicao-legendas"> legendar o que for falado no vídeo</label>
+          </div>
+        </section>
+        <section class="vd-aba" data-aba="exemplos" hidden>
+          <p class="ps-explica">Prints e vídeos de que você gosta (de cada vídeo ficam 3 quadros). A IA olha o <b>estilo</b>
+            (cores, ilustração, texto na tela, ritmo) e monta um guia que entra nos próximos vídeos. Vão <b>só para o Claude</b>;
+            sem ele, o modelo de visão do PC olha.</p>
+          <div class="es-fotos" id="vd-exemplos"></div>
+          <div class="es-botoes">
+            <button class="pequeno" id="vd-exemplo-adicionar">+ prints ou vídeos</button>
+            <button class="pequeno principal" id="vd-guia-montar">montar o guia com o Claude</button>
+            <span class="cm-resumo" id="vd-exemplos-conta"></span>
+          </div>
+          <div class="es-linha es-guia">
+            <span class="es-rotulo">guia de estilo</span>
+            <textarea id="vd-guia" rows="8" spellcheck="true" aria-label="Guia de estilo dos vídeos"
+              placeholder="Monte o guia a partir dos exemplos, ou escreva aqui como você quer os vídeos."></textarea>
+            <div class="es-botoes">
+              <label class="cm-chave"><input type="checkbox" id="vd-usar-guia"> usar o guia nos próximos vídeos</label>
+              <span class="es-cores-guia" id="vd-cores-guia"></span>
+              <span class="ps-espaco"></span>
+              <span class="cm-resumo" id="vd-guia-quem"></span>
+            </div>
+          </div>
+        </section>
+        <section class="vd-aba" data-aba="novo" hidden>
+          <p class="ps-explica">O Claude escreve o roteiro e desenha as cenas no seu estilo (o Gemini fica de reserva); o PC narra,
+            monta e grava o MP4. Ele aparece no centro do painel, no lugar da esfera, e fica em documentos gerados.</p>
+          <div class="es-linha">
+            <span class="es-rotulo">sobre o quê</span>
+            <textarea id="vd-assunto" rows="3" spellcheck="true" aria-label="Assunto do vídeo"
+              placeholder="ex.: como funciona a fotossíntese, para alunos do ensino médio"></textarea>
+          </div>
+          <div class="es-linha">
+            <span class="es-rotulo">só neste</span>
+            <div class="es-opcoes" id="vd-novo-formato"></div>
+            <label class="cm-chave"><input type="checkbox" id="vd-novo-sem-narracao"> sem narração</label>
+          </div>
+          <div class="es-botoes">
+            <button class="pequeno principal" id="vd-criar">fazer o vídeo</button>
+            <button class="pequeno" id="vd-refazer" title="O mesmo roteiro, montado de novo com o estilo salvo (sem o Claude)">refazer o
+              último vídeo com o estilo salvo</button>
+          </div>
+        </section>
+      </div>
+      <aside class="es-lado">
+        <div class="agenda-secao">PRÉVIA</div>
+        <div class="vd-previa" id="vd-previa"><canvas id="vd-canvas" aria-hidden="true"></canvas></div>
+        <p class="ps-dica" id="vd-previa-legenda"></p>
+      </aside>
+    </div>
+    <div class="ps-acoes">
+      <button class="pequeno principal" id="vd-salvar" title="Ctrl+S">salvar</button>
+      <button class="pequeno" id="vd-desfazer">desfazer alterações</button>
+      <button class="pequeno perigo" id="vd-padrao">voltar ao padrão</button>
+      <span class="agenda-resposta" id="vd-mensagem" aria-live="polite"></span>
+    </div>
+  </div>
+</div>
+
 <footer class="comando">
   <span class="prompt" aria-hidden="true">›_</span>
   <button class="mic ativo" id="btn-mic" title="Microfone ligado (clique para pausar)" aria-label="Microfone">
@@ -376,6 +479,7 @@
 
 <script src="app.js"></script>
 <script src="estudos.js"></script>
+<script src="estilo_video.js"></script>
 <script type="module" src="painel_visual.js"></script>
 </body>
 </html>

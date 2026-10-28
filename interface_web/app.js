@@ -212,14 +212,29 @@ function cartaoFilmes(ev) {
 /* ------------------------------------------------------------------ criações do Claude (no lugar da esfera) */
 // "Cria uma imagem de…" (SVG, mostrado num <img>, onde nada roda) ou "cria um modelo 3D de…" (cena montada pelo
 // criacao_3d.js, carregado só quando precisa). Fica até "fecha a imagem" ou o botão "× esfera".
-const ROTULOS_CRIACAO = { imagem: "imagem", "3d": "modelo 3d" };
+const ROTULOS_CRIACAO = { imagem: "imagem", "3d": "modelo 3d", video: "vídeo" };
 let criacaoAtual = null; // {formato, arquivo, url, visualizador}
 let modulo3d = null;
+let andamentoAtual = null; // o começo da criação (o vídeo manda o andamento da montagem depois)
 
-function andamentoDaCriacao(ev) {
+function andamentoDaCriacao(ev, passo = "") {
   const andamento = $("#criacao-andamento");
-  andamento.hidden = !ev;
-  if (ev) $("#criacao-andamento-texto").textContent = `${ROTULOS_CRIACAO[ev.formato] || ""} · ${ev.texto}`;
+  if (!passo) andamentoAtual = ev;
+  andamento.hidden = !andamentoAtual;
+  if (andamentoAtual) {
+    const base = `${ROTULOS_CRIACAO[andamentoAtual.formato] || ""} · ${andamentoAtual.texto}`;
+    $("#criacao-andamento-texto").textContent = passo ? `${base} · ${passo}` : base;
+  }
+}
+
+// O MP4 vem do Python em pedaços (a ponte não leva arquivos grandes de uma vez) e vira um endereço local (blob).
+async function baixarVideo(arquivo) {
+  const primeira = await api.criacao_video_parte(arquivo, 0);
+  if (!primeira || !primeira.partes) throw new Error("vídeo não encontrado");
+  const pedacos = [primeira.dados];
+  for (let i = 1; i < primeira.partes; i++) pedacos.push((await api.criacao_video_parte(arquivo, i)).dados);
+  const bytes = pedacos.map((base64) => Uint8Array.from(atob(base64), (letra) => letra.charCodeAt(0)));
+  return URL.createObjectURL(new Blob(bytes, { type: "video/mp4" }));
 }
 
 function limparPalcoDaCriacao() {
@@ -251,6 +266,20 @@ async function mostrarCriacao(ev) {
       guardarGLB(atual);
     } catch (erro) {
       $("#criacao-dica").textContent = "não consegui montar o modelo neste painel";
+    } finally { palco.classList.remove("carregando"); }
+  } else if (ev.formato === "video") {
+    $("#criacao-dica").textContent = ev.duracao ? `${Math.round(ev.duracao)} s · ${ev.cenas} cenas · o som liga no controle do vídeo` : "";
+    palco.classList.add("carregando");
+    try {
+      const url = ev.url || await baixarVideo(ev.arquivo);
+      if (criacaoAtual !== atual) { if (!ev.url) URL.revokeObjectURL(url); return; }
+      if (!ev.url) atual.url = url;
+      const video = document.createElement("video");
+      // Começa mudo: ela está falando "Pronto…" agora; o som liga no controle do próprio vídeo.
+      Object.assign(video, { src: url, controls: true, autoplay: true, muted: true, loop: true, playsInline: true });
+      palco.appendChild(video);
+    } catch (erro) {
+      $("#criacao-dica").textContent = "não consegui abrir o vídeo neste painel; use “abrir o arquivo”";
     } finally { palco.classList.remove("carregando"); }
   } else {
     $("#criacao-dica").textContent = "";
@@ -332,6 +361,8 @@ function tratarEvento(ev) {
       break;
     case "criacao_iniciada":
       andamentoDaCriacao(ev); break;
+    case "criacao_andamento":
+      andamentoDaCriacao(null, texto); break;
     case "criacao":
       mostrarCriacao(ev); celebrar(); break;
     case "criacao_falhou":
@@ -1330,7 +1361,8 @@ function ligarControles(inicio) {
   $("#fundo-status").addEventListener("click", (e) => { if (e.target.id === "fundo-status") abrirStatus(false); });
   const fechar = { status: () => abrirStatus(false), agenda: () => abrirAgenda(false), registro: () => abrirRegistro(false),
                    biblioteca: () => abrirBiblioteca(false), personalidade: () => abrirPersonalidade(false),
-                   estudos: () => abrirEstudos(false) };  // abrirEstudos fica no estudos.js
+                   estudos: () => abrirEstudos(false),  // abrirEstudos fica no estudos.js
+                   videos: () => abrirVideos(false) };  // e abrirVideos no estilo_video.js
   document.querySelectorAll("[data-fechar]").forEach((b) => b.onclick = fechar[b.dataset.fechar]);
   ligarAgenda();
   ligarBiblioteca();
@@ -1338,6 +1370,7 @@ function ligarControles(inicio) {
   addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       abrirStatus(false); abrirAgenda(false); abrirRegistro(false); abrirBiblioteca(false); abrirPersonalidade(false); abrirEstudos(false);
+      abrirVideos(false);
     }
     if (e.key === "k" && e.ctrlKey) { entrada.focus(); e.preventDefault(); }
   });

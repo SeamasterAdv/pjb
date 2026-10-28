@@ -18,6 +18,7 @@ import time
 
 import camadas_personalidade
 import conversa_nuvem
+import estilo_video
 import memory
 import niveis_voz
 import personalidade
@@ -65,6 +66,7 @@ PASTA_ARMAZENAMENTO = os.path.join(PASTA_PROJETO, "banco_memoria", "painel_web")
 FUNDO = "#000000"
 EVENTOS_POR_BUSCA = 50
 VALIDADE_OLLAMA = 15.0  # segundos entre consultas ao Ollama
+PEDACO_DO_VIDEO = 2 * 1024 * 1024  # o MP4 das criações vai à página em pedaços
 LIMITE_GLB = 60 * 1024 * 1024  # o modelo 3D das criações, exportado pelo painel
 VALIDADE_BIBLIOTECA = 10.0  # contar trechos e conversas a cada busca de estado pesaria
 
@@ -124,7 +126,8 @@ class ApiPainel:
                                            estudar=self._estudar_arquivos, peca=self._peca_de_arquivos)
         # Apps da ArtCraft: "abre o PhotoCraft", "converte esse Word em PDF", "junta esses PDFs" (o resultado abre no PC).
         self._craft = AgenteCraft(recebidos=self._fontes.recebidos_do_pedido, arquivos=self._pastas.arquivos,
-                                  avisar=lambda resposta, canal: self._responder(resposta.texto))  # o vídeo editado chega depois
+                                  avisar=lambda resposta, canal: self._responder(resposta.texto),  # o vídeo editado chega depois
+                                  video_animado_recente=lambda: self._criacao.tem_video_recente())
         # "Cria uma imagem de…" / "cria um modelo 3D de…": o Claude desenha e o resultado vai para o centro, no lugar da esfera.
         self._criacao = AgenteCriacao(mostrar=self._emitir, avisar=lambda texto, canal, arquivos: self._responder(texto))
         self._tela = AgenteTela(llm=llm_clients, avisar=lambda texto: falar_async(texto))  # lê a janela ativa (não a do painel)
@@ -458,6 +461,70 @@ class ApiPainel:
             return False
         os.startfile(caminho)
         return True
+
+    def criacao_video_parte(self, arquivo: str, parte: int = 0) -> dict:
+        """Um pedaço (base64) do MP4 de uma criação, para a página montar o vídeo: a ponte não leva arquivos grandes de uma
+        vez. Só .mp4 de uma pasta *_criacoes dos documentos gerados."""
+        caminho = os.path.realpath(arquivo or "")
+        pasta = os.path.dirname(caminho)
+        if (not caminho.endswith(".mp4") or not os.path.isfile(caminho) or not pasta.endswith("_criacoes")
+                or not pasta.startswith(os.path.realpath(PASTA_DOCUMENTOS_GERADOS))):
+            return {"dados": "", "partes": 0}
+        tamanho = os.path.getsize(caminho)
+        with open(caminho, "rb") as entrada:
+            entrada.seek(int(parte) * PEDACO_DO_VIDEO)
+            pedaco = entrada.read(PEDACO_DO_VIDEO)
+        return {"dados": base64.b64encode(pedaco).decode("ascii"), "partes": max(1, -(-tamanho // PEDACO_DO_VIDEO))}
+
+    # -- a janela [ vídeos ]: o seu estilo (estilo_video.py), os exemplos e um vídeo novo
+    def estilo_video(self) -> dict:
+        return estilo_video.para_a_janela()
+
+    def estilo_video_salvar(self, dados: dict) -> dict:
+        return estilo_video.resultado(estilo_video.salvar, dados)
+
+    def estilo_video_padrao(self) -> dict:
+        return estilo_video.resultado(estilo_video.restaurar_padrao)
+
+    def estilo_video_exemplos_adicionar(self) -> dict:
+        """Escolher prints e vídeos do PC para os exemplos (de cada vídeo ficam 3 quadros)."""
+        import webview
+
+        if self._janela is None:
+            return {"ok": False, "mensagem": "A janela não está pronta.", "dados": None}
+        caminhos = self._janela.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=(
+            "Imagens e vídeos (*.png;*.jpg;*.jpeg;*.webp;*.mp4;*.mov;*.m4v;*.webm;*.mkv)",))
+        if not caminhos:
+            return {"ok": True, "mensagem": "", "dados": estilo_video.para_a_janela()}
+        respostas = [estilo_video.resultado(estilo_video.adicionar_exemplo, os.path.basename(c), origem=c) for c in caminhos]
+        erros = [r["mensagem"] for r in respostas if not r["ok"]]
+        mensagem = " ".join(dict.fromkeys(erros)) or f"{len(respostas)} exemplo(s) adicionado(s)."
+        return {"ok": not erros or len(erros) < len(respostas), "mensagem": mensagem, "dados": estilo_video.para_a_janela()}
+
+    def estilo_video_exemplo(self, exemplo_id: str) -> str:
+        try:
+            return estilo_video.miniatura(estilo_video.caminho_do_exemplo(exemplo_id))
+        except (estilo_video.ErroDoEstilo, OSError) as exc:
+            logger.debug("Miniatura do exemplo %s: %s", exemplo_id, exc)
+            return ""
+
+    def estilo_video_exemplo_apagar(self, exemplo_id: str) -> dict:
+        return estilo_video.resultado(estilo_video.apagar_exemplo, exemplo_id)
+
+    def estilo_video_guia(self) -> dict:
+        """O Claude olha os exemplos e monta o guia (só ele; sem ele, o modelo de visão do PC). ~20 s a 1 min."""
+        return estilo_video.resultado(estilo_video.extrair_guia)
+
+    def estilo_video_novo(self, assunto: str, opcoes: dict = None) -> dict:
+        """Um vídeo novo da janela: o Claude faz o roteiro no estilo, e ele aparece no centro, no lugar da esfera."""
+        texto = self._criacao.criar_video(assunto, "painel", opcoes)
+        falar_async(texto)
+        return {"ok": not texto.startswith("Escreva"), "mensagem": texto}
+
+    def estilo_video_refazer(self) -> dict:
+        """Monta o último vídeo de novo com o estilo de agora (sem o Claude)."""
+        texto = self._criacao.refazer_video("painel")
+        return {"ok": texto.startswith("Montando"), "mensagem": texto}
 
     def criacao_glb(self, arquivo_json: str, dados: str) -> str:
         """Grava ao lado do .json da criação o modelo 3D em .glb, que o painel exportou (base64). Só na pasta das criações."""

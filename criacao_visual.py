@@ -60,6 +60,8 @@ _ARTIGO = r"(?:(?:um|uma|o|a|outr[ao]|nov[ao])\s+)?"
 _OBJ_3D = r"(?:(?:modelo|objeto|cena|escultura|peca|boneco)\s+(?:em\s+)?3\s?d|modelo\s+tridimensional|3\s?d)"
 _OBJ_IMAGEM = (r"(?:imagem|desenho|ilustracao|figura|pintura|arte|logo(?:tipo|marca)?|icone|wallpaper|papel\s+de\s+parede|"
                r"poster|cartaz|vetor|avatar|emblema|mascote)")
+_OBJ_VIDEO = r"(?:video(?:zinho)?(?:\s+animado)?|animacao|reels?|tiktok|clipe)"
+RE_CRIAR_VIDEO = re.compile(r"\b" + _VERBO + r"\s+" + _PARA_MIM + _ARTIGO + _OBJ_VIDEO + r"\b")
 RE_CRIAR_3D = re.compile(r"\b" + _VERBO + r"\s+" + _PARA_MIM + _ARTIGO + _OBJ_3D + r"\b")
 RE_CRIAR_IMAGEM = re.compile(r"\b" + _VERBO + r"\s+" + _PARA_MIM + r"(?P<objeto>" + _ARTIGO + r"(?P<nome>" + _OBJ_IMAGEM +
                              r"))\b")
@@ -69,7 +71,56 @@ RE_DESENHA = re.compile(r"\b(?:me\s+)?desenh[ae]\s+" + _PARA_MIM + r"(?P<artigo>
 RE_EM_3D = re.compile(r"\b(?:model[ae]r?|mostr[ae]r?|quero\s+ver|cri[ae]r?|fa(?:z|ca))\b.{1,80}?\bem\s+3\s?d\b")
 RE_SO_EM_3D = re.compile(r"^\s*(?:em\s+)?3\s?d\b|\s*\b(?:em|no\s+formato)\s+3\s?d\b", re.IGNORECASE)
 # "faz uma imagem desse PDF" é conversão (apps da ArtCraft), e "como fazer um modelo 3D no Blender?" é pergunta.
-RE_DE_ARQUIVO = re.compile(r"^\s*(?:d(?:ess|est|aquel)[ea]s?|disso|disto|da\s+tela|do\s+(?:video|pdf|arquivo|word))\b")
+RE_DE_ARQUIVO = re.compile(r"^\s*(?:d(?:ess|est|aquel)[ea]s?|disso|disto|da\s+tela|do\s+(?:video|pdf|arquivo|word)|"
+                           r"com\s+(?:ess[ae]s|est[ae]s|as|os|minhas|meus)\s+(?:fotos|imagens|videos))\b")
+# As opções do vídeo ditas no pedido valem mais que o estilo: formato, narração, legendas e duração.
+RE_EM_PE = re.compile(r"\b(?:em\s+pe|vertical|reels?|tiktok|stories|shorts?|pro\s+status|9\s?(?::|x|por)\s?16)\b")
+RE_DEITADO = re.compile(r"\b(?:deitado|horizontal|pro\s+youtube|16\s?(?::|x|por)\s?9)\b")
+RE_QUADRADO = re.compile(r"\b(?:quadrado|1\s?(?::|x|por)\s?1)\b")
+RE_SEM_NARRACAO = re.compile(r"\bsem\s+(?:narracao|voz|locucao|fala)\b")
+RE_SEM_LEGENDA = re.compile(r"\bsem\s+legendas?\b")
+RE_DURACAO = re.compile(r"\b(?:de|com|em)\s+(\d{1,3}|um|uma|dois|meio)\s*(segundos?|s|minutos?|min)(\s+e\s+meio)?\b")
+# "Faz um vídeo curto sobre…": logo depois do objeto, o tamanho vira a duração.
+RE_TAMANHO_DO_VIDEO = re.compile(r"^\s*(curtinho|curto|rapidinho|rapido|medio|longo|grande)\b")
+SEGUNDOS_DO_TAMANHO = {"curtinho": 15, "curto": 20, "rapidinho": 15, "rapido": 20, "medio": 45, "longo": 90, "grande": 90}
+RE_TRECHO_DAS_OPCOES = re.compile(
+    r"^\s*(?:curtinho|curto|rapidinho|rapido|medio|longo|grande)\b|"
+    r"[\s,]*\b(?:(?:na\s+|no\s+formato\s+)?(?:em\s+pe|vertical|horizontal|deitado|quadrado)|pro\s+(?:reels|tiktok|status|youtube|"
+    r"stories)|sem\s+(?:narracao|voz|locucao|fala|legendas?)|"
+    r"(?:de|com|em)\s+(?:\d{1,3}|um|uma|dois|meio)\s*(?:segundos?|s|minutos?|min)(?:\s+e\s+meio)?)\b")
+
+
+def opcoes_do_video(base: str) -> dict:
+    """"Em pé", "sem narração", "sem legenda", "de 30 segundos" ditos no pedido (texto sem acentos)."""
+    opcoes = {}
+    if RE_EM_PE.search(base):
+        opcoes["formato"] = "9x16"
+    elif RE_QUADRADO.search(base):
+        opcoes["formato"] = "1x1"
+    elif RE_DEITADO.search(base):
+        opcoes["formato"] = "16x9"
+    if RE_SEM_NARRACAO.search(base):
+        opcoes["narracao"] = "nenhuma"
+    if RE_SEM_LEGENDA.search(base):
+        opcoes["legendas"] = "nenhuma"
+    duracao = RE_DURACAO.search(base)
+    if duracao:
+        numero = {"um": 1, "uma": 1, "dois": 2, "meio": 0.5}.get(duracao.group(1)) or int(duracao.group(1))
+        if duracao.group(3):
+            numero += 0.5
+        segundos = numero * 60 if duracao.group(2).startswith("m") else numero
+        opcoes["segundos"] = int(max(8, min(180, segundos)))
+    return opcoes
+
+
+def _sem_os_trechos(original: str, base: str, padrao) -> str:
+    """O texto original sem os trechos que o padrão acha na cópia sem acentos (de mesmo tamanho)."""
+    partes, ultimo = [], 0
+    for achado in padrao.finditer(base):
+        partes.append(original[ultimo:achado.start()])
+        ultimo = achado.end()
+    partes.append(original[ultimo:])
+    return re.sub(r"\s{2,}", " ", "".join(partes))
 RE_PERGUNTA = re.compile(r"^\s*(?:como|o\s+que|qual|quais|por\s*que|onde|quanto|sera\s+que|voce\s+(?:sabe|consegue|pode))\b")
 RE_INICIO_DO_ASSUNTO = re.compile(r"^\s*(?:,|:|-)?\s*(?:de|do|da|dos|das|sobre|com|mostrando|representando|que\s+mostr[ae])?\s*",
                                   re.IGNORECASE)
@@ -77,16 +128,22 @@ RE_ENVIO = re.compile(r"\s*,?\s*\be\s+(?:me\s+)?(?:manda|envia)\b.*$", re.IGNORE
 
 RE_FECHAR = re.compile(
     r"\b(?:fech[ae]r?|tir[ae]r?|escond[ae]r?|some\s+com|apag[ae]r?\s+da\s+tela)\s+(?:(?:a|o|essa|esse|com\s+[ao])\s+)?"
-    r"(?:imagem|desenho|ilustracao|modelo(?:\s+3\s?d)?|3\s?d|criacao)\b"
+    r"(?:imagem|desenho|ilustracao|modelo(?:\s+3\s?d)?|3\s?d|criacao|video)\b"
     r"|\b(?:volt[ae]|traz(?:\s+de\s+volta)?|mostr[ae])\s+(?:(?:a|com\s+a)\s+)?(?:sua\s+)?esfera\b")
 RE_DE_NOVO = re.compile(
-    r"\b(?:mostr[ae]|abr[ae]|volt[ae]|traz)\s+(?:(?:a|o)\s+)?(?:ultim[ao]\s+)?(?:imagem|desenho|modelo(?:\s+3\s?d)?|3\s?d)"
+    r"\b(?:mostr[ae]|abr[ae]|volt[ae]|traz)\s+(?:(?:a|o)\s+)?(?:ultim[ao]\s+)?(?:imagem|desenho|modelo(?:\s+3\s?d)?|3\s?d|video)"
     r"(?:\s+(?:que\s+voce\s+(?:fez|criou|desenhou))|\s+de\s+novo|\s+outra\s+vez)")
 RE_AJUSTE_VERBO = re.compile(
     r"^\s*(?:agora\s+|e\s+)?(?:muda|mude|troca|troque|deixa|deixe|coloca|coloque|poe|ponha|bota|acrescenta|adiciona|tira|"
     r"remove|aumenta|diminui|refaz|refaca|melhora|capricha|gira|vira)\b")
 RE_AJUSTE_REFERENCIA = re.compile(
-    r"\b(?:imagem|desenho|ilustracao|modelo|3\s?d|nele|nela|no\s+fundo|o\s+fundo|a\s+cor|as\s+cores|criacao)\b")
+    r"\b(?:imagem|desenho|ilustracao|modelo|3\s?d|nele|nela|no\s+fundo|o\s+fundo|a\s+cor|as\s+cores|criacao|video|cena|"
+    r"narracao|legenda)\b")
+# "Refaz o vídeo em pé", "aplica meu estilo novo no vídeo", "deixa o vídeo sem narração": o mesmo roteiro, montado de novo
+# no estilo (ou com a opção dita), sem pedir nada ao Claude.
+RE_REESTILO_VERBO = re.compile(r"\b(?:refaz\w*|refa[cç]a|monta\w*|aplica\w*|passa\w*|poe|ponha|bota|deixa|deixe|transforma|"
+                               r"muda|troca|faz|faca)\b")
+RE_O_VIDEO = re.compile(r"\b(?:o|esse|este|aquele|o\s+ultimo|o\s+mesmo)\s+video\b|\bnele\b|^\s*agora\b")
 RE_ELE_COM_QUALIDADE = re.compile(
     r"\b(?:ele|ela)\s+(?:mais\s+|menos\s+|bem\s+)?(?:azul|vermelh|verde|amarel|roxo|rox|rosa|pret|branc|dourad|prateado|"
     r"cinza|laranja|marrom|maior|menor|colorid|realista|fof|brilhante|escur|clar|detalhad|simples)")
@@ -94,10 +151,11 @@ RE_ELE_COM_QUALIDADE = re.compile(
 
 @dataclass
 class PedidoDeCriacao:
-    formato: str  # "imagem" ou "3d"
+    formato: str  # "imagem", "3d" ou "video"
     assunto: str
     ia: str = None  # "claude" ou "gemini", se dita na frase
     mandar: bool = False  # "... e me manda"
+    opcoes: dict = field(default_factory=dict)  # do vídeo, ditas no pedido: formato, narracao, legendas, segundos
 
 
 def interpretar(texto: str):
@@ -111,6 +169,18 @@ def interpretar(texto: str):
     base = sem_acentos(original)
     if RE_PERGUNTA.search(base):
         return None
+    achado = RE_CRIAR_VIDEO.search(base)
+    if achado:
+        resto = original[achado.end():]
+        if RE_DE_ARQUIVO.search(sem_acentos(resto)):
+            return None  # "faz um vídeo desse PDF", "cria um vídeo com essas fotos"
+        opcoes = opcoes_do_video(base)
+        tamanho = RE_TAMANHO_DO_VIDEO.search(sem_acentos(resto))
+        if tamanho and "segundos" not in opcoes:
+            opcoes["segundos"] = SEGUNDOS_DO_TAMANHO[tamanho.group(1)]
+        assunto = _sem_os_trechos(resto, sem_acentos(resto), RE_TRECHO_DAS_OPCOES)
+        assunto = RE_INICIO_DO_ASSUNTO.sub("", assunto, count=1).strip(" .,!?:;")
+        return PedidoDeCriacao("video", assunto, ia, mandar, opcoes)
     formato, achado = None, RE_CRIAR_3D.search(base)
     if achado:
         formato = "3d"
@@ -379,24 +449,56 @@ e realistas. Sem chão, céu ou cenário em volta, a não ser que peçam uma cen
 INSTRUCAO_DE_AJUSTE = ("Esta é a versão atual. Faça só a mudança pedida, mantendo o resto, e devolva o documento inteiro no "
                        "mesmo formato.")
 
+INSTRUCOES_VIDEO = """Você é roteirista e ilustradora de vídeos animados curtos. Responda APENAS com um objeto JSON, sem texto \
+antes ou depois e sem blocos de código, neste formato:
+
+{"titulo": "até 6 palavras", "descricao": "uma frase curta", "cenas": [
+  {"layout": "lado", "titulo": "até 6 palavras", "texto": "até 14 palavras (opcional)", "itens": ["até 4 tópicos curtos"],
+   "narracao": "o que a voz fala nesta cena", "ilustracao": "<svg ...>...</svg>", "fundo": "#rrggbb (opcional)"}]}
+
+Layouts (varie entre as cenas):
+- "lado": a ilustração ao lado do texto (em cima, no vídeo em pé);
+- "centro": a ilustração em cima e o texto embaixo, centralizado;
+- "tela_cheia": a ilustração cobre a tela toda e o texto fica por cima, embaixo;
+- "lista": só texto, com o título e os itens (tópicos); sem ilustração;
+- "titulo": uma frase grande no meio (abertura de um bloco, número de impacto, conclusão); sem ilustração.
+
+Regras:
+- A primeira cena prende a atenção; a última fecha com uma conclusão ou chamada. Fatos corretos, em português do Brasil.
+- Na tela, pouco texto: a narração explica e a tela destaca. "itens" só no layout "lista".
+- Ilustre de metade a três quartos das cenas. Cada ilustração é um SVG completo com xmlns e viewBox, com ASPAS SIMPLES nos \
+atributos (ela está dentro de uma string JSON), sem texto dentro, sem <image>, <script>, <foreignObject>, links ou fontes \
+externas; desenho flat caprichado (degradês, sombras suaves, formas limpas) e leve (até uns 6 KB).
+- "lado" e "centro": viewBox 0 0 800 600, fundo transparente (só o objeto ou a cena recortada). "tela_cheia": a proporção \
+do vídeo (0 0 1600 900 deitado, 0 0 900 1600 em pé, 0 0 1000 1000 quadrado), com fundo, e a parte de baixo mais simples \
+(o texto entra ali)."""
+
 
 @dataclass
 class Criacao:
     formato: str
     assunto: str
     titulo: str
-    conteudo: object  # o SVG (texto) ou a cena 3D (dict)
+    conteudo: object  # o SVG (texto), a cena 3D (dict) ou o vídeo ({"roteiro", "estilo", "duracao", "cenas"})
     bruto: str  # o que a IA devolveu, para um ajuste depois
     arquivo: str
     ia: str
     quando: float = field(default_factory=time.time)
 
 
-def _provedores_padrao() -> list:
-    """O Claude da assinatura (o mesmo da conversa, com a mesma pausa por limite) e o Gemini de reserva."""
-    from llm_nuvem import claude, gemini
+_CLAUDE_LONGO = {"cliente": None}
 
-    return [claude, gemini]
+
+def _provedores_padrao(longo: bool = False) -> list:
+    """O Claude da assinatura (o mesmo da conversa, com a mesma pausa por limite) e o Gemini de reserva. O roteiro de um
+    vídeo, com as ilustrações, passa dos 5 min da conversa: ganha um Claude com 15 min, como os das tarefas."""
+    from llm_nuvem import ClienteClaudeCode, claude, gemini
+
+    if not longo:
+        return [claude, gemini]
+    if _CLAUDE_LONGO["cliente"] is None:
+        _CLAUDE_LONGO["cliente"] = ClienteClaudeCode(executavel=claude.executavel, tempo_limite=900)
+    return [_CLAUDE_LONGO["cliente"], gemini]
 
 
 def _nome_de_arquivo(texto: str) -> str:
@@ -405,20 +507,71 @@ def _nome_de_arquivo(texto: str) -> str:
 
 
 def _rotulo(formato: str) -> str:
-    return "o modelo 3D" if formato == "3d" else "a imagem"
+    return {"3d": "o modelo 3D", "video": "o vídeo"}.get(formato, "a imagem")
+
+
+def _curto(valor, limite: int) -> str:
+    return re.sub(r"\s+", " ", str(valor or "")).strip()[:limite] if isinstance(valor, (str, int, float)) else ""
+
+
+def normalizar_roteiro(dados: dict) -> dict:
+    """O roteiro do vídeo só com campos conhecidos, textos limitados e as ilustrações limpas (a que não abre sai)."""
+    from video_animado import LAYOUTS, MAXIMO_DE_CENAS
+
+    cenas = []
+    for cena in (dados.get("cenas") or [])[:MAXIMO_DE_CENAS]:
+        if not isinstance(cena, dict):
+            continue
+        itens = cena.get("itens") if isinstance(cena.get("itens"), list) else []
+        limpa = {
+            "layout": cena.get("layout") if cena.get("layout") in LAYOUTS else "",
+            "titulo": _curto(cena.get("titulo"), 80), "texto": _curto(cena.get("texto"), 160),
+            "itens": [i for i in (_curto(item, 90) for item in itens[:5]) if i],
+            "narracao": _curto(cena.get("narracao"), 500),
+        }
+        fundo = _cor(cena.get("fundo"), "")
+        if fundo:
+            limpa["fundo"] = fundo
+        if isinstance(cena.get("duracao"), (int, float)) and not isinstance(cena.get("duracao"), bool):
+            limpa["duracao"] = round(_numero(cena["duracao"], 0, 0, 20), 2)
+        if isinstance(cena.get("ilustracao"), str) and "<svg" in cena["ilustracao"]:
+            try:
+                limpa["ilustracao"] = limpar_svg(cena["ilustracao"])
+            except ErroDeCriacao as exc:
+                logger.info("Ilustração de uma cena descartada: %s", exc)
+        if limpa["titulo"] or limpa["texto"] or limpa["itens"] or limpa["narracao"]:
+            cenas.append(limpa)
+    if not cenas:
+        raise ErroDeCriacao("o roteiro veio sem nenhuma cena")
+    return {"titulo": _curto(dados.get("titulo"), 80), "descricao": _curto(dados.get("descricao"), 200), "cenas": cenas}
+
+
+def _pasta_das_criacoes() -> str:
+    return os.path.join(PASTA_DOCUMENTOS_GERADOS, datetime.now().strftime("%Y-%m-%d") + "_criacoes")
+
+
+def ultimo_roteiro_salvo() -> str:
+    """O roteiro (.roteiro.json) do vídeo mais recente, em qualquer pasta de criações: o painel refaz o último vídeo com o
+    estilo novo mesmo que ele tenha sido pedido pela voz (outro processo) ou antes de reiniciar."""
+    import glob
+
+    roteiros = glob.glob(os.path.join(PASTA_DOCUMENTOS_GERADOS, "*_criacoes", "*.roteiro.json"))
+    return max(roteiros, key=os.path.getmtime) if roteiros else ""
 
 
 class AgenteCriacao:
-    """Responde aos pedidos de criar, ajustar, mostrar de novo e fechar. A criação roda numa thread (leva de 30 s a 2 min):
-    `mostrar(evento)` manda ao painel o começo ("criacao_iniciada"), o resultado ("criacao") e o fechar ("criacao_fechar");
-    `avisar(texto, canal, arquivos)` dá a resposta final no canal do pedido."""
+    """Responde aos pedidos de criar, ajustar, mostrar de novo e fechar. A criação roda numa thread (de 30 s a uns minutos):
+    `mostrar(evento)` manda ao painel o começo ("criacao_iniciada"), o andamento do vídeo ("criacao_andamento"), o resultado
+    ("criacao") e o fechar ("criacao_fechar"); `avisar(texto, canal, arquivos)` dá a resposta final no canal do pedido.
+    `montar(roteiro, estilo, destino, ao_progredir)` grava o vídeo (video_animado.renderizar; trocável nos testes)."""
 
-    def __init__(self, mostrar=None, avisar=None, provedores=None, pasta=None, em_segundo_plano=True):
+    def __init__(self, mostrar=None, avisar=None, provedores=None, pasta=None, em_segundo_plano=True, montar=None):
         self._mostrar = mostrar or (lambda evento: None)
         self._avisar = avisar or (lambda texto, canal, arquivos: None)
         self._provedores = provedores
         self._pasta = pasta
         self._em_segundo_plano = em_segundo_plano
+        self._montar = montar
         self.ultima = None
         self.criando = None  # o assunto que está sendo feito agora
         self._trava = threading.Lock()
@@ -432,17 +585,35 @@ class AgenteCriacao:
         if self.ultima and RE_DE_NOVO.search(base):
             self._mostrar(self._evento(self.ultima))
             return f"Aí está {_rotulo(self.ultima.formato)} de novo: {self.ultima.titulo}."
+        reestilo = self._reestilo(base)
+        if reestilo is not None:
+            return self.refazer_video(canal=canal, opcoes=reestilo)
         pedido = interpretar(texto)
         if pedido is None:
-            ajuste = self._ajuste(base)
-            if not ajuste:
+            if not self._ajuste(base):
                 return None
-            pedido = PedidoDeCriacao(self.ultima.formato, self.ultima.assunto, None, False)
+            pedido = PedidoDeCriacao(self.ultima.formato, self.ultima.assunto, None, False,
+                                     dict(self.ultima.conteudo.get("opcoes") or {}) if self.ultima.formato == "video" else {})
             return self._comecar(pedido, canal, mudanca=texto.strip())
         if not pedido.assunto:
-            exemplo = "cria um modelo 3D de um foguete" if pedido.formato == "3d" else "cria uma imagem de um farol à noite"
-            return f"{'Um modelo 3D' if pedido.formato == '3d' else 'Uma imagem'} de quê? Diga, por exemplo: \"{exemplo}\"."
+            exemplo = {"3d": "cria um modelo 3D de um foguete", "video": "faz um vídeo sobre a fotossíntese"}.get(
+                pedido.formato, "cria uma imagem de um farol à noite")
+            nome = {"3d": "Um modelo 3D", "video": "Um vídeo"}.get(pedido.formato, "Uma imagem")
+            return f"{nome} de quê? Diga, por exemplo: \"{exemplo}\"."
         return self._comecar(pedido, canal)
+
+    def tem_video_recente(self) -> bool:
+        """Um vídeo animado feito há pouco (o agente dos apps deixa "aplica meu estilo no vídeo" para cá)."""
+        return bool(self.ultima and self.ultima.formato == "video" and time.time() - self.ultima.quando <= SEGUNDOS_PARA_AJUSTAR)
+
+    def criar_video(self, assunto: str, canal: str = "painel", opcoes: dict = None):
+        """Um vídeo novo pedido pela janela [ vídeos ] ou pela tela Estúdio do app (o assunto e as opções escolhidas lá)."""
+        assunto = _curto(assunto, 300)
+        if not assunto:
+            return "Escreva sobre o que é o vídeo."
+        validas = {k: v for k, v in (opcoes or {}).items() if (k, v) in {("formato", "16x9"), ("formato", "9x16"), (
+            "formato", "1x1"), ("narracao", "nenhuma"), ("legendas", "nenhuma")}}
+        return self._comecar(PedidoDeCriacao("video", assunto, None, False, validas), canal)
 
     def _ajuste(self, base: str) -> bool:
         if not self.ultima or time.time() - self.ultima.quando > SEGUNDOS_PARA_AJUSTAR:
@@ -450,6 +621,17 @@ class AgenteCriacao:
         if not RE_AJUSTE_VERBO.search(base):
             return False
         return bool(RE_AJUSTE_REFERENCIA.search(base) or RE_ELE_COM_QUALIDADE.search(base) or base.lstrip().startswith("agora"))
+
+    def _reestilo(self, base: str):
+        """As opções para montar o último vídeo de novo sem o Claude ("refaz o vídeo em pé", "aplica meu estilo no vídeo"),
+        ou None se o pedido não for isso."""
+        if not self.ultima or self.ultima.formato != "video" or not RE_REESTILO_VERBO.search(base) or not RE_O_VIDEO.search(base):
+            return None
+        opcoes = opcoes_do_video(base)
+        opcoes.pop("segundos", None)  # a duração muda o roteiro: é com o Claude
+        if opcoes or re.search(r"\bestilo\b", base):
+            return opcoes
+        return None
 
     def _comecar(self, pedido: PedidoDeCriacao, canal: str, mudanca: str = ""):
         with self._trava:
@@ -459,15 +641,49 @@ class AgenteCriacao:
         anterior = self.ultima if mudanca else None
         quem = "o Gemini" if pedido.ia == "gemini" else "o Claude"
         self._mostrar({"tipo": "criacao_iniciada", "texto": pedido.assunto, "formato": pedido.formato, "ia": quem[2:]})
-        if self._em_segundo_plano:
-            threading.Thread(target=self._trabalhar, args=(pedido, canal, anterior, mudanca), name="criacao", daemon=True).start()
-        else:
-            self._trabalhar(pedido, canal, anterior, mudanca)
+        self._em_thread(self._trabalhar, pedido, canal, anterior, mudanca)
         if mudanca:
-            return f"Mexendo {'no modelo 3D' if pedido.formato == '3d' else 'na imagem'} com {quem}. Já mostro."
+            return f"Mexendo {'n' + _rotulo(pedido.formato)} com {quem}. Já mostro."
         if pedido.formato == "3d":
             return f"Modelando {pedido.assunto} em 3D com {quem}. Leva por volta de um minuto; aparece no centro da tela."
+        if pedido.formato == "video":
+            return (f"Fazendo um vídeo sobre {pedido.assunto} com {quem}, no seu estilo: o roteiro leva de 1 a 3 minutos e a "
+                    "montagem mais alguns segundos. Aparece no centro da tela.")
         return f"Desenhando {pedido.assunto} com {quem}. Leva por volta de um minuto; aparece no centro da tela."
+
+    def _em_thread(self, funcao, *argumentos):
+        if self._em_segundo_plano:
+            threading.Thread(target=funcao, args=argumentos, name="criacao", daemon=True).start()
+        else:
+            funcao(*argumentos)
+
+    def refazer_video(self, canal: str = "voz", opcoes: dict = None, roteiro: str = None):
+        """Monta de novo o último vídeo (ou o roteiro salvo em `roteiro`) no estilo de agora, com as opções ditas, sem o
+        Claude. Devolve a resposta imediata."""
+        if roteiro is None and (not self.ultima or self.ultima.formato != "video"):
+            roteiro = ultimo_roteiro_salvo()
+            if not roteiro:
+                return "Ainda não fiz nenhum vídeo para montar de novo. Peça um: \"faz um vídeo sobre…\"."
+        if roteiro:
+            try:
+                with open(roteiro, encoding="utf-8") as arquivo:
+                    salvo = json.load(arquivo)
+                base = Criacao("video", salvo.get("assunto") or "o vídeo", salvo["roteiro"].get("titulo") or "vídeo",
+                               {"roteiro": salvo["roteiro"], "opcoes": salvo.get("opcoes") or {}},
+                               json.dumps(salvo["roteiro"], ensure_ascii=False), roteiro, salvo.get("ia") or "Claude")
+            except (OSError, ValueError, KeyError, AttributeError):
+                return "Não consegui abrir o roteiro do último vídeo."
+        else:
+            base = self.ultima
+        with self._trava:
+            if self.criando:
+                return f"Ainda estou terminando {self.criando}; assim que ficar pronto, aparece no centro da tela."
+            self.criando = base.assunto
+        juntas = {**(base.conteudo.get("opcoes") or {}), **(opcoes or {})}
+        pedido = PedidoDeCriacao("video", base.assunto, None, False, juntas)
+        self._mostrar({"tipo": "criacao_iniciada", "texto": base.assunto, "formato": "video", "ia": ""})
+        self._em_thread(self._remontar, pedido, base, canal)
+        return "Montando o vídeo de novo, no seu estilo de agora. Leva alguns segundos."
 
     # ------------------------------------------------------------------ o trabalho
     def _trabalhar(self, pedido: PedidoDeCriacao, canal: str, anterior, mudanca: str):
@@ -480,27 +696,61 @@ class AgenteCriacao:
             return
         finally:
             self.criando = None
+        self._entregar(criacao, pedido, canal, bool(mudanca))
+
+    def _remontar(self, pedido: PedidoDeCriacao, base, canal: str):
+        try:
+            criacao = self._gravar_video(pedido, base.conteudo["roteiro"], base.ia)
+        except Exception as exc:
+            logger.warning("O vídeo não foi montado de novo: %s", exc)
+            self._mostrar({"tipo": "criacao_falhou", "texto": pedido.assunto})
+            self._avisar(self._texto_da_falha(exc, pedido), canal, [])
+            return
+        finally:
+            self.criando = None
+        self._entregar(criacao, pedido, canal, True)
+
+    def _entregar(self, criacao, pedido: PedidoDeCriacao, canal: str, ajuste: bool):
         self.ultima = criacao
         self._mostrar(self._evento(criacao))
-        manda = criacao.formato == "imagem" and (canal in ("whatsapp", "app") or pedido.mandar)  # o .json da cena não serve fora
-        self._avisar(self._texto_pronto(criacao, canal, bool(mudanca), pedido.ia), canal, [criacao.arquivo] if manda else [])
+        # O .json da cena 3D não serve fora do painel; a imagem e o vídeo voltam pelo celular (ou "... e me manda").
+        manda = criacao.formato != "3d" and (canal in ("whatsapp", "app") or pedido.mandar)
+        self._avisar(self._texto_pronto(criacao, canal, ajuste, pedido.ia), canal, [criacao.arquivo] if manda else [])
+
+    def _estilo_do_pedido(self, pedido: PedidoDeCriacao) -> dict:
+        import estilo_video
+
+        estilo = estilo_video.atual()
+        estilo.update({k: v for k, v in pedido.opcoes.items() if k in ("formato", "narracao", "legendas")})
+        return estilo
 
     def _criar(self, pedido: PedidoDeCriacao, anterior, mudanca: str) -> Criacao:
-        tres_d = pedido.formato == "3d"
-        sistema = INSTRUCOES_3D if tres_d else INSTRUCOES_SVG
+        import estilo_video
+
+        formato = pedido.formato
+        if formato == "video":
+            estilo = self._estilo_do_pedido(pedido)
+            sistema = INSTRUCOES_VIDEO + "\n\n" + estilo_video.bloco_do_prompt(estilo, pedido.opcoes.get("segundos"))
+        else:
+            sistema = INSTRUCOES_3D if formato == "3d" else INSTRUCOES_SVG
         if anterior and mudanca:
             prompt = (f"Pedido original: {anterior.assunto}\n\n{INSTRUCAO_DE_AJUSTE}\n\n{anterior.bruto}\n\n"
                       f"Mudança pedida: {mudanca}")
         else:
-            prompt = f"{'Modele em 3D' if tres_d else 'Desenhe'}: {pedido.assunto}"
+            prompt = {"3d": "Modele em 3D", "video": "Faça o roteiro do vídeo animado sobre"}.get(formato, "Desenhe")
+            prompt = f"{prompt}: {pedido.assunto}"
+        em_json = formato in ("3d", "video")
         ultimo_erro = None
         for tentativa in range(2):
             pergunta = prompt if not ultimo_erro else (
                 f"{prompt}\n\nA resposta anterior não serviu ({ultimo_erro}). Responda de novo, só com o "
-                f"{'JSON' if tres_d else 'SVG'} completo.")
-            bruto, ia = self._pedir(pergunta, sistema, tres_d, pedido.ia)
+                f"{'JSON' if em_json else 'SVG'} completo.")
+            bruto, ia = self._pedir(pergunta, sistema, em_json, pedido.ia, longo=formato == "video")
             try:
-                if tres_d:
+                if formato == "video":
+                    conteudo = normalizar_roteiro(extrair_json(bruto))
+                    titulo = conteudo["titulo"] or pedido.assunto
+                elif formato == "3d":
                     conteudo = normalizar_modelo(extrair_json(bruto))
                     titulo = conteudo["titulo"] or pedido.assunto
                 else:
@@ -512,25 +762,46 @@ class AgenteCriacao:
                 logger.info("Criação de %s, tentativa %d: %s", pedido.assunto, tentativa + 1, exc)
         else:
             raise ultimo_erro
-        arquivo = self._salvar(pedido, conteudo, tres_d)
-        return Criacao(pedido.formato, pedido.assunto, titulo, conteudo, json.dumps(conteudo, ensure_ascii=False)
-                       if tres_d else conteudo, arquivo, ia)
+        if formato == "video":
+            return self._gravar_video(pedido, conteudo, ia)
+        arquivo = self._salvar(pedido, conteudo, formato == "3d")
+        return Criacao(formato, pedido.assunto, titulo, conteudo, json.dumps(conteudo, ensure_ascii=False)
+                       if formato == "3d" else conteudo, arquivo, ia)
 
-    def _pedir(self, prompt: str, sistema: str, tres_d: bool, preferida: str = None):
+    def _gravar_video(self, pedido: PedidoDeCriacao, roteiro: dict, ia: str) -> Criacao:
+        """Monta o MP4 do roteiro no estilo (com as opções do pedido) e guarda o roteiro ao lado, para refazer depois."""
+        estilo = self._estilo_do_pedido(pedido)
+        pasta = self._pasta or _pasta_das_criacoes()
+        os.makedirs(pasta, exist_ok=True)
+        base = os.path.join(pasta, _nome_de_arquivo(pedido.assunto))
+        montar = self._montar
+        if montar is None:
+            from video_animado import renderizar as montar
+        info = montar(roteiro, estilo, base + ".mp4",
+                      lambda texto: self._mostrar({"tipo": "criacao_andamento", "texto": texto, "formato": "video"}))
+        with open(base + ".roteiro.json", "w", encoding="utf-8") as arquivo:
+            json.dump({"assunto": pedido.assunto, "opcoes": pedido.opcoes, "ia": ia, "roteiro": roteiro}, arquivo,
+                      ensure_ascii=False, indent=1)
+        conteudo = {"roteiro": roteiro, "opcoes": dict(pedido.opcoes), "duracao": info.get("duracao"),
+                    "cenas": len(roteiro["cenas"]), "formato": estilo["formato"]}
+        return Criacao("video", pedido.assunto, roteiro.get("titulo") or pedido.assunto, conteudo,
+                       json.dumps(roteiro, ensure_ascii=False), base + ".mp4", ia)
+
+    def _pedir(self, prompt: str, sistema: str, em_json: bool, preferida: str = None, longo: bool = False):
         from llm_nuvem import NuvemIndisponivel, ordenar_por_preferencia
 
-        provedores = list(self._provedores) if self._provedores is not None else _provedores_padrao()
+        provedores = list(self._provedores) if self._provedores is not None else _provedores_padrao(longo)
         recusas = []
         for provedor in ordenar_por_preferencia(provedores, preferida):
             try:
-                return provedor.chat(prompt, system_prompt=sistema, formato="json" if tres_d else None), provedor.nome
+                return provedor.chat(prompt, system_prompt=sistema, formato="json" if em_json else None), provedor.nome
             except NuvemIndisponivel as exc:
                 recusas.append(f"{provedor.nome}: {exc}")
                 logger.info("Criação: %s não respondeu (%s).", provedor.nome, exc)
         raise RuntimeError("nenhuma IA respondeu (" + "; ".join(recusas) + ")")
 
     def _salvar(self, pedido: PedidoDeCriacao, conteudo, tres_d: bool) -> str:
-        pasta = self._pasta or os.path.join(PASTA_DOCUMENTOS_GERADOS, datetime.now().strftime("%Y-%m-%d") + "_criacoes")
+        pasta = self._pasta or _pasta_das_criacoes()
         os.makedirs(pasta, exist_ok=True)
         caminho = os.path.join(pasta, _nome_de_arquivo(pedido.assunto) + (".json" if tres_d else ".svg"))
         with open(caminho, "w", encoding="utf-8") as arquivo:
@@ -544,12 +815,22 @@ class AgenteCriacao:
     def _evento(criacao: Criacao) -> dict:
         evento = {"tipo": "criacao", "texto": criacao.titulo, "formato": criacao.formato, "titulo": criacao.titulo,
                   "arquivo": criacao.arquivo, "ia": criacao.ia}
-        evento["modelo" if criacao.formato == "3d" else "svg"] = criacao.conteudo
+        if criacao.formato == "video":  # o painel busca o MP4 pelo caminho (é grande demais para o evento)
+            evento.update(duracao=criacao.conteudo.get("duracao"), cenas=criacao.conteudo.get("cenas"),
+                          proporcao=criacao.conteudo.get("formato"))
+        else:
+            evento["modelo" if criacao.formato == "3d" else "svg"] = criacao.conteudo
         return evento
 
     @staticmethod
     def _texto_pronto(criacao: Criacao, canal: str, ajuste: bool, preferida: str = None) -> str:
-        if canal in ("whatsapp", "app"):
+        if criacao.formato == "video":
+            segundos = round(criacao.conteudo.get("duracao") or 0)
+            como = f"tem {segundos} segundos e {criacao.conteudo.get('cenas')} cenas"
+            onde = "Está no centro do painel do PC; mandei o vídeo." if canal in ("whatsapp", "app") else "Está no centro da tela."
+            texto = (f"Pronto, montei o vídeo de novo: {como}. {onde}" if ajuste
+                     else f"Pronto: o vídeo “{criacao.titulo}” {como}. {onde}")
+        elif canal in ("whatsapp", "app"):
             texto = f"Pronto: {criacao.titulo}. Está no centro do painel do PC"
             texto += "; mandei o arquivo." if criacao.formato == "imagem" else "."
         elif ajuste:
@@ -559,7 +840,7 @@ class AgenteCriacao:
         if criacao.formato == "3d" and isinstance(criacao.conteudo, dict) and criacao.conteudo.get("descricao") and not ajuste:
             texto += " " + criacao.conteudo["descricao"].rstrip(".") + "."
         pedida = {"claude": "Claude", "gemini": "Gemini"}.get(preferida or "claude")
-        if criacao.ia != pedida:
+        if criacao.ia != pedida and not (criacao.formato == "video" and ajuste):
             texto += f" (O {pedida} não respondeu agora; quem fez foi o {criacao.ia}.)"
         return texto
 
@@ -568,4 +849,6 @@ class AgenteCriacao:
         if isinstance(exc, RuntimeError) and "nenhuma IA" in str(exc):
             return (f"Não consegui criar {pedido.assunto}: o Claude e o Gemini não responderam agora "
                     "(limite do plano ou sem internet). Tente daqui a pouco.")
+        if pedido.formato == "video" and not isinstance(exc, ErroDeCriacao):
+            return f"Não consegui montar o vídeo sobre {pedido.assunto}: {exc}"
         return f"Não consegui criar {pedido.assunto}: a IA devolveu um desenho que não abre. Peça de novo, que eu tento outra vez."

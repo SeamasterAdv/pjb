@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 PASTA_APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interface_app")
 PASTA_VISUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interface_web")
 # Do interface_web, o app usa o visual em rede e o componente da janela de estudos (a mesma do painel).
-ARQUIVOS_DO_VISUAL = {"visual_rede.js", "visual_ajustes.json", "vendor/three/build/three.module.min.js", "estudos.js"}
+ARQUIVOS_DO_VISUAL = {"visual_rede.js", "visual_ajustes.json", "vendor/three/build/three.module.min.js", "estudos.js",
+                      "estilo_video.js"}
 VALIDADE_DO_CODIGO = 300.0
 TENTATIVAS_DO_CODIGO = 5
 CONECTADO_SEGUNDOS = 45.0  # o app busca mensagens sem parar; sem busca há mais que isto, ele está fechado
@@ -447,13 +448,14 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
                    limpar=lambda texto: texto, pasta_recebidos: str = PASTA_RECEBIDOS, limite_mb: float = LIMITE_DO_ARQUIVO_MB,
                    agenda_semana=None, buscar_imagem=_buscar_imagem, biblioteca=None, recursos=recursos_do_pc, controle=None,
                    editar=None, situacao_da_edicao=None, limite_da_edicao_mb: float = LIMITE_DA_EDICAO_MB, estudos=None,
-                   nova_peca=None):
+                   nova_peca=None, estilo_de_video=None, video_novo=None, refazer_video=None):
     """O app FastAPI. `dados()` -> dict do painel do celular; `transcrever(amostras)` -> (texto, confiança);
     `gerar_fala(texto)` -> caminho do áudio; `agenda_semana(deslocamento)` -> a semana da agenda;
     `buscar_imagem(endereço)` -> (tipo, bytes) dos pôsteres dos cartões; `controle` -> o AgenteControle (TV e ar);
     `editar(caminho, pedido)` e `situacao_da_edicao(tarefa)` -> a tela "Editar" (AgenteCraft.editar_do_app e .situacao);
     `estudos` -> o módulo preferencias_estudo (a tela Estudos); `nova_peca(tipo, fatos, caminhos)` -> a mensagem de início da
-    peça processual (Orquestrador.enviar_peca)."""
+    peça processual (Orquestrador.enviar_peca); `estilo_de_video` -> o módulo estilo_video (a tela Estúdio),
+    `video_novo(assunto, opcoes)` e `refazer_video()` -> a resposta imediata (AgenteCriacao.criar_video e .refazer_video)."""
     from collections import OrderedDict
 
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -783,6 +785,75 @@ def criar_servidor(canal: CanalApp, aparelhos: Aparelhos, dados=None, transcreve
             return {"ok": False, "mensagem": "Escreva os fatos do caso ou mande os arquivos dele."}
         return {"ok": True, "mensagem": mensagem}
 
+    # -- a tela Estúdio: o mesmo estilo de vídeo da janela [ vídeos ] do painel (estilo_video.py) e um vídeo novo
+    def _estilo():
+        if estilo_de_video is None:
+            raise HTTPException(503, "O estilo de vídeo não está disponível.")
+        return estilo_de_video
+
+    @app.get("/api/video-estilo")
+    def video_estilo_ler(quem: dict = Depends(aparelho)):
+        return _estilo().para_a_janela()
+
+    @app.post("/api/video-estilo")
+    async def video_estilo_salvar(request: Request, quem: dict = Depends(aparelho)):
+        modulo = _estilo()
+        return modulo.resultado(modulo.salvar, await _corpo_json(request))
+
+    @app.post("/api/video-estilo/padrao")
+    def video_estilo_padrao(quem: dict = Depends(aparelho)):
+        modulo = _estilo()
+        return modulo.resultado(modulo.restaurar_padrao)
+
+    @app.post("/api/video-estilo/exemplo")
+    async def video_estilo_exemplo_novo(request: Request, quem: dict = Depends(aparelho)):
+        """Um print ou um vídeo de exemplo (do vídeo ficam 3 quadros), com o corpo cru e o nome em X-Nome."""
+        from starlette.concurrency import run_in_threadpool
+
+        modulo = _estilo()
+        conteudo = await request.body()
+        if len(conteudo) > modulo.LIMITE_DO_VIDEO_MB * 1024 * 1024:
+            raise HTTPException(413, f"O arquivo passa de {modulo.LIMITE_DO_VIDEO_MB} MB.")
+        nome = nome_seguro(unquote(request.headers.get("X-Nome", "")) or "exemplo.jpg")
+        return await run_in_threadpool(modulo.resultado, modulo.adicionar_exemplo, nome, conteudo)
+
+    @app.get("/api/video-estilo/exemplo/{exemplo_id}")
+    def video_estilo_exemplo(exemplo_id: str, quem: dict = Depends(aparelho)):
+        modulo = _estilo()
+        try:
+            return {"src": modulo.miniatura(modulo.caminho_do_exemplo(exemplo_id))}
+        except (modulo.ErroDoEstilo, OSError):
+            raise HTTPException(404, "Exemplo não encontrado.")
+
+    @app.post("/api/video-estilo/exemplo/{exemplo_id}/apagar")
+    def video_estilo_exemplo_apagar(exemplo_id: str, quem: dict = Depends(aparelho)):
+        modulo = _estilo()
+        return modulo.resultado(modulo.apagar_exemplo, exemplo_id)
+
+    @app.post("/api/video-estilo/guia")
+    async def video_estilo_guia(quem: dict = Depends(aparelho)):
+        from starlette.concurrency import run_in_threadpool
+
+        modulo = _estilo()
+        return await run_in_threadpool(modulo.resultado, modulo.extrair_guia)  # o Claude leva de 20 s a 1 min
+
+    @app.post("/api/video-estilo/novo")
+    async def video_estilo_novo(request: Request, quem: dict = Depends(aparelho)):
+        """Um vídeo novo: a resposta é a de começo; o vídeo pronto chega na conversa do app, com o MP4."""
+        if video_novo is None:
+            raise HTTPException(503, "Os vídeos não estão disponíveis.")
+        corpo = await _corpo_json(request)
+        opcoes = corpo.get("opcoes") if isinstance(corpo.get("opcoes"), dict) else {}
+        mensagem = video_novo(str(corpo.get("assunto") or "")[:300], opcoes)
+        return {"ok": not mensagem.startswith("Escreva"), "mensagem": mensagem}
+
+    @app.post("/api/video-estilo/refazer")
+    def video_estilo_refazer(quem: dict = Depends(aparelho)):
+        if refazer_video is None:
+            raise HTTPException(503, "Os vídeos não estão disponíveis.")
+        mensagem = refazer_video()
+        return {"ok": mensagem.startswith("Montando"), "mensagem": mensagem}
+
     # -- controle remoto (TV e ar pelo Ekaza): os botões da tela vão direto ao agente, sem passar pela conversa
     @app.get("/api/controle")
     def controle_painel(quem: dict = Depends(aparelho)):
@@ -910,6 +981,24 @@ def _estudos_de_mentira(pasta: str):
                                        if not nome.startswith("_")})
     estudos.extrair_guia = lambda: preferencias_estudo.extrair_guia(ver_com_claude=lambda fotos, prompt, sistema: resposta)
     return estudos
+
+
+def _estilo_de_mentira(pasta: str):
+    """O estilo de vídeo de verdade (estilo_video), gravado na pasta da demonstração, e um guia de mentira."""
+    import types
+
+    import config
+    import estilo_video
+
+    config.CAMINHO_ESTILO_VIDEO = os.path.join(pasta, "estilo_video.json")
+    config.PASTA_EXEMPLOS_VIDEO = os.path.join(pasta, "exemplos_video")
+    resposta = json.dumps({"resumo": "Flat colorido, títulos grandes em caixa alta e cortes rápidos.",
+                           "visual": ["Ilustrações flat com sombra longa"], "texto": ["No máximo 6 palavras por tela"],
+                           "ritmo": ["Um corte a cada 2 ou 3 segundos"], "evitar": ["Fotos"],
+                           "cores": {"fundo": "#14213D", "texto": "#FFFFFF", "destaque": "#FCA311"}})
+    estilo = types.SimpleNamespace(**{nome: getattr(estilo_video, nome) for nome in dir(estilo_video) if not nome.startswith("_")})
+    estilo.extrair_guia = lambda: estilo_video.extrair_guia(ver_com_claude=lambda fotos, prompt, sistema: resposta)
+    return estilo
 
 
 def _demonstracao(porta: int):
@@ -1046,7 +1135,9 @@ def _demonstracao(porta: int):
                          buscar_imagem=poster_de_mentira, biblioteca=biblioteca, controle=_controle_de_mentira(pasta),
                          recursos=lambda: {"cpu": random.randint(12, 48), "ram": random.randint(58, 66), "disco": 71},
                          editar=craft.editar_do_app, situacao_da_edicao=craft.situacao, pasta_recebidos=os.path.join(pasta, "recebidos"),
-                         estudos=estudos, nova_peca=peca_de_mentira)
+                         estudos=estudos, nova_peca=peca_de_mentira, estilo_de_video=_estilo_de_mentira(pasta),
+                         video_novo=lambda assunto, opcoes: "(demonstração) O Claude faria o roteiro de " + (assunto or "?") + ".",
+                         refazer_video=lambda: "Montando (demonstração): no PC de verdade, o último vídeo sai de novo.")
     codigo = aparelhos.novo_codigo()
     print(f"Demonstração em http://127.0.0.1:{porta}  |  código de pareamento: {codigo} (vale 5 min)", flush=True)
     import uvicorn

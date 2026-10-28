@@ -399,6 +399,10 @@ CAMINHO_CAMADAS = os.getenv("CAMINHO_CAMADAS", os.path.join(NOTELOOKLM_PATH, "ba
 CAMINHO_PREFERENCIAS_ESTUDO = os.getenv(
     "CAMINHO_PREFERENCIAS_ESTUDO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "preferencias_estudo.json"))
 PASTA_EXEMPLOS_ESTUDO = os.getenv("PASTA_EXEMPLOS_ESTUDO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "exemplos_estudo"))
+# O estilo dos vídeos (estilo_video.py): o que a pessoa monta na janela [ vídeos ] do painel e na tela Estúdio do app (os
+# vídeos animados pelo Claude e a edição dos seus vídeos), e os exemplos (prints e vídeos) de onde sai o guia (fora do git).
+CAMINHO_ESTILO_VIDEO = os.getenv("CAMINHO_ESTILO_VIDEO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "estilo_video.json"))
+PASTA_EXEMPLOS_VIDEO = os.getenv("PASTA_EXEMPLOS_VIDEO", os.path.join(NOTELOOKLM_PATH, "banco_memoria", "exemplos_video"))
 CAMADAS_APRENDER = os.getenv("CAMADAS_APRENDER", "true").strip().lower() in {"1", "true", "yes", "on"}
 CAMADAS_INTERVALO = float(os.getenv("CAMADAS_INTERVALO", "300"))
 CAMADAS_TROCAS_PARA_APRENDER = int(os.getenv("CAMADAS_TROCAS_PARA_APRENDER", "8"))

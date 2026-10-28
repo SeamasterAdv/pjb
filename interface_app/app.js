@@ -155,6 +155,10 @@ function mostrarTela(nome) {
     window.JanelaDeEstudos.usar(() => estudosDoApp);
     window.JanelaDeEstudos.carregar();
   }
+  if (nome === "estudio" && window.JanelaDeVideos) {
+    window.JanelaDeVideos.usar(() => videosDoApp);
+    window.JanelaDeVideos.carregar();
+  }
 }
 
 // ------------------------------------------------------------------ estudos
@@ -214,8 +218,34 @@ const estudosDoApp = {
   _arquivos: [],
 };
 
+// A tela Estúdio usa o componente da janela [ vídeos ] do painel (/visual/estilo_video.js); aqui só a ponte com o servidor.
+const videosDoApp = {
+  estilo_video: () => jsonDe("/api/video-estilo"),
+  estilo_video_salvar: (dados) => postarJson("/api/video-estilo", dados),
+  estilo_video_padrao: () => postarJson("/api/video-estilo/padrao"),
+  async estilo_video_exemplos_adicionar() {
+    const arquivos = await escolherArquivos("image/*,video/*");
+    let ultima = { ok: true, mensagem: "", dados: await jsonDe("/api/video-estilo") };
+    for (const arquivo of arquivos) {
+      ultima = await jsonDe("/api/video-estilo/exemplo", { method: "POST", body: arquivo, headers: { "X-Nome": encodeURIComponent(arquivo.name) } });
+      if (!ultima.ok) break;
+    }
+    return ultima;
+  },
+  estilo_video_exemplo: async (id) => (await jsonDe(`/api/video-estilo/exemplo/${encodeURIComponent(id)}`)).src,
+  estilo_video_exemplo_apagar: (id) => postarJson(`/api/video-estilo/exemplo/${encodeURIComponent(id)}/apagar`),
+  estilo_video_guia: () => postarJson("/api/video-estilo/guia"),
+  async estilo_video_novo(assunto, opcoes) {
+    const resposta = await postarJson("/api/video-estilo/novo", { assunto, opcoes });
+    if (resposta.ok) aviso("O vídeo está sendo feito; ele chega na conversa.");
+    return resposta;
+  },
+  estilo_video_refazer: () => postarJson("/api/video-estilo/refazer"),
+};
+
 const ATALHOS = {
   agenda: () => mostrarTela("agenda"),
+  estudio: () => mostrarTela("estudio"),
   missoes: () => mostrarTela("missoes"),
   biblioteca: () => mostrarTela("biblioteca"),
   controle: () => mostrarTela("controle"),

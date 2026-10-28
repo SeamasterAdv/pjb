@@ -26,3 +26,6 @@ documentos_gerados/
 # Arquivos recebidos pelo WhatsApp / escaneados e os arquivados (dados pessoais)
 documentos_recebidos/
 documentos_arquivados/
+
+# Fontes da biblioteca (documentos pessoais de estudo)
+documentos_assistente/

@@ -145,6 +145,10 @@ BIOMETRIA_LIMIAR_CONVIDADO = float(os.getenv("BIOMETRIA_LIMIAR_CONVIDADO", "0.35
 BIOMETRIA_MINIMO_SEGUNDOS = float(os.getenv("BIOMETRIA_MINIMO_SEGUNDOS", "1.0"))  # frase mais curta não é identificada
 BIOMETRIA_CADASTRO_SEGUNDOS = float(os.getenv("BIOMETRIA_CADASTRO_SEGUNDOS", "20"))  # fala necessária para cadastrar
 BIOMETRIA_MANTER_SEGUNDOS = float(os.getenv("BIOMETRIA_MANTER_SEGUNDOS", "45"))  # "sim"/"não" curtos herdam quem falava
+# Aprender com a confirmação: uma frase "incerta" seguida, em até BIOMETRIA_APRENDER_SEGUNDOS, de uma frase em que ela
+# reconhece o dono com certeza (sem outra voz no meio) entra no perfil dele. Para desligar: BIOMETRIA_APRENDER=false
+BIOMETRIA_APRENDER = os.getenv("BIOMETRIA_APRENDER", "true").strip().lower() in {"1", "true", "yes", "on"}
+BIOMETRIA_APRENDER_SEGUNDOS = float(os.getenv("BIOMETRIA_APRENDER_SEGUNDOS", "20"))
 # Fontes e arquivos recebidos (fontes.py): o que você manda pelo WhatsApp (ou escaneia) cai em PASTA_RECEBIDOS, organizado por
 # dia; "arquiva" copia para PASTA_ARQUIVADOS (por mês) ou para uma pasta que você disser; "vira fonte" copia para a Vault
 # do Obsidian, na categoria CATEGORIA_DAS_FONTES, e entra na biblioteca. Nada disso vai para a nuvem, a não ser na leitura (FONTES_IA).

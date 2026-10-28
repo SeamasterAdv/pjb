@@ -12,7 +12,7 @@ import difflib
 import unicodedata
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from config import (
     MODO_CONVERSA_PADRAO,
@@ -609,6 +609,21 @@ RE_SO_DO_DONO = re.compile(
     re.IGNORECASE,
 )
 _AVISO_CONVIDADO = {"em": 0.0}
+
+# Voz incerta que chamou "Beatriz" é atendida como o dono (Falante.provavel), menos nestes pedidos, que mandam algo
+# para fora, mostram a tela, apagam ou mexem na própria Beatriz (as vozes, o celular, o código).
+RE_PEDIDO_SENSIVEL = re.compile(
+    r"\b(?:mand\w*|envi\w*|respond\w*|encaminh\w*)\b.*\b(?:mensagem|whatsapp|zap|e-?mail|gmail|celular|pra (?:ele|ela))\b"
+    r"|\b(?:tela|janela|monitor)\b|\bo que (?:eu )?estou (?:vendo|fazendo)\b"
+    r"|\b(?:apag\w*|delet\w*|exclu\w*|lixeira)\b"
+    r"|\b(?:cadastr\w*|esquec\w*|apag\w*) (?:a )?(?:minha |sua )?voz\b|\breconhecimento de voz\b"
+    r"|\b(?:conect\w*|desconect\w*|pare\w*) (?:o |meu )?celular\b"
+    r"|\bse melhora\b|\bmelhor\w* (?:o )?seu codigo\b|\b(?:aplica|desfaz) a (?:ultima )?melhoria\b"
+)
+
+
+def pedido_sensivel(comando: str) -> bool:
+    return bool(RE_PEDIDO_SENSIVEL.search(_normalizar_frase(comando)))
 
 
 def responder_ao_convidado(comando: str, falante: Falante | None) -> None:
@@ -1628,9 +1643,13 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
     agora = time.time()
     falante = BIOMETRIA.resolver(falante, agora)  # frase curta ou duvidosa vale quem falava há pouco
     FALANTE["atual"] = falante
-    if BIOMETRIA.ativa and falante is not None and falante.tipo in ("convidado", "conhecido") and not falante.herdado:
+    durante_a_fala = inicio is not None and falou_durante(inicio, fim if fim is not None else agora)
+    # O eco da voz dela (que a biometria vê como convidado) não é outra pessoa na sala: antes, cada resposta dela
+    # fazia a frase seguinte do dono, sem o nome, ser recusada com "tem mais gente falando por perto".
+    if (BIOMETRIA.ativa and falante is not None and falante.tipo in ("convidado", "conhecido") and not falante.herdado
+            and not (durante_a_fala or parece_eco(texto))):
         AMBIENTE["outra_voz_em"] = agora  # tem outra pessoa falando por perto
-    if inicio is not None and falou_durante(inicio, fim if fim is not None else agora):
+    if durante_a_fala:
         if parece_eco(texto):
             logger.debug("Eco da própria voz ignorado: %s", texto)  # não é fala do usuário: nem vai ao painel
             return ""
@@ -1669,6 +1688,12 @@ def filtrar_fala_por_ativacao(texto: str, inicio: float | None = None, fim: floa
     referencia = inicio if inicio and 0 <= agora - inicio <= 60 else agora
     comando = extrair_comando_ativado(texto, referencia, ESTADO_ATIVACAO, fim_fala=fim_fala)
     sem_nome = comando is None
+    if (not sem_nome and falante is not None and falante.tipo == "incerto"
+            and agora - AMBIENTE["outra_voz_em"] >= AMBIENTE_SEGUNDOS):
+        # Chamou "Beatriz" (ou respondeu logo depois dela) com a voz quase reconhecida e ninguém mais por perto: é o dono,
+        # menos nos pedidos sensíveis (pedido_sensivel). Antes ela respondia "Não tive certeza de quem falou".
+        falante = replace(falante, tipo="dono", nome=BIOMETRIA.nome_do_dono(), provavel=True)
+        FALANTE["atual"] = falante
     em_conversa = sem_nome and ESTADO_ATIVACAO.em_conversa(referencia, fim_fala)
     if sem_nome:
         motivo = motivo_para_exigir_o_nome(falante, agora) if ESCUTA["modo"] == "sempre" else ""
@@ -2342,6 +2367,9 @@ def main(evento_carregamento=None):
         # Quem está falando: os comandos de voz ("cadastra minha voz", "quem está falando?") vêm primeiro; quem
         # não é o dono (voz de visita) fica na conversa simples e nunca chega à agenda, aos arquivos e às contas.
         falante = FALANTE["atual"]
+        if falante is not None and falante.provavel and pedido_sensivel(comando):
+            responder_rapido("Esse pedido eu só faço com certeza de que é você. Repete um pouco mais perto do microfone?")
+            continue
         resposta_voz = AGENTE_VOZ.responder(comando, falante, pelo_microfone=CANAL["atual"] == "voz")
         if resposta_voz:
             responder_rapido(resposta_voz)

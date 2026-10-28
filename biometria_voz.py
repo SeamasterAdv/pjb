@@ -23,7 +23,8 @@ import unicodedata
 import warnings
 from dataclasses import dataclass, replace
 
-from config import (BIOMETRIA_CADASTRO_SEGUNDOS, BIOMETRIA_LIMIAR_CONVIDADO, BIOMETRIA_LIMIAR_DONO,
+from config import (BIOMETRIA_APRENDER, BIOMETRIA_APRENDER_SEGUNDOS, BIOMETRIA_CADASTRO_SEGUNDOS,
+                    BIOMETRIA_LIMIAR_CONVIDADO, BIOMETRIA_LIMIAR_DONO,
                     BIOMETRIA_MANTER_SEGUNDOS, BIOMETRIA_MINIMO_SEGUNDOS, BIOMETRIA_VOZ, CAMINHO_MODELO_VOZ,
                     CAMINHO_VOZES)
 
@@ -37,6 +38,10 @@ PRAZO_SEM_FALA_SEGUNDOS = 60.0
 # e vozes sintéticas em sala com eco e ruído: um segundo cadastro, de comandos curtos, levou a nota mediana dos
 # comandos do dono de 0,54 para 0,62 (reconhecidos a 0,50: 7 de 12 -> 10 de 12). Antes, cada cadastro apagava o anterior.
 MAX_AMOSTRAS_PERFIL = 60
+# As frases aprendidas com a confirmação (`Biometria.identificar`) ficam à parte das do cadastro, até este número (saem as
+# mais antigas), para nunca empurrarem o cadastro para fora: em out/2026 o dono caía em "incerto" (0,38 a 0,48) em
+# quase metade das frases, com um perfil de 4 amostras. Um cadastro novo recomeça a lista.
+MAX_APRENDIDAS = 20
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,7 @@ class Falante:
     nome: str = ""
     nota: float | None = None
     herdado: bool = False  # frase curta ou duvidosa: vale quem falava há pouco
+    provavel: bool = False  # voz incerta que chamou "Beatriz": atendida como o dono, menos nos pedidos sensíveis
 
     @property
     def e_dono(self) -> bool:
@@ -258,6 +264,8 @@ class Biometria:
         self._perfis: dict[str, dict] = {}
         self._ligada = True  # "desliga o reconhecimento de voz" (fica salvo)
         self._ultimo: tuple[Falante, float] | None = None
+        self._incerta: tuple[object, float] | None = None  # (vetor, quando) da última frase incerta, para aprender
+        self.aprender = BIOMETRIA_APRENDER
         self._carregar_perfis()
 
     # -- disco
@@ -349,6 +357,7 @@ class Biometria:
             if situacao != "somou":
                 antigas = []
             todas = (antigas + list(vetores))[-MAX_AMOSTRAS_PERFIL:]
+            self._incerta = None
             if situacao == "somou":
                 segundos += float(self._perfis[chave].get("segundos") or 0)
             self.guardar_perfil(chave, nome, papel, np.mean(todas, axis=0), segundos, len(todas), todas)
@@ -400,7 +409,41 @@ class Biometria:
         else:
             falante = Falante("incerto", "", nota)
         logger.info("Voz identificada: %s %s (nota %.2f)", falante.tipo, falante.nome, nota)
+        self._aprender_com_a_confirmacao(falante, vetor)
         return falante
+
+    def _aprender_com_a_confirmacao(self, falante: Falante, vetor, agora: float | None = None):
+        """Guarda a frase incerta; se a próxima frase identificada é o dono com certeza, logo depois, a incerta era ele
+        (dita mais longe do microfone, mais baixo...) e entra no perfil. Outra voz no meio desfaz."""
+        agora = time.time() if agora is None else agora
+        if not self.aprender:
+            return
+        if falante.tipo == "incerto":
+            self._incerta = (vetor, agora)
+            return
+        incerta, self._incerta = self._incerta, None
+        if falante.tipo != "dono" or incerta is None or agora - incerta[1] > BIOMETRIA_APRENDER_SEGUNDOS:
+            return
+        self.aprender_amostra(incerta[0])
+
+    def aprender_amostra(self, vetor):
+        """Soma uma frase confirmada às aprendidas do dono e refaz a média com as do cadastro."""
+        import numpy as np
+
+        with self._lock:
+            chave = next((k for k, p in self._perfis.items() if p.get("papel") == "dono"), None)
+            if chave is None:
+                return
+            perfil = self._perfis[chave]
+            cadastro = self._amostras(chave)
+            if not perfil.get("amostras_vetores"):  # perfil antigo (só a média): o cadastro fica guardado antes de mudar
+                perfil["amostras_vetores"] = [[round(float(x), 5) for x in v] for v in cadastro]
+            aprendidas = (perfil.get("aprendidas") or []) + [[round(float(x), 5) for x in _vetor_unitario(vetor)]]
+            perfil["aprendidas"] = aprendidas[-MAX_APRENDIDAS:]
+            todas = cadastro + [np.asarray(v, dtype=np.float32) for v in perfil["aprendidas"]]
+            perfil["vetor"] = [float(x) for x in _vetor_unitario(np.mean(todas, axis=0))]
+            self._salvar()
+        logger.info("Aprendi uma frase da voz do dono pela confirmação (%d aprendidas).", len(perfil["aprendidas"]))
 
     def resolver(self, falante: Falante | None, agora: float | None = None) -> Falante | None:
         """Frase curta ou duvidosa ("sim", "para") vale quem falou com certeza há pouco; sem isso, fica incerta."""

@@ -301,3 +301,48 @@ def test_nao_avisa_de_erro_fora_do_modo_sempre_ou_de_janela_comum(tela, monkeypa
 def test_janela_de_senhas_nao_e_nem_avisada(tela):
     tela["atual"] = Janela(1, "keepassxc", "Erro de sincronização - KeePassXC", (0, 0, 800, 600))
     assert main.olhar_a_tela_uma_vez({}) is False
+
+
+def test_eco_da_voz_dela_nao_conta_como_outra_pessoa(escuta, monkeypatch):
+    dono_cadastrado(monkeypatch)
+    monkeypatch.setattr(main, "AMBIENTE", {"outra_voz_em": 0.0})
+    monkeypatch.setattr(main, "falou_durante", lambda inicio, fim: True)  # captado enquanto ela falava
+    monkeypatch.setattr(main, "parece_eco", lambda texto: True)
+    agora = time.time()
+    main.filtrar_fala_por_ativacao("a previsão é de sol", agora - 1, agora, falante=VISITA)
+    assert main.AMBIENTE["outra_voz_em"] == 0.0
+    monkeypatch.setattr(main, "falou_durante", lambda inicio, fim: False)
+    monkeypatch.setattr(main, "parece_eco", lambda texto: False)
+    assert main.filtrar_fala_por_ativacao("que horas são agora", falante=DONO) == "que horas são agora"
+
+
+def test_voz_incerta_que_chama_o_nome_e_atendida_como_o_dono(escuta, monkeypatch):
+    dono_cadastrado(monkeypatch)
+    monkeypatch.setattr(main, "AMBIENTE", {"outra_voz_em": 0.0})
+    assert main.filtrar_fala_por_ativacao("Beatriz, que horas são", falante=Falante("incerto", "", 0.42)) == "que horas são"
+    falante = main.FALANTE["atual"]
+    assert falante.e_dono and falante.provavel and main.BIOMETRIA.pode_tudo(falante)
+
+
+def test_voz_incerta_com_outra_pessoa_por_perto_continua_incerta(escuta, monkeypatch):
+    dono_cadastrado(monkeypatch)
+    monkeypatch.setattr(main, "AMBIENTE", {"outra_voz_em": time.time()})
+    main.filtrar_fala_por_ativacao("Beatriz, que horas são", falante=Falante("incerto", "", 0.42))
+    assert main.FALANTE["atual"].tipo == "incerto"
+
+
+@pytest.mark.parametrize("frase, sensivel", [
+    ("manda uma mensagem no zap pra Ana", True),
+    ("envia esse e-mail", True),
+    ("lê a minha tela", True),
+    ("apaga esse arquivo", True),
+    ("esquece a minha voz", True),
+    ("conecta meu celular", True),
+    ("se melhora: responde mais rápido", True),
+    ("que horas são", False),
+    ("qual o prazo da contestação", False),
+    ("marca dentista amanhã às 14h", False),
+    ("liga a TV", False),
+])
+def test_pedidos_sensiveis_da_voz_provavel(frase, sensivel):
+    assert main.pedido_sensivel(frase) is sensivel

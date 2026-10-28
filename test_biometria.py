@@ -346,3 +346,55 @@ def test_o_falante_chega_ao_comando(casa, monkeypatch):
     assert main.FALANTE["atual"].tipo == "convidado"
     main.filtrar_fala_por_ativacao("Beatriz, que horas são")
     assert main.FALANTE["atual"] is None
+
+
+# ------------------------------------------------------------------ aprender com a confirmação
+def test_frase_incerta_confirmada_logo_depois_entra_no_perfil(bio):
+    cadastrar_dono(bio)
+    cadastro = len(bio._perfis["dono"]["amostras_vetores"])
+    longe = audio(0, mistura=2.2)  # cosseno ~0,41: o dono falando de longe
+    antes = bio.identificar(longe)
+    assert antes.tipo == "incerto"
+    assert bio.identificar(audio(0)).tipo == "dono"  # a frase seguinte, com certeza: a incerta era ele
+    perfil = json.loads(open(bio.caminho, encoding="utf-8").read())["perfis"]["dono"]
+    assert len(perfil["aprendidas"]) == 1 and len(perfil["amostras_vetores"]) == cadastro  # o cadastro continua inteiro
+    assert bio.identificar(longe).nota > antes.nota
+
+
+def test_outra_voz_no_meio_ou_demora_nao_ensina(bio):
+    cadastrar_dono(bio)
+    longe = audio(0, mistura=2.2)
+    bio.identificar(longe)
+    bio.identificar(audio(3))  # outra pessoa falou no meio
+    bio.identificar(audio(0))
+    vetor = CodificadorFalso().vetor(longe)
+    bio._aprender_com_a_confirmacao(Falante("incerto", nota=0.41), vetor, agora=0.0)
+    bio._aprender_com_a_confirmacao(Falante("dono", "Felipe", 0.9), None,
+                                    agora=biometria_voz.BIOMETRIA_APRENDER_SEGUNDOS + 1)
+    assert "aprendidas" not in bio._perfis["dono"]
+
+
+def test_aprendidas_tem_limite_e_cadastro_novo_recomeca(bio):
+    cadastrar_dono(bio)
+    for _ in range(biometria_voz.MAX_APRENDIDAS + 5):
+        bio.aprender_amostra(CodificadorFalso().vetor(audio(0, mistura=2.2)))
+    assert len(bio._perfis["dono"]["aprendidas"]) == biometria_voz.MAX_APRENDIDAS
+    assert bio.identificar(audio(0)).tipo == "dono"  # o cadastro ainda pesa
+    cadastrar_dono(bio)
+    assert "aprendidas" not in bio._perfis["dono"]
+
+
+def test_perfil_antigo_guarda_o_cadastro_antes_de_aprender(bio):
+    bio.guardar_perfil("dono", "Felipe", "dono", CodificadorFalso().vetor(audio(0)), 0.0, 4)  # só a média
+    bio.aprender_amostra(CodificadorFalso().vetor(audio(0, mistura=2.2)))
+    bio.aprender_amostra(CodificadorFalso().vetor(audio(0, mistura=2.2)))
+    assert len(bio._perfis["dono"]["amostras_vetores"]) == 4  # a média original, não a misturada
+    assert bio._perfis["dono"]["amostras_vetores"][0][0] == 1.0
+
+
+def test_aprender_desligado(bio):
+    cadastrar_dono(bio)
+    bio.aprender = False
+    bio.identificar(audio(0, mistura=2.2))
+    bio.identificar(audio(0))
+    assert "aprendidas" not in bio._perfis["dono"]
